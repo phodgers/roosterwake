@@ -1,0 +1,40 @@
+# Build output
+build/
+cmake-build-*/
+*.uf2
+*.elf
+*.bin
+*.hex
+*.dis
+*.map
+
+# Generated firmware headers (produced by the CMake portal-embed step)
+firmware/src/provisioning/portal_html.h
+
+# Toolchain / editor
+.vscode/
+.idea/
+compile_commands.json
+CMakeCache.txt
+CMakeFiles/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Local config that must never be committed — these hold Wi-Fi credentials
+# and device tokens.
+*.local.json
+relay-reference/config.json
+remotewake-config.uf2
+secrets.env
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Screenshots from MCP-driven verification (never committed)
+tmp-screenshots/
+.playwright-mcp/
