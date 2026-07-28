@@ -1,0 +1,59 @@
+name: tools-ci
+
+# The mkconfig codec is one of three implementations of the flash config format (the others
+# being the firmware's C and the hosted dashboard's generator). This job is what stops them
+# drifting: it asserts the encoder still reproduces the committed golden vectors, and that
+# regenerating those vectors is a no-op. A change here that is not mirrored in
+# firmware/src/config/config.c will fail the firmware's host tests instead.
+
+on:
+  push:
+    paths: ['tools/**', 'firmware/test/vectors/**', '.github/workflows/tools-ci.yml']
+  pull_request:
+    paths: ['tools/**', 'firmware/test/vectors/**', '.github/workflows/tools-ci.yml']
+  workflow_dispatch:
+
+jobs:
+  mkconfig:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Test the config codec against the golden vectors
+        run: npm test
+        working-directory: tools/mkconfig
+
+      - name: Golden vectors are reproducible
+        # Regenerating must be a no-op. If it is not, someone changed the encoder without
+        # regenerating — which means the committed vectors no longer describe the format, and
+        # the firmware is being validated against a stale contract.
+        run: |
+          node test/gen-vectors.mjs
+          if ! git diff --exit-code --stat ../../firmware/test/vectors/config-v1.json; then
+            echo "::error::Golden vectors are stale. Run 'npm run gen-vectors' in tools/mkconfig"
+            echo "::error::and mirror the encoder change in firmware/src/config/config.c."
+            exit 1
+          fi
+        working-directory: tools/mkconfig
+
+      - name: CLI smoke test
+        # Exercises the real entry point, not just the library: generate an image, read it
+        # back, and assert the round-trip survived.
+        run: |
+          set -e
+          node bin/mkconfig.mjs \
+            --ssid "CI Network" --psk "ci-password" --auth wpa2 \
+            --target "Test PC=AA:BB:CC:DD:EE:FF" \
+            --out /tmp/ci-config.uf2
+          node bin/mkconfig.mjs --verify /tmp/ci-config.uf2 | tee /tmp/verify.txt
+          grep -q "Test PC -> AA:BB:CC:DD:EE:FF" /tmp/verify.txt
+          grep -q "0x103FF000" /tmp/verify.txt
+          grep -q "RP2350_ARM_S" /tmp/verify.txt
+          # The token and password must never be printed back out.
+          if grep -qi "ci-password" /tmp/verify.txt; then
+            echo "::error::--verify leaked the Wi-Fi password"; exit 1
+          fi
+        working-directory: tools/mkconfig

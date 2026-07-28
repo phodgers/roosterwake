@@ -1,0 +1,39 @@
+{
+  "name": "@remotewake/mkconfig",
+  "version": "1.0.0",
+  "description": "Generate a Remote Wake configuration UF2 for headless provisioning of a Pico 2 W dongle",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "mkconfig": "./bin/mkconfig.mjs"
+  },
+  "exports": {
+    ".": "./lib/config.mjs",
+    "./uf2": "./lib/uf2.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\"",
+    "gen-vectors": "node test/gen-vectors.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "wake-on-lan",
+    "wol",
+    "pico",
+    "rp2350",
+    "uf2",
+    "remotewake"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/phodgers/remotewake.git",
+    "directory": "tools/mkconfig"
+  }
+}
