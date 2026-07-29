@@ -1,0 +1,67 @@
+name: firmware build
+
+on:
+  push:
+    paths:
+      - 'firmware/**'
+      - '.github/workflows/firmware-build.yml'
+  pull_request:
+    paths:
+      - 'firmware/**'
+      - '.github/workflows/firmware-build.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      PICO_SDK_PATH: ${{ github.workspace }}/pico-sdk
+      # The firmware image must stay below the config sectors at 0x3FE000. That is enforced by
+      # a linker assertion (firmware/src/config/flash_reserve.ld), so a build that grows into
+      # them fails here rather than in a customer's hands.
+      PICO_SDK_VERSION: '2.2.0'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-arm-none-eabi libnewlib-arm-none-eabi cmake ninja-build
+          arm-none-eabi-gcc --version
+          cmake --version
+          ninja --version
+
+      - name: Check out the pico-sdk
+        uses: actions/checkout@v4
+        with:
+          repository: raspberrypi/pico-sdk
+          ref: ${{ env.PICO_SDK_VERSION }}
+          path: pico-sdk
+          # lib/lwip and lib/cyw43-driver are what make a Pico 2 W build possible at all; the
+          # SDK's CMake degrades to a warning without them and the wireless targets simply do
+          # not exist, which surfaces much later as a confusing link error.
+          submodules: recursive
+
+      - name: Configure
+        run: cmake -S firmware -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Report the image size
+        run: |
+          arm-none-eabi-size build/remotewake.elf
+          ls -l build/remotewake.uf2 build/remotewake.bin
+          echo "flash used: $(stat -c%s build/remotewake.bin) bytes of $((0x3FE000)) available"
+
+      - name: Upload the UF2
+        uses: actions/upload-artifact@v4
+        with:
+          name: remotewake-uf2
+          path: |
+            build/remotewake.uf2
+            build/remotewake.elf
+          if-no-files-found: error

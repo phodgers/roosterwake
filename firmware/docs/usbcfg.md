@@ -28,6 +28,14 @@ The device presents as VID `0x2E8A` (Raspberry Pi), with the product string
 `Remote Wake` and the serial number set to the 16-hex-character `device_id`. That serial
 number is how a host tells two connected dongles apart without sending a command.
 
+**The USB serial number is upper-case hex; `device_id` everywhere else is lower-case.**
+The SDK derives the descriptor from the board's unique ID and emits upper case, while
+PROTOCOL.md §2 specifies lower case for `device_id` on the wire and in configuration. Rather
+than carry custom USB descriptors purely to change the case of sixteen characters, the two
+are allowed to differ and **hosts MUST compare the serial number case-insensitively**. Do not
+use it as a dictionary key alongside a wire-format `device_id` without normalising first —
+that is the shape this mismatch will bite in.
+
 **In BOOTSEL mode the device is not a serial port at all** — it enumerates as the RP2350 UF2
 bootloader (mass storage plus the PICOBOOT vendor interface). A host that finds the bootloader
 rather than a CDC port has a device awaiting firmware, not a broken one.
@@ -308,7 +316,8 @@ the port disappears. On Web Serial, listen for `disconnect` then `connect`. Reco
 take up to five seconds on Windows, which reliably enumerates more slowly than macOS or Linux.
 
 **Match on the serial number, not the port.** With two dongles attached, `COM4` and `COM5` may
-swap between reboots. The USB serial number is the `device_id` and is stable.
+swap between reboots. The USB serial number is the `device_id` and is stable — but compare it
+case-insensitively, per §1.
 
 **Never log a `SET_WIFI` line.** It contains the user's Wi-Fi password in plain text. Setup
 tooling that logs commands for debugging must redact this one — a habit worth building in

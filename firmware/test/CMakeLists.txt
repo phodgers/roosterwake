@@ -1,0 +1,106 @@
+# Native host tests for the portable half of the firmware.
+#
+# A separate CMake project from firmware/CMakeLists.txt on purpose: that one cross-compiles for
+# the RP2350, and one CMake tree gets one toolchain. Build it with the host compiler:
+#
+#   cmake -S firmware/test -B build-test
+#   cmake --build build-test
+#   ctest --test-dir build-test --output-on-failure
+#
+# Everything here compiles the same source files the firmware does — no mocks and no second
+# implementation, because a test that exercises a copy of the code proves nothing about the
+# code that ships.
+#
+# SPDX-License-Identifier: MIT
+
+cmake_minimum_required(VERSION 3.13)
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "Minimum policy version for vendored deps")
+
+project(remotewake_tests C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+
+enable_testing()
+
+set(RW_FIRMWARE_DIR ${CMAKE_CURRENT_LIST_DIR}/..)
+set(RW_SRC ${RW_FIRMWARE_DIR}/src)
+
+# ── mbedTLS ───────────────────────────────────────────────────────────────────
+#
+# proto/auth.c and ws/ws_handshake.c use mbedTLS's SHA-256, SHA-1 and base64, so the tests
+# build those same sources rather than substituting another implementation. Four files and a
+# ten-line config is a small price for testing the code that actually runs on the device.
+if (NOT MBEDTLS_DIR)
+    if (DEFINED ENV{PICO_SDK_PATH})
+        set(MBEDTLS_DIR "$ENV{PICO_SDK_PATH}/lib/mbedtls")
+    endif()
+endif()
+if (NOT EXISTS "${MBEDTLS_DIR}/library/sha256.c")
+    message(FATAL_ERROR
+        "mbedTLS sources not found. Set PICO_SDK_PATH (with its lib/mbedtls submodule checked "
+        "out) or pass -DMBEDTLS_DIR=/path/to/mbedtls. Looked in: '${MBEDTLS_DIR}'")
+endif()
+
+set(MBEDTLS_SOURCES
+    ${MBEDTLS_DIR}/library/base64.c
+    ${MBEDTLS_DIR}/library/constant_time.c
+    ${MBEDTLS_DIR}/library/platform.c
+    ${MBEDTLS_DIR}/library/platform_util.c
+    ${MBEDTLS_DIR}/library/sha1.c
+    ${MBEDTLS_DIR}/library/sha256.c
+)
+
+# ── The firmware sources under test ───────────────────────────────────────────
+#
+# Kept in step with RW_PORTABLE_SOURCES in firmware/CMakeLists.txt. A file in one list and not
+# the other is either untested or unshipped.
+set(RW_PORTABLE_SOURCES
+    ${RW_SRC}/config/config.c
+    ${RW_SRC}/net/url.c
+    ${RW_SRC}/proto/auth.c
+    ${RW_SRC}/proto/json.c
+    ${RW_SRC}/vendor/jsmn.c
+    ${RW_SRC}/wol/magic.c
+    ${RW_SRC}/ws/ws_frame.c
+    ${RW_SRC}/ws/ws_handshake.c
+)
+
+set(TEST_SOURCES
+    test_main.c
+    vectors_json.c
+    test_config.c
+    test_wol.c
+    test_ws_frame.c
+    test_ws_handshake.c
+    test_auth.c
+    test_json.c
+    test_url.c
+)
+
+add_executable(rw_tests ${TEST_SOURCES} ${RW_PORTABLE_SOURCES} ${MBEDTLS_SOURCES})
+
+target_include_directories(rw_tests PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${RW_SRC}
+    ${CMAKE_CURRENT_LIST_DIR}/host
+    ${MBEDTLS_DIR}/include
+    ${MBEDTLS_DIR}/library
+)
+
+target_compile_definitions(rw_tests PRIVATE
+    MBEDTLS_CONFIG_FILE="host_mbedtls_config.h"
+)
+
+target_compile_options(rw_tests PRIVATE
+    -Wall -Wextra -Wshadow -Wundef -Werror
+)
+# mbedTLS is held to its own warning settings, not ours.
+set_source_files_properties(${MBEDTLS_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
+
+# Bake the vector directory in so the binary is self-locating. ctest still passes it
+# explicitly as argv[1], which wins — that keeps the out-of-tree case working (packaging the
+# tests, or running them against a different vector set) without making the ordinary
+# `./rw_tests` invocation depend on the working directory.
+target_compile_definitions(rw_tests PRIVATE RW_TEST_DATA_DIR="${CMAKE_CURRENT_LIST_DIR}")
+
+add_test(NAME rw_tests COMMAND rw_tests ${CMAKE_CURRENT_LIST_DIR})

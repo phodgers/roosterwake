@@ -1,0 +1,231 @@
+/*
+ * Remote Wake firmware entry point.
+ *
+ * One thread, one loop, no allocation after start-up. Everything that can block is either
+ * bounded and pumped (rw_sys_pump_ms) or deferred to this loop by the layer that received it.
+ *
+ * SPDX-License-Identifier: MIT
+ */
+#include <stdio.h>
+#include <string.h>
+
+#include "pico/cyw43_arch.h"
+#include "pico/stdlib.h"
+#include "pico/unique_id.h"
+
+#include "brand.h"
+#include "config/config.h"
+#include "config/config_flash.h"
+#include "led/led.h"
+#include "net/arplearn.h"
+#include "net/net.h"
+#include "proto/auth.h"
+#include "proto/proto.h"
+#include "rw_log.h"
+#include "sys/sys.h"
+#include "sys/wallclock.h"
+#include "tls/tls.h"
+
+/* config-format.md §8: hold BOOTSEL for five seconds at power-on. Sampled after the watchdog
+ * is running, so a user holding the button does not trip it. */
+#define FACTORY_RESET_HOLD_MS 5000
+
+/* The loop never blocks longer than this, so timers, the keepalive and the watchdog all stay
+ * responsive without spinning the core flat out. */
+#define LOOP_SLICE_MS 10
+
+static rw_config_t s_config;
+
+/*
+ * Persist a configuration the relay pushed. Called from proto's deferred command execution,
+ * which runs on this loop — never from inside a network callback, because this erases a flash
+ * sector with interrupts off and the second core locked out.
+ */
+static bool save_config_hook(rw_config_t *cfg) {
+    rw_flash_status_t st = rw_config_flash_save(cfg);
+    if (st != RW_FLASH_OK) {
+        RW_LOG_ERROR("config: save failed (%d)", (int)st);
+        return false;
+    }
+    return true;
+}
+
+static void wake_sent_hook(void) {
+    rw_led_wake_sent();
+}
+
+static const rw_relay_hooks_t k_relay_hooks = {
+    .save_config  = save_config_hook,
+    .on_wake_sent = wake_sent_hook,
+};
+
+/*
+ * Derive the device_id from the board's unique flash ID.
+ *
+ * PROTOCOL.md §2 requires it to be stable for the life of the device and to survive a factory
+ * reset, which rules out anything stored in the config sectors. The flash ID is 8 bytes and
+ * per-part, which is exactly the shape the protocol asks for.
+ */
+static void derive_device_id(char *out) {
+    pico_unique_board_id_t id;
+    pico_get_unique_board_id(&id);
+    rw_hex_encode(id.id, 8, out);
+}
+
+static bool is_provisioned(const rw_config_t *cfg) {
+    return cfg->ssid[0] != '\0' && cfg->device_id[0] != '\0' && cfg->token[0] != '\0';
+}
+
+static void check_factory_reset(void) {
+    if (!rw_sys_bootsel_pressed()) {
+        return;
+    }
+
+    RW_LOG_WARN("hold BOOTSEL for %d ms to factory reset", FACTORY_RESET_HOLD_MS);
+    absolute_time_t deadline = make_timeout_time_ms(FACTORY_RESET_HOLD_MS);
+    while (!time_reached(deadline)) {
+        if (!rw_sys_bootsel_pressed()) {
+            return; /* released early: not a reset */
+        }
+        rw_sys_feed_watchdog();
+        rw_led_task();
+        sleep_ms(20);
+    }
+
+    RW_LOG_WARN("factory reset: erasing both config slots");
+    rw_led_set(RW_LED_ERROR);
+    if (rw_config_flash_erase_all() != RW_FLASH_OK) {
+        RW_LOG_ERROR("factory reset failed");
+        return;
+    }
+    /* Confirmed by two seconds of solid LED, then a reboot into the unprovisioned state. */
+    rw_led_wake_sent();
+    for (int i = 0; i < 100; i++) {
+        rw_led_task();
+        rw_sys_feed_watchdog();
+        sleep_ms(20);
+    }
+    rw_sys_reboot(100);
+}
+
+/* Pick the LED pattern that matches what the device is actually doing. */
+static void update_led(bool provisioned) {
+    if (rw_tls_insecure()) {
+        /* PROTOCOL.md §1.1: the error pattern runs continuously while verification is off, so
+         * a device left in that state is visibly wrong from across the room rather than
+         * quietly wrong for a year. */
+        rw_led_set(RW_LED_ERROR);
+        return;
+    }
+    if (!provisioned) {
+        rw_led_set(RW_LED_SETUP_AP);
+        return;
+    }
+
+    switch (rw_relay_state()) {
+        case RW_RELAY_READY:
+            rw_led_set(RW_LED_CONNECTED);
+            return;
+        case RW_RELAY_AUTH_FAILED:
+        case RW_RELAY_STOPPED:
+            /* §3.3: a device that silently retries against a relay that cannot prove it holds
+             * our token is worse than one that visibly fails. */
+            rw_led_set(RW_LED_ERROR);
+            return;
+        case RW_RELAY_OFFLINE:
+        case RW_RELAY_BACKOFF:
+        case RW_RELAY_CONNECTING:
+        case RW_RELAY_AUTHENTICATING:
+            rw_led_set(RW_LED_JOINING);
+            return;
+    }
+    rw_led_set(RW_LED_JOINING);
+}
+
+int main(void) {
+    rw_sys_init();
+    stdio_init_all();
+
+    if (!rw_config_flash_load(&s_config)) {
+        rw_config_init(&s_config);
+    }
+
+    /* Diagnostics are opt-in (usbcfg.md §7). Set before anything else logs, so a device with
+     * the flag on captures its own start-up. */
+    rw_log_set_enabled((s_config.flags & RW_CFG_FLAG_DIAG_LOG) != 0);
+
+    RW_LOG_INFO("%s %s (%s), reset reason %s", RW_PRODUCT_NAME, RW_FW_VERSION, RW_BOARD_NAME,
+                rw_sys_reset_reason());
+
+    /*
+     * The device_id is derived, not stored. A config image written by mkconfig may carry one;
+     * if it disagrees with this board's unique ID the derived value wins, because the relay
+     * identifies the device by something the device cannot change and a mismatched image would
+     * otherwise let one board impersonate another.
+     */
+    char derived[RW_DEVICE_ID_HEX + 1];
+    derive_device_id(derived);
+    if (strcmp(s_config.device_id, derived) != 0) {
+        if (s_config.device_id[0] != '\0') {
+            RW_LOG_WARN("config: device_id %s does not match this board; using %s",
+                        s_config.device_id, derived);
+        }
+        snprintf(s_config.device_id, sizeof(s_config.device_id), "%s", derived);
+    }
+
+    rw_led_init();
+    if (!rw_net_init()) {
+        /* The radio is the device. Without it there is nothing to run, so say so on the LED
+         * and let the watchdog restart us in case it was a transient power-up fault. */
+        rw_led_set(RW_LED_ERROR);
+        while (true) {
+            rw_led_task();
+            sleep_ms(10);
+        }
+    }
+
+    check_factory_reset();
+
+    if (!rw_tls_init((s_config.flags & RW_CFG_FLAG_TLS_INSECURE) != 0)) {
+        RW_LOG_ERROR("tls: initialisation failed");
+        rw_led_set(RW_LED_ERROR);
+    }
+
+    rw_relay_init(&s_config, &k_relay_hooks);
+
+    const bool provisioned = is_provisioned(&s_config);
+    if (provisioned) {
+        RW_LOG_INFO("config: seq %lu, %u target(s), relay %s", (unsigned long)s_config.seq,
+                    s_config.target_count,
+                    s_config.relay_url[0] ? s_config.relay_url : RW_DEFAULT_RELAY_URL);
+        rw_net_start(s_config.ssid, s_config.psk, s_config.wifi_auth);
+        rw_relay_start();
+    } else {
+        /*
+         * Unprovisioned. The LED shows the setup pattern and the USB CDC channel is up and
+         * waiting for the usbcfg commands that write a configuration. The Wi-Fi setup hotspot
+         * and its captive portal are a separate component and are not part of this firmware
+         * build; a device in this state is configured over USB or with a config UF2 from
+         * tools/mkconfig.
+         */
+        RW_LOG_WARN("unprovisioned: waiting for configuration");
+    }
+
+    while (true) {
+        /* Poll mode: this is the only place lwIP and the cyw43 driver run, so every callback
+         * they raise lands on this context. That is what lets the TLS and WebSocket state
+         * machines be written without re-entrancy guards. */
+        cyw43_arch_poll();
+        rw_sys_feed_watchdog();
+
+        rw_net_task();
+        rw_arp_learn_tick();
+        rw_relay_task();
+
+        update_led(provisioned);
+        rw_led_task();
+
+        /* Sleeps until the driver has work or the slice expires, whichever comes first. */
+        cyw43_arch_wait_for_work_until(make_timeout_time_ms(LOOP_SLICE_MS));
+    }
+}

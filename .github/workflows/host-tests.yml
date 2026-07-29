@@ -1,0 +1,55 @@
+name: host tests
+
+# The C half of the flash config format, checked against the same golden vectors
+# tools-ci.yml holds the JS half to. Between the two, a one-sided change to the encoder fails
+# immediately in the other's job rather than at integration on somebody's desk.
+
+on:
+  push:
+    paths:
+      - 'firmware/**'
+      - '.github/workflows/host-tests.yml'
+  pull_request:
+    paths:
+      - 'firmware/**'
+      - '.github/workflows/host-tests.yml'
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    env:
+      PICO_SDK_PATH: ${{ github.workspace }}/pico-sdk
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build
+          cc --version
+
+      # The tests build mbedTLS's SHA-256, SHA-1 and base64 from source so they exercise the
+      # same code the device runs. Only lib/mbedtls is needed, so the checkout is narrowed to
+      # it rather than pulling the whole SDK's submodule tree.
+      - name: Check out the pico-sdk (for lib/mbedtls)
+        uses: actions/checkout@v4
+        with:
+          repository: raspberrypi/pico-sdk
+          ref: '2.2.0'
+          path: pico-sdk
+
+      - name: Check out lib/mbedtls
+        working-directory: pico-sdk
+        run: git submodule update --init lib/mbedtls
+
+      - name: Configure
+        run: cmake -S firmware/test -B build-test -G Ninja -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build-test
+
+      - name: Run
+        run: ctest --test-dir build-test --output-on-failure

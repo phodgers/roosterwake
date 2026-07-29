@@ -1,5 +1,6 @@
-# Build output
-build/
+# Build output. The glob is deliberate: the firmware has at least two build trees (ARM at
+# build/, host tests at build-host/) and a bare `build/` pattern silently lets the others in.
+build*/
 cmake-build-*/
 *.uf2
 *.elf
