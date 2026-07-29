@@ -7,13 +7,19 @@
 
 #include "hardware/gpio.h"
 #include "hardware/structs/io_qspi.h"
-#include "hardware/structs/powman.h"
 #include "hardware/structs/sio.h"
 #include "hardware/sync.h"
 #include "hardware/watchdog.h"
 #include "pico/bootrom.h"
 #include "pico/cyw43_arch.h"
 #include "pico/time.h"
+
+/* The power-on/brownout latch lives in a different peripheral on each chip. */
+#if defined(PICO_RP2350) && PICO_RP2350
+#include "hardware/structs/powman.h"
+#else
+#include "hardware/structs/vreg_and_chip_reset.h"
+#endif
 
 #include "rw_log.h"
 
@@ -29,11 +35,28 @@ void rw_sys_init(void) {
      * watchdog_enable_caused_reboot() reads, so the reason has to be latched first or every
      * boot after the first one looks like a watchdog reset.
      */
-    const uint32_t chip_reset = powman_hw->chip_reset;
+    bool had_por = false;
+    bool had_bor = false;
 
-    if (chip_reset & POWMAN_CHIP_RESET_HAD_POR_BITS) {
+#if defined(PICO_RP2350) && PICO_RP2350
+    const uint32_t chip_reset = powman_hw->chip_reset;
+    had_por = (chip_reset & POWMAN_CHIP_RESET_HAD_POR_BITS) != 0;
+    had_bor = (chip_reset & POWMAN_CHIP_RESET_HAD_BOR_BITS) != 0;
+#else
+    /*
+     * RP2040 latches the same information in VREG_AND_CHIP_RESET, and has no separate brownout
+     * bit — its brownout detector asserts the same power-on reset. So a brownout on RP2040
+     * reports "power_on", which is the honest answer: the chip cannot tell us otherwise, and
+     * inventing a distinction the silicon does not make would put a wrong word in a support
+     * conversation.
+     */
+    const uint32_t chip_reset = vreg_and_chip_reset_hw->chip_reset;
+    had_por = (chip_reset & VREG_AND_CHIP_RESET_CHIP_RESET_HAD_POR_BITS) != 0;
+#endif
+
+    if (had_por) {
         s_reset_reason = "power_on";
-    } else if (chip_reset & POWMAN_CHIP_RESET_HAD_BOR_BITS) {
+    } else if (had_bor) {
         s_reset_reason = "brownout";
     } else if (watchdog_enable_caused_reboot()) {
         /* Our own 8 s watchdog fired: the firmware hung. */

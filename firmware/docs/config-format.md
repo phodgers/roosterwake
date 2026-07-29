@@ -19,16 +19,23 @@ format is fixed-layout rather than something friendlier like JSON or CBOR, and w
 
 ## 1. Where it lives
 
-Two 4096-byte sectors at the top of flash. The Pico 2 W has 4 MB, so:
+**The top two 4096-byte sectors of flash**, whatever size the flash is. Slot B is the last
+sector, slot A the one below it. That is the rule; the addresses follow from it:
 
-| Slot | Flash offset | XIP address |
-|---|---|---|
-| A | `0x3FE000` | `0x103FE000` |
-| B | `0x3FF000` | `0x103FF000` |
+| Board | Flash | Slot A | Slot B | XIP A | XIP B |
+|---|---|---|---|---|---|
+| Pico 2 W (RP2350) | 4 MB | `0x3FE000` | `0x3FF000` | `0x103FE000` | `0x103FF000` |
+| Pico W (RP2040) | 2 MB | `0x1FE000` | `0x1FF000` | `0x101FE000` | `0x101FF000` |
 
-The firmware image itself is linked to stay below `0x3FE000`. The build fails if it does not —
-a linker assertion, not a runtime check, because discovering this at runtime means discovering
-it in a customer's hands.
+**Do not hardcode either row.** The firmware derives both from `PICO_FLASH_SIZE_BYTES` and
+`tools/mkconfig` takes `--board` (or `--flash-size`) for the same reason. A fixed `0x3FE000`
+silently assumes 4 MB for ever: on a 2 MB board those addresses are past the end of the chip,
+and the symptom is a configuration that appears to save and has vanished after a power cycle.
+
+The firmware image itself is linked to stay below slot A. The build fails if it does not — a
+linker assertion, not a runtime check, because discovering this at runtime means discovering it
+in a customer's hands. The assertion's threshold is generated per board, so it cannot pass
+vacuously on the smaller one.
 
 ### Why two slots
 
@@ -164,9 +171,16 @@ test suites, so a wrong variant fails immediately rather than at integration.
 the BOOTSEL drive alongside — or long after — a firmware image.
 
 - Block size 512 bytes, 256 payload bytes per block, standard UF2 framing.
-- Target address: `0x103FF000` (slot B). Writing to a fixed slot is safe because the record
-  carries `seq`, and `mkconfig` sets `seq` high enough to win (see below).
-- Family ID: `0xE48BFF59` (RP2350, Arm secure) by default, overridable with `--family`.
+- Target address: slot B — `0x103FF000` on a 4 MB board, `0x101FF000` on a 2 MB one. Writing to
+  a fixed slot is safe because the record carries `seq`, and `mkconfig` sets `seq` high enough
+  to win (see below).
+- Family ID: `0xE48BFF59` (RP2350, Arm secure) or `0xE48BFF56` (RP2040), selected by `--board`
+  and overridable with `--family`.
+
+**`--board` sets both at once**, and that pairing matters: a UF2 carrying the right address but
+the wrong family is refused by the bootloader, while one carrying the right family and the
+wrong address is *accepted* and writes the config into the middle of the firmware image. The
+first failure is loud and the second is catastrophic, so the two are never chosen separately.
 - `numBlocks` covers the whole 4096-byte sector so the remainder is explicitly zeroed rather
   than left holding whatever was there before.
 

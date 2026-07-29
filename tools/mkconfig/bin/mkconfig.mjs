@@ -17,6 +17,9 @@ import {
   SLOT_A_XIP,
   SLOT_B_XIP,
   SECTOR_SIZE,
+  BOARDS,
+  DEFAULT_BOARD,
+  slotAddresses,
   ConfigError,
 } from '../lib/config.mjs';
 import { buildUf2, parseUf2, flattenUf2, FAMILY, FAMILY_NAME } from '../lib/uf2.mjs';
@@ -52,6 +55,7 @@ FLAGS
 
 OUTPUT
   --out <file>             Output path. Conventionally remotewake-config.uf2
+  --board <name>           Target board: pico2_w or pico_w       [default: pico2_w]
   --slot <a|b>             Which config slot to write            [default: b]
   --seq <n>                Sequence number                       [default: ${GENERATED_SEQ}]
   --family <name|hex>      UF2 family ID                         [default: RP2350_ARM_S]
@@ -84,7 +88,7 @@ function parseArgs(argv) {
   const out = { targets: [], flags: 0 };
   const wantsValue = new Set([
     'ssid', 'psk', 'auth', 'relay', 'device-id', 'token', 'claim',
-    'target', 'out', 'slot', 'seq', 'family', 'verify',
+    'target', 'out', 'slot', 'seq', 'family', 'verify', 'board',
   ]);
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -116,8 +120,10 @@ function parseTarget(spec) {
   return { name: spec.slice(0, eq).trim(), mac: spec.slice(eq + 1).trim() };
 }
 
+/* Returns null when unspecified, so the caller can fall back to the board's own family rather
+ * than a constant that would be wrong for half the boards we support. */
 function resolveFamily(spec) {
-  if (!spec) return FAMILY.RP2350_ARM_S;
+  if (!spec) return null;
   const named = FAMILY[spec.toUpperCase()];
   if (named !== undefined) return named;
   const n = Number(spec);
@@ -218,15 +224,28 @@ function main() {
     console.error(`--slot must be "a" or "b", got "${slot}"`);
     process.exit(2);
   }
-  const addr = slot === 'a' ? SLOT_A_XIP : SLOT_B_XIP;
+
+  const boardName = (args.board ?? DEFAULT_BOARD).toLowerCase();
+  const board = BOARDS[boardName];
+  if (!board) {
+    console.error(`--board must be one of ${Object.keys(BOARDS).join(', ')}, got "${boardName}"`);
+    process.exit(2);
+  }
+
+  // The config lives in the top two sectors of whatever flash this board has, so the address
+  // follows the board. --family still overrides, for anyone doing something we have not thought
+  // of; without it the family follows the board too, because an address/family mismatch is the
+  // one combination that can write a config record into the middle of the firmware image.
+  const { a: slotA, b: slotB } = slotAddresses(board.flashSize);
+  const addr = slot === 'a' ? slotA : slotB;
 
   // Pad to a whole sector so the tail is explicitly zeroed rather than left holding whatever
   // was in flash before. config-format.md §5.
-  const uf2 = buildUf2(record, addr, resolveFamily(args.family), SECTOR_SIZE);
+  const uf2 = buildUf2(record, addr, resolveFamily(args.family) ?? board.family, SECTOR_SIZE);
   writeFileSync(args.out, uf2);
 
   console.log(`Wrote ${args.out}`);
-  console.log(`  ${uf2.length} bytes, ${uf2.length / 512} blocks -> 0x${addr.toString(16).toUpperCase()} (slot ${slot.toUpperCase()})`);
+  console.log(`  ${uf2.length} bytes, ${uf2.length / 512} blocks -> 0x${addr.toString(16).toUpperCase()} (slot ${slot.toUpperCase()}, ${boardName} / ${board.chip})`);
   console.log(`  Device ID: ${cfg.device_id}`);
   if (!args.token) {
     console.log(`  Token:     ${cfg.token}`);

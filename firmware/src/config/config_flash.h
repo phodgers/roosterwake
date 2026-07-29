@@ -6,12 +6,35 @@
 #ifndef RW_CONFIG_FLASH_H
 #define RW_CONFIG_FLASH_H
 
+/*
+ * Brings in PICO_FLASH_SIZE_BYTES from the board header.
+ *
+ * "pico.h" and not "pico/config.h": the board headers contain bare `pico_board_cmake_set(...)`
+ * directives meant for CMake, and pico.h is what defines them away before pulling the board
+ * header in. Including the config header directly feeds those lines to the C compiler, which
+ * fails a dozen includes later in <stddef.h> with an error that names none of this.
+ */
+#include "pico.h"
+
 #include "config/config.h"
 
-/* Flash offsets of the two config sectors, relative to the start of flash. The XIP addresses
- * are these plus XIP_BASE (0x10000000), which is what config-format.md §1 tabulates. */
-#define RW_CFG_SLOT_A_OFFSET 0x3FE000u
-#define RW_CFG_SLOT_B_OFFSET 0x3FF000u
+/*
+ * Flash offsets of the two config sectors, relative to the start of flash.
+ *
+ * The rule is "the top two 4 KB sectors of whatever flash this board has", not a fixed address.
+ * A hardcoded 0x3FE000 silently assumes 4 MB for ever: on a 2 MB Pico W those addresses are
+ * past the end of the chip, and the failure is a config that appears to save and is gone after
+ * a power cycle. config-format.md §1 tabulates the concrete address per board.
+ *
+ * PICO_FLASH_SIZE_BYTES comes from the board header, so this follows the board automatically —
+ * including boards neither of us has thought about yet.
+ */
+#ifndef PICO_FLASH_SIZE_BYTES
+#error "PICO_FLASH_SIZE_BYTES is not defined; the config sectors cannot be located"
+#endif
+
+#define RW_CFG_SLOT_B_OFFSET ((uint32_t)PICO_FLASH_SIZE_BYTES - RW_CFG_SECTOR_SIZE)
+#define RW_CFG_SLOT_A_OFFSET (RW_CFG_SLOT_B_OFFSET - RW_CFG_SECTOR_SIZE)
 
 typedef enum {
     RW_FLASH_OK = 0,

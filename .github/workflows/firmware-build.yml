@@ -15,11 +15,21 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    # Both supported boards, every push. They differ in chip, flash size, where the config
+    # sectors land and whether there is a hardware TRNG, so "it builds" for one says nothing
+    # about the other - and the config-sector address is derived from flash size, which is
+    # exactly the kind of thing that breaks silently on the board nobody is testing.
+    strategy:
+      fail-fast: false
+      matrix:
+        board: [pico2_w, pico_w]
+
     env:
       PICO_SDK_PATH: ${{ github.workspace }}/pico-sdk
-      # The firmware image must stay below the config sectors at 0x3FE000. That is enforced by
-      # a linker assertion (firmware/src/config/flash_reserve.ld), so a build that grows into
-      # them fails here rather than in a customer's hands.
+      # The image must stay below the config sectors, which occupy the top 8 KB of flash on
+      # whichever board is being built. That is enforced by a linker assertion generated per
+      # board (firmware/src/config/flash_reserve.ld.in), so a build that grows into them fails
+      # here rather than in a customer's hands.
       PICO_SDK_VERSION: '2.2.0'
 
     steps:
@@ -71,27 +81,41 @@ jobs:
           repository: raspberrypi/pico-sdk
           ref: ${{ env.PICO_SDK_VERSION }}
           path: pico-sdk
-          # lib/lwip and lib/cyw43-driver are what make a Pico 2 W build possible at all; the
+          # lib/lwip and lib/cyw43-driver are what make a wireless build possible at all; the
           # SDK's CMake degrades to a warning without them and the wireless targets simply do
           # not exist, which surfaces much later as a confusing link error.
           submodules: recursive
 
       - name: Configure
-        run: cmake -S firmware -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: >
+          cmake -S firmware -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DPICO_BOARD=${{ matrix.board }}
 
       - name: Build
         run: cmake --build build
 
       - name: Report the image size
         run: |
+          set -euo pipefail
           arm-none-eabi-size build/remotewake.elf
           ls -l build/remotewake.uf2 build/remotewake.bin
-          echo "flash used: $(stat -c%s build/remotewake.bin) bytes of $((0x3FE000)) available"
+          # The config sectors sit in the top 8 KB of flash, so the budget follows the board.
+          case "${{ matrix.board }}" in
+            pico2_w) flash=$((4 * 1024 * 1024)) ;;
+            pico_w)  flash=$((2 * 1024 * 1024)) ;;
+          esac
+          budget=$((flash - 2 * 4096))
+          used=$(stat -c%s build/remotewake.bin)
+          echo "flash used: ${used} bytes of ${budget} available (${{ matrix.board }})"
+          if [ "$used" -gt "$budget" ]; then
+            echo "::error::image overlaps the configuration sectors"; exit 1
+          fi
 
       - name: Upload the UF2
         uses: actions/upload-artifact@v4
         with:
-          name: remotewake-uf2
+          name: remotewake-uf2-${{ matrix.board }}
           path: |
             build/remotewake.uf2
             build/remotewake.elf

@@ -9,8 +9,27 @@ cmake_minimum_required(VERSION 3.13)
 # without pinning the whole toolchain to CMake 3.
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "Minimum policy version for vendored deps")
 
-set(PICO_BOARD pico2_w CACHE STRING "Target board")
-set(PICO_PLATFORM rp2350-arm-s CACHE STRING "Target platform")
+# Two supported boards, both CYW43439-equipped:
+#
+#   pico2_w   RP2350, 4 MB flash, 520 KB SRAM, hardware TRNG   (the product)
+#   pico_w    RP2040, 2 MB flash, 264 KB SRAM, no TRNG          (also supported)
+#
+#   cmake -S firmware -B build -DPICO_BOARD=pico_w
+#
+# The platform follows the board rather than being pinned, so nothing has to be passed twice
+# and no combination can be selected that does not exist. See firmware/README.md for what
+# differs between the two at runtime.
+set(PICO_BOARD pico2_w CACHE STRING "Target board: pico2_w or pico_w")
+
+if (PICO_BOARD STREQUAL "pico2_w")
+    set(PICO_PLATFORM rp2350-arm-s CACHE STRING "Target platform" FORCE)
+elseif (PICO_BOARD STREQUAL "pico_w")
+    set(PICO_PLATFORM rp2040 CACHE STRING "Target platform" FORCE)
+else()
+    message(FATAL_ERROR
+        "PICO_BOARD is '${PICO_BOARD}'. This firmware supports pico2_w and pico_w - both have "
+        "the CYW43439 radio it needs. Another board will not have Wi-Fi.")
+endif()
 
 # ── Build options ─────────────────────────────────────────────────────────────
 
@@ -123,13 +142,17 @@ target_link_libraries(remotewake
     pico_flash
     hardware_flash
     hardware_watchdog
-    hardware_xip_cache
     # Poll mode, not threadsafe_background: every lwIP callback then runs on the main context.
     pico_cyw43_arch_lwip_poll
     pico_lwip_sntp
     pico_lwip_mbedtls
     pico_mbedtls
 )
+
+# RP2350 only: the RP2040 has no separately-managed XIP cache and no such library.
+if (PICO_RP2350)
+    target_link_libraries(remotewake hardware_xip_cache)
+endif()
 
 target_compile_definitions(remotewake PRIVATE
     # Core 1 is never launched, so flash_safe_execute() has nothing to coordinate with. Without
@@ -189,12 +212,23 @@ endif()
 
 # ── Linker assertion: the image must not reach the config sectors ─────────────
 #
-# See src/config/flash_reserve.ld. Appended to the SDK's memmap rather than replacing it.
-target_link_options(remotewake PRIVATE
-    -T${CMAKE_CURRENT_LIST_DIR}/src/config/flash_reserve.ld
-)
-set_target_properties(remotewake PROPERTIES
-    LINK_DEPENDS ${CMAKE_CURRENT_LIST_DIR}/src/config/flash_reserve.ld)
+# See src/config/flash_reserve.ld.in. Appended to the SDK's memmap rather than replacing it.
+#
+# The threshold is computed here rather than written down, so it follows the board: the config
+# lives in the top two sectors of flash, which is 0x103FE000 on a 4 MB Pico 2 W and 0x101FE000
+# on a 2 MB Pico W. A hardcoded constant would pass vacuously on the smaller board while the
+# runtime wrote past the end of the chip.
+math(EXPR RW_CFG_SLOT_A_XIP "0x10000000 + ${PICO_FLASH_SIZE_BYTES} - 2 * 4096"
+     OUTPUT_FORMAT HEXADECIMAL)
+message(STATUS "Config sectors reserved from ${RW_CFG_SLOT_A_XIP} (${PICO_BOARD}, "
+               "${PICO_FLASH_SIZE_BYTES} bytes of flash)")
+
+set(RW_FLASH_RESERVE_LD ${CMAKE_CURRENT_BINARY_DIR}/generated/flash_reserve.ld)
+configure_file(${CMAKE_CURRENT_LIST_DIR}/src/config/flash_reserve.ld.in
+               ${RW_FLASH_RESERVE_LD} @ONLY)
+
+target_link_options(remotewake PRIVATE -T${RW_FLASH_RESERVE_LD})
+set_target_properties(remotewake PROPERTIES LINK_DEPENDS ${RW_FLASH_RESERVE_LD})
 
 # ── Outputs ───────────────────────────────────────────────────────────────────
 

@@ -61,9 +61,37 @@ export const FLAG = {
   WOL_UNICAST: 1 << 2,
 };
 
-/** Slot addresses in the RP2350's XIP window (4 MB part). */
-export const SLOT_A_XIP = 0x103fe000;
-export const SLOT_B_XIP = 0x103ff000;
+/** Base of the XIP window on every RP2 part. */
+export const XIP_BASE = 0x10000000;
+
+/**
+ * Supported boards.
+ *
+ * The config lives in the top two sectors of flash, so its address depends on how much flash
+ * the board has — and the UF2 family ID depends on which chip it is. The two are bound together
+ * here rather than chosen separately, because the failure modes are wildly asymmetric: a UF2
+ * with the wrong family is simply refused by the bootloader, while one with the right family
+ * and the wrong address is *accepted* and writes a config record into the middle of the
+ * firmware image. One is a loud no-op; the other bricks the device.
+ *
+ * @type {Record<string, {flashSize: number, family: number, chip: string}>}
+ */
+export const BOARDS = {
+  pico2_w: { flashSize: 4 * 1024 * 1024, family: 0xe48bff59, chip: 'RP2350' },
+  pico_w:  { flashSize: 2 * 1024 * 1024, family: 0xe48bff56, chip: 'RP2040' },
+};
+
+export const DEFAULT_BOARD = 'pico2_w';
+
+/** XIP addresses of the two config slots for a given flash size. */
+export function slotAddresses(flashSize) {
+  const slotB = XIP_BASE + flashSize - SECTOR_SIZE;
+  return { a: slotB - SECTOR_SIZE, b: slotB };
+}
+
+/** Slot addresses for the default board, kept for callers that do not care about the board. */
+export const SLOT_A_XIP = slotAddresses(BOARDS[DEFAULT_BOARD].flashSize).a;
+export const SLOT_B_XIP = slotAddresses(BOARDS[DEFAULT_BOARD].flashSize).b;
 
 /**
  * Default `seq` for a generated image. A generated config cannot read what is already on the

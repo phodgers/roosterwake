@@ -328,7 +328,11 @@ static void test_response_encoders(void) {
     size_t n = rw_usbcfg_info_json(&view, buf, sizeof(buf));
     RW_CHECK(n > 0);
     RW_CHECK(strstr(buf, "\"proto\":1") != NULL);
-    RW_CHECK(strstr(buf, "\"board\":\"pico2_w\"") != NULL);
+    /* Against RW_BOARD_NAME, not a literal: the firmware supports two boards and the value is
+     * derived from the target, so pinning one here would fail the other's build for no reason.
+     * What matters is that INFO reports the board it was actually compiled for. */
+    RW_CHECK(strstr(buf, "\"board\":\"" RW_BOARD_NAME "\"") != NULL);
+    RW_CHECK(strcmp(RW_BOARD_NAME, "pico2_w") == 0 || strcmp(RW_BOARD_NAME, "pico_w") == 0);
     RW_CHECK(strstr(buf, "\"device_id\":\"a1b2c3d4e5f60718\"") != NULL);
     RW_CHECK(strstr(buf, "\"mac\":\"28:CD:C1:0A:1B:2C\"") != NULL);
     RW_CHECK(strstr(buf, "\"configured\":true") != NULL);

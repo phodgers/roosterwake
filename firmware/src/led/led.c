@@ -69,7 +69,21 @@ static bool            s_initialised;
 static const led_pattern_def_t k_wake_def = {k_wake_sent,
                                              sizeof(k_wake_sent) / sizeof(k_wake_sent[0])};
 
+/*
+ * Whether the radio — and therefore the LED — exists yet.
+ *
+ * The status LED is wired to the CYW43439, not to the RP2040/RP2350, so every "write" is an SPI
+ * transaction to a chip that may not have initialised. Driving it before cyw43_arch_init() has
+ * succeeded is a call into an uninitialised driver. This flag makes the whole module inert
+ * until rw_led_init() says otherwise, so a board whose radio failed can still run, and every
+ * rw_led_set() scattered through the error paths becomes a safe no-op rather than a fault.
+ */
+static bool s_available;
+
 static void write_led(bool on) {
+    if (!s_available) {
+        return;
+    }
     /* Each write is an SPI transaction to the CYW43439, so only spend one when the level
      * actually changes. */
     if (!s_initialised || on != s_last_written) {
@@ -88,6 +102,9 @@ static void begin(const led_pattern_def_t *def, bool transient) {
 }
 
 void rw_led_init(void) {
+    /* Called only once cyw43_arch_init() has succeeded, which is what makes the LED safe to
+     * touch at all. */
+    s_available   = true;
     s_initialised = false;
     begin(&k_patterns[RW_LED_SETUP_AP], false);
 }
@@ -109,6 +126,11 @@ void rw_led_wake_sent(void) {
 }
 
 void rw_led_task(void) {
+    if (!s_available) {
+        /* No radio, so no LED. Checked before the lazy init below, which would otherwise arm
+         * the module on a board that has no working CYW43 to talk to. */
+        return;
+    }
     if (s_active == NULL) {
         rw_led_init();
         return;

@@ -36,6 +36,10 @@
  * responsive without spinning the core flat out. */
 #define LOOP_SLICE_MS 10
 
+/* How often to retry a radio that did not initialise. Long enough not to thrash the SPI bus,
+ * short enough that a transient power-up fault clears itself while somebody is still watching. */
+#define RADIO_RETRY_MS 10000
+
 static rw_config_t s_config;
 
 /*
@@ -175,15 +179,23 @@ int main(void) {
         snprintf(s_config.device_id, sizeof(s_config.device_id), "%s", derived);
     }
 
-    rw_led_init();
-    if (!rw_net_init()) {
-        /* The radio is the device. Without it there is nothing to run, so say so on the LED
-         * and let the watchdog restart us in case it was a transient power-up fault. */
-        rw_led_set(RW_LED_ERROR);
-        while (true) {
-            rw_led_task();
-            sleep_ms(10);
-        }
+    /*
+     * The radio may fail to come up: a bad board, a brownout during the firmware load, or a
+     * CYW43 that did not answer. That used to spin here on a loop that fed no watchdog, so the
+     * device rebooted every eight seconds for ever — and USB never stayed enumerated long
+     * enough to ask it why. The one channel that does not depend on the radio was unusable
+     * exactly when it was the only channel left.
+     *
+     * So a radio failure is now survivable. The main loop runs, usbcfg answers INFO and STATUS
+     * over USB, and the radio is retried in the background. The LED cannot help here whatever
+     * we do — it hangs off the CYW43 chip that just failed — so nothing pretends otherwise.
+     */
+    bool            radio_ok    = rw_net_init();
+    absolute_time_t radio_retry = make_timeout_time_ms(RADIO_RETRY_MS);
+    if (radio_ok) {
+        rw_led_init();
+    } else {
+        RW_LOG_ERROR("radio: cyw43 did not initialise; USB configuration only, retrying");
     }
 
     check_factory_reset();
@@ -196,8 +208,11 @@ int main(void) {
     rw_relay_init(&s_config, &k_relay_hooks);
     rw_usbcfg_init(&s_config);
 
-    const bool provisioned = is_provisioned(&s_config);
-    if (provisioned) {
+    const bool provisioned = radio_ok && is_provisioned(&s_config);
+    if (!radio_ok) {
+        /* Nothing below this point can run without a radio. Fall straight into the loop, where
+         * usbcfg still answers and the retry lives. */
+    } else if (provisioned) {
         RW_LOG_INFO("config: seq %lu, %u target(s), relay %s", (unsigned long)s_config.seq,
                     s_config.target_count,
                     s_config.relay_url[0] ? s_config.relay_url : RW_DEFAULT_RELAY_URL);
@@ -223,12 +238,14 @@ int main(void) {
         /* Poll mode: this is the only place lwIP and the cyw43 driver run, so every callback
          * they raise lands on this context. That is what lets the TLS and WebSocket state
          * machines be written without re-entrancy guards. */
-        cyw43_arch_poll();
+        if (radio_ok) {
+            cyw43_arch_poll();
+        }
         rw_sys_feed_watchdog();
 
-        /* Serviced first, and unconditionally: a device that has wedged its relay session is
-         * exactly the device someone plugs into a laptop to ask what is wrong, and the answer
-         * has to still arrive. */
+        /* Serviced first, and unconditionally: a device that has wedged its relay session — or
+         * never got a radio at all — is exactly the device someone plugs into a laptop to ask
+         * what is wrong, and the answer has to still arrive. */
         rw_usbcfg_task();
 
         /*
@@ -236,17 +253,37 @@ int main(void) {
          * second to live. Starting a TLS handshake or a flash write in that window achieves
          * nothing and risks being interrupted half-way, so the loop coasts on the LED alone.
          */
-        if (!rw_usbcfg_reboot_pending()) {
+        if (radio_ok && !rw_usbcfg_reboot_pending()) {
             rw_net_task();
             rw_arp_learn_tick();
             rw_relay_task();
             rw_provisioning_task();
         }
 
-        update_led(provisioned);
-        rw_led_task();
+        if (!radio_ok && time_reached(radio_retry)) {
+            /* Retry rather than reboot. A reboot loop takes USB down with it, and USB is the
+             * only way anyone can find out what is wrong with a device whose radio is dead. */
+            RW_LOG_WARN("radio: retrying cyw43 initialisation");
+            radio_ok = rw_net_init();
+            if (radio_ok) {
+                RW_LOG_INFO("radio: came up on retry; rebooting into the normal path");
+                rw_sys_reboot(100);
+            }
+            radio_retry = make_timeout_time_ms(RADIO_RETRY_MS);
+        }
 
-        /* Sleeps until the driver has work or the slice expires, whichever comes first. */
-        cyw43_arch_wait_for_work_until(make_timeout_time_ms(LOOP_SLICE_MS));
+        if (radio_ok) {
+            update_led(provisioned);
+            rw_led_task();
+        }
+
+        if (radio_ok) {
+            /* Sleeps until the driver has work or the slice expires, whichever comes first. */
+            cyw43_arch_wait_for_work_until(make_timeout_time_ms(LOOP_SLICE_MS));
+        } else {
+            /* No driver to wait on. A plain sleep still keeps usbcfg responsive and the
+             * watchdog fed, which is the entire job in this state. */
+            sleep_ms(LOOP_SLICE_MS);
+        }
     }
 }

@@ -55,8 +55,19 @@ _Static_assert(sizeof(RW_SETUP_SSID_PREFIX) - 1 + RW_SETUP_SSID_SUFFIX_LEN <= 32
 /* Firmware version reported in `hello`, `status_result` and `INFO`. */
 #define RW_FW_VERSION "1.0.0"
 
-/* Board identifier reported in `hello` and `INFO`. */
+/*
+ * Board identifier reported in `hello` (PROTOCOL.md §4) and `INFO` (usbcfg.md §4).
+ *
+ * Derived, not written down. This value is how a support conversation establishes which chip is
+ * in front of it, and a device that reports the wrong board is worse than one that reports
+ * nothing — the two differ in flash size, in where the config lives, and in whether the
+ * randomness behind TLS comes from a hardware TRNG.
+ */
+#if defined(PICO_RP2350) && PICO_RP2350
 #define RW_BOARD_NAME "pico2_w"
+#else
+#define RW_BOARD_NAME "pico_w"
+#endif
 
 /*
  * Capabilities advertised in `hello` (PROTOCOL.md §4). Each one gates a relay→device command,
