@@ -45,6 +45,7 @@ set(RW_PORTABLE_SOURCES
     src/net/url.c
     src/proto/auth.c
     src/proto/json.c
+    src/usbcfg/cmdline.c
     src/vendor/jsmn.c
     src/wol/magic.c
     src/ws/ws_frame.c
@@ -65,6 +66,7 @@ set(RW_DEVICE_SOURCES
     src/tls/ca_bundle.c
     src/tls/ca_bundle_custom.c
     src/tls/tls.c
+    src/usbcfg/usbcfg.c
     src/wol/wol.c
     src/ws/ws.c
 )

@@ -107,7 +107,16 @@ Scan for Wi-Fi networks and return what **the device** can see. Takes up to 10 s
 ```
 
 Sorted by signal strength descending, duplicate SSIDs collapsed to the strongest. Hidden
-networks appear with `"ssid":""` and must be entered manually.
+networks appear with `"ssid":""` and must be entered manually. At most 20 networks are
+returned; in a dense block of flats the weakest are dropped rather than the response truncated.
+
+**`auth` is a display hint, not a fact.** It is one of `open`, `wpa`, `wpa2`, `wpa3` or
+`secured`. The CYW43439's scan results carry a capability byte that distinguishes open from WPA
+from WPA2, but **cannot distinguish WPA2 from WPA3** — both present as an AES-PSK capability,
+and the SAE bit that would separate them is not in the field. A WPA3 network is therefore
+reported as `wpa2`. Use this to pick a padlock icon, never to decide how to authenticate:
+`SET_WIFI` stages an automatic auth mode and the join negotiates whatever the router offers, so
+nothing depends on this value being exact.
 
 This is the device's view, not the host computer's, and the difference matters constantly: a
 laptop on 5 GHz across the house sees a completely different world from a dongle behind the

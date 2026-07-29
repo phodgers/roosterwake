@@ -25,6 +25,7 @@
 #include "sys/sys.h"
 #include "sys/wallclock.h"
 #include "tls/tls.h"
+#include "usbcfg/usbcfg.h"
 
 /* config-format.md §8: hold BOOTSEL for five seconds at power-on. Sampled after the watchdog
  * is running, so a user holding the button does not trip it. */
@@ -192,6 +193,7 @@ int main(void) {
     }
 
     rw_relay_init(&s_config, &k_relay_hooks);
+    rw_usbcfg_init(&s_config);
 
     const bool provisioned = is_provisioned(&s_config);
     if (provisioned) {
@@ -218,9 +220,21 @@ int main(void) {
         cyw43_arch_poll();
         rw_sys_feed_watchdog();
 
-        rw_net_task();
-        rw_arp_learn_tick();
-        rw_relay_task();
+        /* Serviced first, and unconditionally: a device that has wedged its relay session is
+         * exactly the device someone plugs into a laptop to ask what is wrong, and the answer
+         * has to still arrive. */
+        rw_usbcfg_task();
+
+        /*
+         * Once a COMMIT, REBOOT or FACTORY_RESET has been acknowledged the device has under a
+         * second to live. Starting a TLS handshake or a flash write in that window achieves
+         * nothing and risks being interrupted half-way, so the loop coasts on the LED alone.
+         */
+        if (!rw_usbcfg_reboot_pending()) {
+            rw_net_task();
+            rw_arp_learn_tick();
+            rw_relay_task();
+        }
 
         update_led(provisioned);
         rw_led_task();
