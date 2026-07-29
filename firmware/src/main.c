@@ -156,9 +156,19 @@ int main(void) {
         rw_config_init(&s_config);
     }
 
-    /* Diagnostics are opt-in (usbcfg.md §7). Set before anything else logs, so a device with
-     * the flag on captures its own start-up. */
+    /*
+     * Diagnostics are opt-in (usbcfg.md §7). Set before anything else logs, so a device with
+     * the flag on captures its own start-up.
+     *
+     * RW_FORCE_DIAG_LOG overrides the flag at build time. It exists because the config flag is
+     * unreachable on a device that has no configuration yet — which is precisely the state
+     * setup mode runs in, and therefore precisely the state whose logs are hardest to get.
+     */
+#ifdef RW_FORCE_DIAG_LOG
+    rw_log_set_enabled(true);
+#else
     rw_log_set_enabled((s_config.flags & RW_CFG_FLAG_DIAG_LOG) != 0);
+#endif
 
     RW_LOG_INFO("%s %s (%s), reset reason %s", RW_PRODUCT_NAME, RW_FW_VERSION, RW_BOARD_NAME,
                 rw_sys_reset_reason());

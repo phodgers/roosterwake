@@ -49,13 +49,29 @@ size_t rw_portal_api_info(char *buf, size_t cap);
 size_t rw_portal_api_scan(char *buf, size_t cap);
 
 /*
- * Attempt to join `ssid` with `psk`, blocking for up to 20 seconds.
+ * Start a join attempt and return immediately.
  *
- * Reports `badauth`, `notfound` or `timeout` distinctly, because they are three different
- * problems with three different fixes and "couldn't connect" sends people to the wrong one.
- * On success the credentials are staged, not written — nothing reaches flash before commit.
+ * This cannot be synchronous, and finding that out cost a hardware session. The CYW43439 holds
+ * an AP and a station on **one channel**, so joining a network on a different channel takes the
+ * setup hotspot with it — the phone loses its connection to us part-way through, and any
+ * response we were holding open dies with it. A blocking join also runs a 20-second wait inside
+ * an lwIP receive callback, pumping the stack re-entrantly from within its own callback, which
+ * is exactly the re-entrancy this firmware's poll-mode design exists to prevent.
+ *
+ * So the attempt is a state machine driven by rw_provisioning_task(), and the *result is
+ * stored*. The phone can lose the hotspot, reconnect once it comes back, poll again and still
+ * learn what happened. Nothing is written to flash either way — a successful join only stages
+ * the credentials.
  */
-size_t rw_portal_api_join(const char *body, size_t len, char *buf, size_t cap);
+size_t rw_portal_api_join_start(const char *body, size_t len, char *buf, size_t cap);
+
+/*
+ * Report the current attempt: joining, ok, badauth, notfound or timeout.
+ *
+ * The last three are kept distinct because they are three different problems with three
+ * different fixes, and "couldn't connect" sends people to check the wrong one.
+ */
+size_t rw_portal_api_join_status(char *buf, size_t cap);
 
 size_t rw_portal_api_config(const char *body, size_t len, char *buf, size_t cap);
 

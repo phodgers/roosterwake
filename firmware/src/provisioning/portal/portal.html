@@ -277,24 +277,53 @@ function pick(n){
 }
 
 const JOIN_ERR={
+  timeout:"Connected to the network but got no address. Check the router's DHCP is on.",
   badauth:"That password was rejected. Check for capitals and stray spaces.",
   notfound:"The dongle can't see that network any more. Scan again.",
   timeout:"Connected to the network but got no address. Check the router's DHCP is on.",
   dhcp_timeout:"Connected to the network but got no address. Check the router's DHCP is on."
 };
 
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+/* The radio can only be on one channel, so joining your network may drop this hotspot for a
+   few seconds. The device therefore remembers the outcome and we poll for it — a fetch that
+   fails because the Wi-Fi went away is expected, not an error, so it is retried. */
 async function join(){
   if(busy)return; busy=true;
   const b=$("#join"); b.disabled=true;
   b.innerHTML='<span class="spin"></span>Connecting…';
-  msg("#m-pw","");
-  const j=await api("/api/join",{ssid:net.ssid,psk:$("#psk").value});
-  busy=false; b.disabled=false; b.textContent="Connect";
-  if(j.ok){
-    msg("#m-pw","Connected — got "+esc(j.ip)+".","ok");
-    setTimeout(()=>show("v-tgt"),700);
-  }else{
-    msg("#m-pw",JOIN_ERR[j.err]||("Couldn't connect ("+esc(j.err||"unknown")+").")); }
+  msg("#m-pw","This can take up to 30 seconds, and the setup network may briefly drop.","warn");
+
+  const started=await api("/api/join",{ssid:net.ssid,psk:$("#psk").value});
+  if(started.err&&started.err!=="busy"){
+    busy=false;b.disabled=false;b.textContent="Connect";
+    msg("#m-pw",JOIN_ERR[started.err]||("Couldn't start ("+esc(started.err)+")."));
+    return;
+  }
+
+  const deadline=Date.now()+45000;
+  let state="joining";
+  while(Date.now()<deadline){
+    await sleep(1500);
+    let s;
+    try{ s=await api("/api/join") }catch(e){ continue }   // hotspot still down; keep trying
+    if(!s||!s.state) continue;
+    state=s.state;
+    if(state!=="joining"){
+      busy=false;b.disabled=false;b.textContent="Connect";
+      if(state==="ok"){
+        msg("#m-pw","Connected"+(s.ip?" — got "+esc(s.ip):"")+".","ok");
+        setTimeout(()=>show("v-tgt"),700);
+      }else{
+        msg("#m-pw",JOIN_ERR[state]||("Couldn't connect ("+esc(state)+")."));
+      }
+      return;
+    }
+  }
+  busy=false;b.disabled=false;b.textContent="Connect";
+  msg("#m-pw","Gave up waiting. If the setup network dropped, rejoin it and try again — the "+
+    "dongle remembers what happened.");
 }
 
 /* Format as the user types, but never fight the caret: only reformat when they are typing at

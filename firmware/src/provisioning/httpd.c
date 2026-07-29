@@ -33,7 +33,8 @@ typedef struct {
     const uint8_t *body;
     size_t         body_len;
 
-    size_t sent; /* bytes of hdr+body handed to lwIP and acknowledged */
+    size_t sent;  /* bytes of hdr+body handed to lwIP */
+    size_t acked; /* bytes the peer has actually acknowledged */
 
     char   json[JSON_MAX];
     bool   close_when_sent;
@@ -92,29 +93,42 @@ static void pump(conn_t *c) {
         }
         size_t chunk = remaining < space ? remaining : space;
 
+        /*
+         * One segment at a time. A single large tcp_write has to be split internally anyway,
+         * and asking for it in one call makes the allocation all-or-nothing: either every
+         * segment is available or the whole write fails and nothing moves.
+         */
+        if (chunk > TCP_MSS) {
+            chunk = TCP_MSS;
+        }
+
         const void *src;
-        u8_t        flags;
         if (c->sent < c->hdr_len) {
-            /* Headers live in the connection struct, which is reused, so lwIP must copy them. */
             size_t hdr_left = c->hdr_len - c->sent;
             if (chunk > hdr_left) {
                 chunk = hdr_left;
             }
-            src   = c->hdr + c->sent;
-            flags = TCP_WRITE_FLAG_COPY;
+            src = c->hdr + c->sent;
         } else {
-            size_t off = c->sent - c->hdr_len;
-            src        = c->body + off;
-            /*
-             * The portal blob is in flash and immortal, so lwIP may reference it directly —
-             * that is what lets a 6 KB page be served from a device with 520 KB of SRAM without
-             * a 6 KB copy. JSON responses live in the connection struct and must be copied.
-             */
-            flags = (c->body == (const uint8_t *)c->json) ? TCP_WRITE_FLAG_COPY : 0;
+            src = c->body + (c->sent - c->hdr_len);
         }
 
-        err_t err = tcp_write(c->pcb, src, (u16_t)chunk, flags);
+        /*
+         * Always copy, even for the portal blob, which is in flash and immortal and could in
+         * principle be referenced directly.
+         *
+         * Zero-copy was the original design and it does not work here: a no-copy tcp_write
+         * needs a PBUF_ROM pbuf per segment from a pool this build cannot satisfy, so the body
+         * write failed with ERR_MEM every single time — on a completely drained send buffer,
+         * at every chunk size. The header went out, the body never did, and the page hung.
+         *
+         * The copy it avoids is bounded by TCP_SND_BUF, which is memory lwIP has already
+         * reserved. Trading a copy this device can easily afford for a failure mode it cannot
+         * was a bad bargain, and it was invisible until a real phone asked for a real page.
+         */
+        err_t err = tcp_write(c->pcb, src, (u16_t)chunk, TCP_WRITE_FLAG_COPY);
         if (err == ERR_MEM) {
+            /* Out of send buffer for now; tcp_sent will call us back. Not an error. */
             break;
         }
         if (err != ERR_OK) {
@@ -126,7 +140,16 @@ static void pump(conn_t *c) {
 
     tcp_output(c->pcb);
 
-    if (c->sent >= total && c->close_when_sent) {
+    /*
+     * Close on acknowledgement, not on submission.
+     *
+     * c->sent counts bytes handed to lwIP; c->acked counts bytes the peer confirmed. Closing on
+     * the former means calling tcp_close() with the tail of the response still in flight — and
+     * conn_close()'s fallback when tcp_close() cannot allocate its FIN is tcp_abort(), which
+     * discards exactly that unsent tail and sends an RST instead. The reader gets a truncated
+     * page and no error.
+     */
+    if (c->acked >= total && c->close_when_sent) {
         conn_close(c);
     }
 }
@@ -156,6 +179,7 @@ static void respond(conn_t *c, const char *status, const char *content_type, con
     c->body            = (const uint8_t *)body;
     c->body_len        = body_len;
     c->sent            = 0;
+    c->acked           = 0;
     c->close_when_sent = true;
     pump(c);
 }
@@ -186,6 +210,7 @@ static void respond_redirect(conn_t *c) {
 
 static void handle_request(conn_t *c, const rw_http_request_t *r, const char *body,
                            size_t body_len) {
+    RW_LOG_INFO("http: method=%d path=%s", (int)r->method, r->path);
     /* CORS preflight: the portal is same-origin, but a browser extension or a user driving the
      * API from another page will send one, and a bare 200 is cheaper than a support question. */
     if (r->method == RW_HTTP_OPTIONS) {
@@ -206,11 +231,19 @@ static void handle_request(conn_t *c, const rw_http_request_t *r, const char *bo
         return;
     }
     if (strcmp(r->path, "/api/join") == 0) {
-        if (r->method != RW_HTTP_POST) {
-            respond(c, "405 Method Not Allowed", "text/plain", "", 0, "Allow: POST\r\n", false);
+        /* POST starts an attempt; GET reports the one in progress. The result is held on the
+         * device precisely so a phone that lost the hotspot mid-attempt can come back and ask
+         * what happened, rather than the answer dying with the connection. */
+        if (r->method == RW_HTTP_GET) {
+            respond_json(c, rw_portal_api_join_status(c->json, sizeof(c->json)));
             return;
         }
-        respond_json(c, rw_portal_api_join(body, body_len, c->json, sizeof(c->json)));
+        if (r->method != RW_HTTP_POST) {
+            respond(c, "405 Method Not Allowed", "text/plain", "", 0,
+                    "Allow: GET, POST\r\n", false);
+            return;
+        }
+        respond_json(c, rw_portal_api_join_start(body, body_len, c->json, sizeof(c->json)));
         return;
     }
     if (strcmp(r->path, "/api/config") == 0) {
@@ -303,16 +336,19 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
 
 static err_t on_sent(void *arg, struct tcp_pcb *pcb, u16_t len) {
     (void)pcb;
-    (void)len;
     conn_t *c = (conn_t *)arg;
     if (c != NULL) {
+        c->acked += len;
+        /* Refreshed on progress, so a transfer that is moving is never dropped by the idle
+         * timeout, and one that has genuinely stalled still is. */
+        c->deadline = make_timeout_time_ms(RW_HTTPD_IDLE_TIMEOUT_MS);
         pump(c);
     }
     return ERR_OK;
 }
 
 static void on_err(void *arg, err_t err) {
-    (void)err;
+    RW_LOG_ERROR("http: tcp err %d", (int)err);
     conn_t *c = (conn_t *)arg;
     if (c != NULL) {
         /* lwIP has already freed the pcb; clearing it stops conn_close touching freed memory. */

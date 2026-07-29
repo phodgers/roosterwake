@@ -12,6 +12,7 @@
 #include "lwip/udp.h"
 
 #include "provisioning/dns_msg.h"
+#include "rw_log.h"
 
 static struct udp_pcb *s_pcb;
 static uint32_t        s_answer_ip;
@@ -30,6 +31,7 @@ static void on_query(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip_ad
 
     rw_dns_query_t q;
     if (!rw_dns_parse_query(req, len, &q)) {
+        RW_LOG_WARN("dns: unparseable query, %u bytes", (unsigned)len);
         /*
          * Silently dropped. A malformed query gets no FORMERR: replying to unparseable UDP from
          * an unauthenticated source turns this into a reflector, and nothing on a setup hotspot

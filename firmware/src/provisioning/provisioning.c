@@ -38,6 +38,55 @@ static bool         s_active;
 static bool         s_reboot_pending;
 static absolute_time_t s_reboot_at;
 
+/*
+ * The join state machine. Driven by rw_provisioning_task() on the main loop, never from inside
+ * a network callback, and its result outlives the HTTP request that started it — which is the
+ * whole point: the phone may lose the hotspot while the radio is on another channel.
+ */
+typedef enum {
+    JOIN_IDLE = 0,
+    JOIN_PENDING,  /* credentials accepted, attempt not yet started */
+    JOIN_RUNNING,  /* association in progress */
+    JOIN_OK,
+    JOIN_BADAUTH,
+    JOIN_NOTFOUND,
+    JOIN_TIMEOUT,
+} join_state_t;
+
+static join_state_t    s_join = JOIN_IDLE;
+static char            s_join_ssid[RW_CFG_SSID_LEN];
+static char            s_join_psk[RW_CFG_PSK_LEN];
+static char            s_join_ip[16];
+static absolute_time_t s_join_deadline;
+
+/*
+ * Reach a terminal state and hand the radio back to the hotspot.
+ *
+ * The CYW43439 has one radio. Leaving the station associated after the attempt — or, worse,
+ * leaving it retrying a network it could not join — means the AP competes for the channel for
+ * the rest of setup, which shows up as a portal that loads once and then goes intermittent.
+ *
+ * Staying connected buys nothing. The attempt exists only to prove the credentials work; the
+ * device joins for real after commit and reboot. So the moment we know the answer, we let go.
+ */
+static void join_finish(join_state_t state) {
+    s_join = state;
+    cyw43_wifi_leave(&cyw43_state, CYW43_ITF_STA);
+}
+
+static const char *join_state_name(void) {
+    switch (s_join) {
+        case JOIN_IDLE:     return "idle";
+        case JOIN_PENDING:
+        case JOIN_RUNNING:  return "joining";
+        case JOIN_OK:       return "ok";
+        case JOIN_BADAUTH:  return "badauth";
+        case JOIN_NOTFOUND: return "notfound";
+        case JOIN_TIMEOUT:  return "timeout";
+    }
+    return "idle";
+}
+
 /* ── Hotspot ─────────────────────────────────────────────────────────────── */
 
 static void build_ssid(char *out, size_t cap) {
@@ -115,7 +164,70 @@ bool rw_provisioning_active(void) {
     return s_active;
 }
 
+/* Runs on the main loop, so lwIP is never re-entered from inside one of its own callbacks. */
+static void join_task(void) {
+    if (s_join == JOIN_PENDING) {
+        int rc = cyw43_arch_wifi_connect_async(
+            s_join_ssid, s_join_psk[0] ? s_join_psk : NULL,
+            s_join_psk[0] ? CYW43_AUTH_WPA2_AES_PSK : CYW43_AUTH_OPEN);
+        if (rc != 0) {
+            RW_LOG_ERROR("portal: join could not start (%d)", rc);
+            s_join = JOIN_TIMEOUT;
+            return;
+        }
+        RW_LOG_INFO("portal: joining \"%s\"", s_join_ssid);
+        s_join          = JOIN_RUNNING;
+        s_join_deadline = make_timeout_time_ms(JOIN_TIMEOUT_MS);
+        return;
+    }
+
+    if (s_join != JOIN_RUNNING) {
+        return;
+    }
+
+    int status = cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA);
+    switch (status) {
+        case CYW43_LINK_UP: {
+            /* Only now are the credentials staged. Still nothing in flash: that waits for
+             * commit, so abandoning setup here leaves the device exactly as it was. */
+            if (rw_stage_set_wifi(&s_stage, s_join_ssid,
+                                  s_join_psk[0] ? s_join_psk : NULL) != RW_UERR_NONE) {
+                join_finish(JOIN_TIMEOUT);
+                return;
+            }
+            /* Captured before letting go: the address is gone the moment we leave, and it is
+             * the one piece of evidence that says "this really worked". */
+            const ip4_addr_t *addr = netif_ip4_addr(&cyw43_state.netif[CYW43_ITF_STA]);
+            snprintf(s_join_ip, sizeof(s_join_ip), "%s", ip4addr_ntoa(addr));
+            RW_LOG_INFO("portal: joined, got %s", s_join_ip);
+            join_finish(JOIN_OK);
+            return;
+        }
+        case CYW43_LINK_BADAUTH:
+            RW_LOG_WARN("portal: join rejected (bad password)");
+            join_finish(JOIN_BADAUTH);
+            return;
+        case CYW43_LINK_NONET:
+            RW_LOG_WARN("portal: network not found");
+            join_finish(JOIN_NOTFOUND);
+            return;
+        case CYW43_LINK_FAIL:
+            RW_LOG_WARN("portal: join failed");
+            join_finish(JOIN_TIMEOUT);
+            return;
+        default:
+            break;
+    }
+
+    if (time_reached(s_join_deadline)) {
+        RW_LOG_WARN("portal: join timed out");
+        join_finish(JOIN_TIMEOUT);
+    }
+}
+
 void rw_provisioning_task(void) {
+    join_task();
+
     if (s_reboot_pending && time_reached(s_reboot_at)) {
         RW_LOG_INFO("portal: committed, restarting");
         rw_provisioning_stop();
@@ -215,7 +327,7 @@ size_t rw_portal_api_scan(char *buf, size_t cap) {
     return rw_jw_finish(&w);
 }
 
-size_t rw_portal_api_join(const char *body, size_t len, char *buf, size_t cap) {
+size_t rw_portal_api_join_start(const char *body, size_t len, char *buf, size_t cap) {
     char ssid[RW_CFG_SSID_LEN];
     char psk[RW_CFG_PSK_LEN];
 
@@ -226,61 +338,43 @@ size_t rw_portal_api_join(const char *body, size_t len, char *buf, size_t cap) {
         psk[0] = '\0'; /* open network */
     }
 
-    /*
-     * The hotspot stays up through the attempt. The CYW43439 can hold an AP and a station at
-     * once, but only on one channel — so if the target network is on a different channel the
-     * radio follows it and the phone's connection to the portal drops for a few seconds. The
-     * portal's fetch survives a brief drop; the alternative, tearing the AP down first, loses
-     * the page outright and gives the user nothing to come back to.
-     */
-    int rc = cyw43_arch_wifi_connect_async(ssid, psk[0] ? psk : NULL,
-                                           psk[0] ? CYW43_AUTH_WPA2_AES_PSK : CYW43_AUTH_OPEN);
-    if (rc != 0) {
-        return json_err(buf, cap, "internal");
+    if (s_join == JOIN_RUNNING || s_join == JOIN_PENDING) {
+        return json_err(buf, cap, "busy");
     }
 
-    absolute_time_t deadline = make_timeout_time_ms(JOIN_TIMEOUT_MS);
-    int             status   = CYW43_LINK_DOWN;
-    while (!time_reached(deadline)) {
-        status = cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA);
-        if (status == CYW43_LINK_UP || status == CYW43_LINK_FAIL ||
-            status == CYW43_LINK_NONET || status == CYW43_LINK_BADAUTH) {
-            break;
-        }
-        rw_sys_pump_ms(100);
-    }
+    snprintf(s_join_ssid, sizeof(s_join_ssid), "%s", ssid);
+    snprintf(s_join_psk, sizeof(s_join_psk), "%s", psk);
+    s_join = JOIN_PENDING;
 
     /*
-     * Three distinct answers, because they are three different problems: a wrong password, a
-     * network that is not there, and an association that succeeded but produced no address.
-     * Collapsing them into "couldn't connect" sends people to check the wrong thing, and this
-     * screen is the whole support surface of setup.
+     * Answered immediately, before the radio moves. Whatever happens to the hotspot during the
+     * attempt, this response is already on its way — and the outcome is waiting in
+     * /api/join when the phone comes back.
      */
-    switch (status) {
-        case CYW43_LINK_BADAUTH:
-            return json_err(buf, cap, "badauth");
-        case CYW43_LINK_NONET:
-            return json_err(buf, cap, "notfound");
-        case CYW43_LINK_UP:
-            break;
-        default:
-            return json_err(buf, cap, "timeout");
-    }
-
-    /* Joined. Stage the credentials — nothing reaches flash before commit. */
-    if (rw_stage_set_wifi(&s_stage, ssid, psk[0] ? psk : NULL) != RW_UERR_NONE) {
-        return json_err(buf, cap, "bad_arg");
-    }
-
-    char ip[16];
-    const ip4_addr_t *addr = netif_ip4_addr(&cyw43_state.netif[CYW43_ITF_STA]);
-    snprintf(ip, sizeof(ip), "%s", ip4addr_ntoa(addr));
-
     rw_jw_t w;
     rw_jw_init(&w, buf, cap);
     rw_jw_raw(&w, "{");
     rw_jw_key(&w, "ok");
     rw_jw_raw(&w, "true,");
+    rw_jw_key(&w, "state");
+    rw_jw_str(&w, "joining");
+    rw_jw_raw(&w, "}");
+    return rw_jw_finish(&w);
+}
+
+size_t rw_portal_api_join_status(char *buf, size_t cap) {
+    /* The address recorded at the moment of success, not read live: by the time anyone asks,
+     * the station has already left so the interface no longer has one. */
+    const char *ip = (s_join == JOIN_OK) ? s_join_ip : "";
+
+    rw_jw_t w;
+    rw_jw_init(&w, buf, cap);
+    rw_jw_raw(&w, "{");
+    rw_jw_key(&w, "ok");
+    rw_jw_raw(&w, s_join == JOIN_OK ? "true," : "false,");
+    rw_jw_key(&w, "state");
+    rw_jw_str(&w, join_state_name());
+    rw_jw_raw(&w, ",");
     rw_jw_key(&w, "ip");
     rw_jw_str(&w, ip);
     rw_jw_raw(&w, "}");

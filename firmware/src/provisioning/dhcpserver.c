@@ -132,6 +132,7 @@ static void on_datagram(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip
 
     rw_dhcp_request_t req;
     if (!rw_dhcp_parse(buf, len, &req)) {
+        RW_LOG_WARN("dhcp: unparseable datagram, %u bytes", (unsigned)len);
         return;
     }
 

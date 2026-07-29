@@ -41,6 +41,11 @@ set(RW_TLS_CUSTOM_CA "" CACHE FILEPATH "PEM file replacing the built-in root CA 
 # firmware flashes the error LED pattern continuously and logs on every connection.
 option(RW_TLS_INSECURE "Skip TLS certificate verification (INSECURE)" OFF)
 
+# Force diagnostic logging on regardless of the config flag. The flag lives in the config
+# record, which an unprovisioned device does not have - so setup mode, the one state where
+# logs are most needed, is the one state that cannot switch them on.
+option(RW_FORCE_DIAG_LOG "Enable diagnostic logging at boot, ignoring the config flag" OFF)
+
 include(pico_sdk_import.cmake)
 
 project(remotewake_firmware C CXX ASM)
@@ -186,6 +191,11 @@ set_source_files_properties(${RW_PORTABLE_SOURCES} ${RW_DEVICE_SOURCES}
     PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra;-Wshadow;-Wundef;-Wswitch-enum;-Werror")
 
 # ── TLS build options ─────────────────────────────────────────────────────────
+
+if (RW_FORCE_DIAG_LOG)
+    message(STATUS "Diagnostic logging forced ON - this build chatters on the USB serial port")
+    target_compile_definitions(remotewake PRIVATE RW_FORCE_DIAG_LOG=1)
+endif()
 
 if (RW_TLS_INSECURE)
     message(WARNING
