@@ -69,6 +69,7 @@ int main(int argc, char **argv) {
         {"json", test_json},
         {"url", test_url},
         {"usbcfg", test_usbcfg},
+        {"provisioning", test_provisioning},
     };
 
     for (size_t i = 0; i < sizeof(suites) / sizeof(suites[0]); i++) {

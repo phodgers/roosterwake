@@ -80,6 +80,7 @@ void test_auth(void);
 void test_json(void);
 void test_url(void);
 void test_usbcfg(void);
+void test_provisioning(void);
 
 /* Path to firmware/test, passed in by CMake so the vectors are found wherever the build runs. */
 extern const char *rw_test_data_dir;

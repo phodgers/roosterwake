@@ -59,6 +59,8 @@ set(RW_PORTABLE_SOURCES
     ${RW_SRC}/net/url.c
     ${RW_SRC}/proto/auth.c
     ${RW_SRC}/proto/json.c
+    ${RW_SRC}/provisioning/dhcp_msg.c
+    ${RW_SRC}/provisioning/dns_msg.c
     ${RW_SRC}/usbcfg/cmdline.c
     ${RW_SRC}/vendor/jsmn.c
     ${RW_SRC}/wol/magic.c
@@ -77,6 +79,7 @@ set(TEST_SOURCES
     test_json.c
     test_url.c
     test_usbcfg.c
+    test_provisioning.c
 )
 
 add_executable(rw_tests ${TEST_SOURCES} ${RW_PORTABLE_SOURCES} ${MBEDTLS_SOURCES})
