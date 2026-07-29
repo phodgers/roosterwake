@@ -30,7 +30,7 @@
 
 /* Long enough for DHCP on a slow router, short enough that the portal's spinner does not look
  * hung. The plan's figure. */
-#define JOIN_TIMEOUT_MS 20000
+#define JOIN_TIMEOUT_MS 30000
 
 static rw_config_t *s_live;
 static rw_stage_t   s_stage;
@@ -72,6 +72,9 @@ static absolute_time_t s_join_deadline;
 static void join_finish(join_state_t state) {
     s_join = state;
     cyw43_wifi_leave(&cyw43_state, CYW43_ITF_STA);
+    /* Take the interface back down too, so lwIP stops running DHCP on a netif we are no longer
+     * using and the radio is left to the hotspot alone. */
+    cyw43_arch_disable_sta_mode();
 }
 
 static const char *join_state_name(void) {
@@ -167,6 +170,20 @@ bool rw_provisioning_active(void) {
 /* Runs on the main loop, so lwIP is never re-entered from inside one of its own callbacks. */
 static void join_task(void) {
     if (s_join == JOIN_PENDING) {
+        /*
+         * Bring the station interface up before dialling.
+         *
+         * cyw43_arch_enable_sta_mode() is what calls cyw43_wifi_set_up() on CYW43_ITF_STA, and
+         * that is what puts the lwIP netif up and starts DHCP on it. Without it the association
+         * succeeds and then nothing else happens: no netif, so no DHCP, so no address, so the
+         * attempt sits at "connected, no IP" until it times out — which reads to the user as
+         * "check your router's DHCP", pointing at the one thing that was never at fault.
+         *
+         * net.c does this on the normal boot path. Setup mode did not, because it only ever
+         * enabled AP mode.
+         */
+        cyw43_arch_enable_sta_mode();
+
         int rc = cyw43_arch_wifi_connect_async(
             s_join_ssid, s_join_psk[0] ? s_join_psk : NULL,
             s_join_psk[0] ? CYW43_AUTH_WPA2_AES_PSK : CYW43_AUTH_OPEN);
@@ -185,7 +202,16 @@ static void join_task(void) {
         return;
     }
 
-    int status = cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA);
+    /*
+     * cyw43_tcpip_link_status(), not cyw43_wifi_link_status().
+     *
+     * The wifi one reports the *radio* link and tops out at CYW43_LINK_JOIN — it never returns
+     * CYW43_LINK_UP, so waiting for that value guaranteed a timeout no matter how well the join
+     * went. The tcpip one adds the netif's view: NOIP while DHCP is outstanding, UP once an
+     * address is held. It still passes the negative codes through unchanged, so the badauth and
+     * notfound cases below are unaffected.
+     */
+    int status = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
     switch (status) {
         case CYW43_LINK_UP: {
             /* Only now are the credentials staged. Still nothing in flash: that waits for
@@ -458,8 +484,12 @@ size_t rw_portal_api_commit(char *buf, size_t cap) {
         return json_err(buf, cap, rw_uerr_code(verr));
     }
 
-    rw_config_t       to_save = s_stage.cfg;
-    rw_flash_status_t st      = rw_config_flash_save(&to_save);
+    rw_config_t to_save = s_stage.cfg;
+    /* Mint a device token if this device has never had one. Nothing in the portal flow can
+     * supply one, and without it the device can authenticate to no relay at all. */
+    bool minted = rw_config_ensure_token(&to_save);
+
+    rw_flash_status_t st = rw_config_flash_save(&to_save);
     if (st != RW_FLASH_OK) {
         RW_LOG_ERROR("portal: commit failed (%d)", (int)st);
         return json_err(buf, cap, "flash_error");
@@ -492,7 +522,7 @@ size_t rw_portal_api_commit(char *buf, size_t cap) {
      * That is a deliberate asymmetry with the USB channel: this page is being read by the
      * person holding the device, on a network that exists for the next two seconds.
      */
-    if (to_save.token[0] != '\0') {
+    if (minted) {
         rw_jw_raw(&w, ",");
         rw_jw_key(&w, "token");
         rw_jw_str(&w, to_save.token);

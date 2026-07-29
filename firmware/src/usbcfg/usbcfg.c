@@ -269,6 +269,11 @@ static void cmd_commit(void) {
     }
 
     rw_config_t to_save = s_stage.cfg;
+    /* Same as the portal: a device with no token cannot authenticate to any relay. The value is
+     * never echoed back here — usbcfg.md §4 forbids it — so a self-hoster provisioning over USB
+     * reads it from their own relay's records or uses tools/mkconfig, which prints it. */
+    rw_config_ensure_token(&to_save);
+
     rw_flash_status_t st = rw_config_flash_save(&to_save);
     if (st != RW_FLASH_OK) {
         /* Nothing changed: rw_config_flash_save leaves the live slot alone on failure, so the

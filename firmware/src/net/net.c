@@ -194,7 +194,19 @@ void rw_net_task(void) {
         return;
     }
 
-    int link = cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA);
+    /*
+     * cyw43_tcpip_link_status(), not cyw43_wifi_link_status().
+     *
+     * The wifi one reports only the radio link and tops out at CYW43_LINK_JOIN — it can never
+     * return CYW43_LINK_UP. Polling it meant this loop waited for a value that does not exist,
+     * so a device that had associated *and* been given an address by DHCP still sat in
+     * RW_NET_JOINING until the DHCP deadline expired, then dropped a perfectly good association
+     * and reported "dhcp_timeout" for ever. Observed on hardware holding a valid lease.
+     *
+     * The tcpip one layers the netif's view on top: NOIP while DHCP is outstanding, UP once an
+     * address is held, and the negative error codes passed through unchanged.
+     */
+    int link = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
 
     switch (link) {
         case CYW43_LINK_BADAUTH:

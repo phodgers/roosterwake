@@ -78,8 +78,18 @@ static void derive_device_id(char *out) {
     rw_hex_encode(id.id, 8, out);
 }
 
+/*
+ * Enough configuration to join Wi-Fi and stop being a setup hotspot.
+ *
+ * Deliberately does **not** require a token. Joining a network and authenticating to a relay are
+ * two different capabilities, and conflating them meant a device provisioned through the captive
+ * portal — which has no way to obtain a token — rebooted into setup mode for ever, having
+ * apparently saved everything correctly. A device with credentials and no token now joins the
+ * network and simply does not reach the relay, which is a state the dashboard and the LED can
+ * both describe honestly.
+ */
 static bool is_provisioned(const rw_config_t *cfg) {
-    return cfg->ssid[0] != '\0' && cfg->device_id[0] != '\0' && cfg->token[0] != '\0';
+    return cfg->ssid[0] != '\0' && cfg->device_id[0] != '\0';
 }
 
 static void check_factory_reset(void) {

@@ -10,8 +10,31 @@
 #include "hardware/flash.h"
 #include "hardware/xip_cache.h"
 #include "pico/flash.h"
+#include "pico/rand.h"
 
+#include "proto/auth.h"
 #include "rw_log.h"
+
+bool rw_config_ensure_token(rw_config_t *cfg) {
+    if (cfg->token[0] != '\0') {
+        return false;
+    }
+
+    /*
+     * 32 bytes from the platform RNG, hex-encoded to the 64 characters PROTOCOL.md §2 specifies.
+     *
+     * On RP2350 pico_rand is seeded and continuously re-mixed from the hardware TRNG. RP2040 has
+     * no TRNG, so its entropy comes from ring-oscillator jitter plus the board id — weaker, and
+     * the reason the Pico 2 W is the product board rather than merely the faster one.
+     */
+    uint8_t raw[RW_TOKEN_BYTES];
+    for (size_t i = 0; i < sizeof(raw); i += 4) {
+        uint32_t word = get_rand_32();
+        memcpy(raw + i, &word, 4);
+    }
+    rw_hex_encode(raw, sizeof(raw), cfg->token);
+    return true;
+}
 
 /* A sector image is built in RAM before it is programmed. 4 KB of a 520 KB part, held only for
  * the duration of a save, is cheaper than programming in 256-byte pages from a source the

@@ -66,6 +66,20 @@ int rw_config_flash_active_slot(void);
 rw_flash_status_t rw_config_flash_save(rw_config_t *cfg);
 
 /*
+ * Give `cfg` a device token if it does not already have one, generated from the platform RNG.
+ *
+ * Called before any commit. A device provisioned through the captive portal has no token —
+ * nothing in that flow can supply one — and without it the device is not able to authenticate
+ * to any relay. It also used to mean the device did not count as provisioned at all, so it
+ * rebooted into setup mode for ever, having apparently saved everything correctly.
+ *
+ * Returns true if a new token was minted, which is what tells the caller to show it to the
+ * user. This is the only moment it is ever displayed: the usbcfg channel never returns it, so
+ * a self-hoster who needs it for their own relay's config has exactly this one chance.
+ */
+bool rw_config_ensure_token(rw_config_t *cfg);
+
+/*
  * Erase both slots (usbcfg FACTORY_RESET, and the BOOTSEL-held-at-power-on path).
  *
  * Slot B is erased first. If power is lost between the two erases the device comes back on
