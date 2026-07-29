@@ -1,8 +1,12 @@
 /**
  * Generate the golden vectors consumed by BOTH the C and JS config test suites.
  *
- * Run:  node tools/mkconfig/test/gen-vectors.mjs
+ * Run:  node tools/mkconfig/scripts/gen-vectors.mjs
  * Out:  firmware/test/vectors/config-v1.json
+ *
+ * It lives in scripts/ rather than test/ because `node --test <dir>` treats *every* .mjs file
+ * under a directory named `test` as a test file. Sitting next to the suite it feeds, this
+ * generator was collected as a test, ran its side effects, and failed the run.
  *
  * The generated file is committed. Regenerating it should produce a byte-identical result;
  * if it does not, the encoder changed, and that change must be mirrored in
@@ -119,7 +123,7 @@ const vectors = cases.map((c) => {
 
 const doc = {
   $comment:
-    'GENERATED FILE - do not hand-edit. Produced by tools/mkconfig/test/gen-vectors.mjs. ' +
+    'GENERATED FILE - do not hand-edit. Produced by tools/mkconfig/scripts/gen-vectors.mjs. ' +
     'Consumed by firmware/test/test_config.c AND tools/mkconfig/test/encode.test.mjs. ' +
     'If you change the encoder, regenerate this and update BOTH implementations in the same commit.',
   format_version: 1,

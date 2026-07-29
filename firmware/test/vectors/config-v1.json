@@ -1,5 +1,5 @@
 {
-  "$comment": "GENERATED FILE - do not hand-edit. Produced by tools/mkconfig/test/gen-vectors.mjs. Consumed by firmware/test/test_config.c AND tools/mkconfig/test/encode.test.mjs. If you change the encoder, regenerate this and update BOTH implementations in the same commit.",
+  "$comment": "GENERATED FILE - do not hand-edit. Produced by tools/mkconfig/scripts/gen-vectors.mjs. Consumed by firmware/test/test_config.c AND tools/mkconfig/test/encode.test.mjs. If you change the encoder, regenerate this and update BOTH implementations in the same commit.",
   "format_version": 1,
   "header_len": 32,
   "payload_len": 580,

@@ -17,8 +17,8 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node --test \"test/*.test.mjs\"",
-    "gen-vectors": "node test/gen-vectors.mjs"
+    "test": "node --test",
+    "gen-vectors": "node scripts/gen-vectors.mjs"
   },
   "engines": {
     "node": ">=20"

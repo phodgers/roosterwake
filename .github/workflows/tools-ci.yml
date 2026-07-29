@@ -16,11 +16,31 @@ on:
 jobs:
   mkconfig:
     runs-on: ubuntu-latest
+
+    # mkconfig is a published MIT CLI declaring `engines: node >=20`, so 20 is a promise to
+    # anyone who installs it — and an untested promise is just a wish. Both ends of the
+    # supported range run here: 20 because we claim it, 24 because that is what a user who
+    # types `npx @remotewake/mkconfig` today actually gets.
+    #
+    # This matrix exists because of a real failure: the test script used to be
+    # `node --test "test/*.test.mjs"`, and `node --test` only expands globs from 22 onwards.
+    # On 20 the pattern was taken as a literal path, so CI failed with "Could not find" having
+    # executed no tests at all, while the same command passed locally on a newer Node.
+    #
+    # It is now bare `node --test`, which uses Node's own discovery and behaves identically on
+    # every supported version. Note that discovery claims *every* .mjs file under a directory
+    # named `test`, which is why the vector generator lives in scripts/ — next to the suite it
+    # feeds, it would be collected and run as if it were a test.
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ['20', '24']
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: ${{ matrix.node-version }}
 
       - name: Test the config codec against the golden vectors
         run: npm test
@@ -31,7 +51,7 @@ jobs:
         # regenerating — which means the committed vectors no longer describe the format, and
         # the firmware is being validated against a stale contract.
         run: |
-          node test/gen-vectors.mjs
+          node scripts/gen-vectors.mjs
           if ! git diff --exit-code --stat ../../firmware/test/vectors/config-v1.json; then
             echo "::error::Golden vectors are stale. Run 'npm run gen-vectors' in tools/mkconfig"
             echo "::error::and mirror the encoder change in firmware/src/config/config.c."
