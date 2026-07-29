@@ -25,22 +25,45 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install the toolchain
-        # g++-arm-none-eabi and libstdc++-arm-none-eabi-newlib are not optional even though
-        # every line of this firmware is C: the SDK's pico_cxx_options library compiles
-        # new_delete.cpp into every executable, so a C-only toolchain dies on `#include
-        # <cstdlib>`. The official ARM GNU toolchain used for local builds bundles both, which
-        # is exactly why this only ever fails in CI.
+      - name: Install cmake and ninja
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            gcc-arm-none-eabi g++-arm-none-eabi \
-            libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib \
-            cmake ninja-build
-          arm-none-eabi-gcc --version
-          arm-none-eabi-g++ --version
+          sudo apt-get install -y --no-install-recommends cmake ninja-build
           cmake --version
           ninja --version
+
+      - name: Install the ARM toolchain
+        # The official ARM GNU toolchain, not Ubuntu's gcc-arm-none-eabi, and pinned to the
+        # exact release used for local development so the binary CI publishes is the binary
+        # that was debugged on real hardware.
+        #
+        # Ubuntu's package was the original choice and it cannot work here: the SDK's
+        # pico_cxx_options library compiles new_delete.cpp into every executable, so a C++
+        # compiler is mandatory even though this firmware is entirely C — and noble ships no
+        # g++-arm-none-eabi at all. The ARM release bundles C, C++ and newlib together, which
+        # is precisely why the local build never saw this.
+        #
+        # The checksum is ARM's published .sha256asc. It is verified rather than trusted
+        # because this is the one step that puts a 150 MB third-party binary on the path of a
+        # build whose output gets flashed onto other people's hardware.
+        env:
+          ARM_RELEASE: 14.2.rel1
+          ARM_SHA256: 62a63b981fe391a9cbad7ef51b17e49aeaa3e7b0d029b36ca1e9c3b2a9b78823
+        run: |
+          set -euo pipefail
+          tarball="arm-gnu-toolchain-${ARM_RELEASE}-x86_64-arm-none-eabi.tar.xz"
+          curl -fsSL --retry 3 --retry-delay 5 -o "$tarball" \
+            "https://developer.arm.com/-/media/Files/downloads/gnu/${ARM_RELEASE}/binrel/${tarball}"
+          echo "${ARM_SHA256}  ${tarball}" | sha256sum -c -
+          sudo mkdir -p /opt/arm-none-eabi
+          sudo tar -xf "$tarball" -C /opt/arm-none-eabi --strip-components=1
+          rm -f "$tarball"
+          echo "/opt/arm-none-eabi/bin" >> "$GITHUB_PATH"
+
+      - name: Report the toolchain versions
+        run: |
+          arm-none-eabi-gcc --version
+          arm-none-eabi-g++ --version
 
       - name: Check out the pico-sdk
         uses: actions/checkout@v4
