@@ -35,6 +35,26 @@ The SDK needs its `lib/lwip`, `lib/cyw43-driver`, `lib/mbedtls` and `lib/tinyusb
 git -C "$PICO_SDK_PATH" submodule update --init
 ```
 
+### Use a prebuilt picotool
+
+By default the SDK downloads picotool's source and builds it as part of your first configure.
+That works, but it is slow, and it puts a large C++ program at the mercy of whatever host
+compiler you happen to have. Building it with a very new MinGW (GCC 16) produces a `picotool`
+that **segfaults in `coprodis`** while disassembling the SDK's own `boot_stage2` — which fails
+the build before a single line of this firmware is compiled, with an error that looks nothing
+like its cause.
+
+Point CMake at an official prebuilt instead. Download the `picotool-*-<platform>` archive from
+[pico-sdk-tools releases](https://github.com/raspberrypi/pico-sdk-tools/releases) matching your
+SDK version, extract it, and set:
+
+```sh
+export picotool_DIR=/path/to/picotool        # the directory holding picotoolConfig.cmake
+```
+
+`find_package(picotool)` then finds it, the source build is skipped entirely, and configure
+takes seconds rather than minutes.
+
 ### Build options
 
 | Option | Default | Effect |
