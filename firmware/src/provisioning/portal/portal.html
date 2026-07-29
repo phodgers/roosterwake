@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Remote Wake setup</title>
+<style>
+:root{
+  --bg:#0e1116;--card:#161b22;--line:#262d38;--fg:#e8edf4;--dim:#9aa7b8;
+  --accent:#3b82f6;--accent-fg:#fff;--ok:#22c55e;--warn:#f59e0b;--err:#ef4444;
+  --radius:12px;
+}
+@media (prefers-color-scheme:light){
+  :root{--bg:#f6f8fb;--card:#fff;--line:#dfe5ee;--fg:#111826;--dim:#5b6779}
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;background:var(--bg);color:var(--fg);
+  font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  padding:max(16px,env(safe-area-inset-top)) 16px max(16px,env(safe-area-inset-bottom));
+}
+.wrap{max-width:460px;margin:0 auto}
+header{display:flex;align-items:center;gap:10px;padding:8px 0 18px}
+header svg{flex:0 0 auto}
+header b{font-size:17px;letter-spacing:-.01em}
+header span{margin-left:auto;font-size:12px;color:var(--dim);font-variant-numeric:tabular-nums}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:18px}
+h1{font-size:20px;margin:0 0 6px;letter-spacing:-.02em}
+p.sub{margin:0 0 16px;color:var(--dim);font-size:14px}
+label{display:block;font-size:13px;font-weight:600;margin:14px 0 6px}
+input[type=text],input[type=password],input[type=url]{
+  width:100%;padding:11px 12px;font:inherit;color:var(--fg);
+  background:var(--bg);border:1px solid var(--line);border-radius:9px;
+}
+input:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:transparent}
+.pw{position:relative}
+.pw input{padding-right:64px}
+.pw button{
+  position:absolute;right:5px;top:5px;bottom:5px;padding:0 10px;font-size:12px;font-weight:600;
+  background:transparent;color:var(--dim);border:0;border-radius:7px;cursor:pointer
+}
+.pw button:hover{color:var(--fg)}
+button.primary{
+  width:100%;margin-top:18px;padding:13px;font:inherit;font-weight:600;
+  background:var(--accent);color:var(--accent-fg);border:0;border-radius:9px;cursor:pointer
+}
+button.primary:disabled{opacity:.5;cursor:default}
+button.ghost{
+  width:100%;margin-top:8px;padding:11px;font:inherit;background:transparent;color:var(--dim);
+  border:1px solid var(--line);border-radius:9px;cursor:pointer
+}
+ul.nets{list-style:none;margin:0;padding:0;max-height:46vh;overflow-y:auto;
+  border:1px solid var(--line);border-radius:9px}
+ul.nets li+li{border-top:1px solid var(--line)}
+ul.nets button{
+  display:flex;align-items:center;gap:10px;width:100%;padding:12px;
+  background:transparent;border:0;color:var(--fg);font:inherit;text-align:left;cursor:pointer
+}
+ul.nets button:hover{background:var(--bg)}
+.nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nm i{font-style:normal;color:var(--dim)}
+.bars{display:flex;align-items:flex-end;gap:2px;height:14px;flex:0 0 auto}
+.bars s{display:block;width:3px;background:var(--dim);border-radius:1px;opacity:.28}
+.bars s.on{opacity:1;background:var(--accent)}
+.hint{margin:10px 0 0;font-size:13px;color:var(--dim)}
+.hint code{background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:1px 5px;
+  font-size:12px}
+details{margin-top:16px;border-top:1px solid var(--line);padding-top:12px}
+summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--dim);list-style:none}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"▸ ";display:inline-block;transition:transform .15s}
+details[open] summary::before{transform:rotate(90deg)}
+.msg{margin-top:14px;padding:11px 12px;border-radius:9px;font-size:14px;display:none}
+.msg.show{display:block}
+.msg.err{background:color-mix(in srgb,var(--err) 14%,transparent);
+  border:1px solid color-mix(in srgb,var(--err) 40%,transparent)}
+.msg.ok{background:color-mix(in srgb,var(--ok) 14%,transparent);
+  border:1px solid color-mix(in srgb,var(--ok) 40%,transparent)}
+.msg.warn{background:color-mix(in srgb,var(--warn) 14%,transparent);
+  border:1px solid color-mix(in srgb,var(--warn) 40%,transparent)}
+.spin{display:inline-block;width:13px;height:13px;vertical-align:-2px;margin-right:7px;
+  border:2px solid currentColor;border-right-color:transparent;border-radius:50%;
+  animation:sp .7s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.spin{animation-duration:2s}
+  details[open] summary::before{transition:none}}
+.kv{margin:14px 0 0;border:1px solid var(--line);border-radius:9px;overflow:hidden}
+.kv div{display:flex;align-items:center;gap:8px;padding:10px 12px;font-size:13px}
+.kv div+div{border-top:1px solid var(--line)}
+.kv span{color:var(--dim);flex:0 0 84px}
+.kv code{flex:1;min-width:0;overflow-wrap:anywhere;font-size:12px}
+.kv button{background:transparent;border:1px solid var(--line);border-radius:6px;color:var(--dim);
+  font:inherit;font-size:11px;padding:4px 8px;cursor:pointer;flex:0 0 auto}
+.steps{display:flex;gap:5px;margin:0 0 16px}
+.steps s{flex:1;height:3px;border-radius:2px;background:var(--line)}
+.steps s.on{background:var(--accent)}
+.hide{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+    <path d="M12 3v9"/><path d="M6.2 6.6a8 8 0 1 0 11.6 0"/>
+  </svg>
+  <b>Remote Wake</b>
+  <span id="did"></span>
+</header>
+
+<div class="steps" aria-hidden="true">
+  <s id="s1" class="on"></s><s id="s2"></s><s id="s3"></s>
+</div>
+
+<!-- 1: network -->
+<section class="card" id="v-net">
+  <h1>Choose your Wi-Fi</h1>
+  <p class="sub">These are the networks the dongle can see from where it is plugged in — not
+    the ones your phone can see.</p>
+  <ul class="nets" id="nets"></ul>
+  <div class="msg" id="m-net"></div>
+  <button class="ghost" id="rescan">Scan again</button>
+  <details>
+    <summary>My network isn't listed</summary>
+    <p class="hint">Hidden networks don't broadcast a name. Type it exactly, including
+      capitals.</p>
+    <label for="manual">Network name (SSID)</label>
+    <input type="text" id="manual" autocapitalize="none" autocorrect="off" spellcheck="false">
+    <button class="primary" id="manual-go">Use this network</button>
+  </details>
+</section>
+
+<!-- 2: password -->
+<section class="card hide" id="v-pw">
+  <h1 id="pw-title">Wi-Fi password</h1>
+  <p class="sub" id="pw-sub"></p>
+  <label for="psk">Password</label>
+  <div class="pw">
+    <input type="password" id="psk" autocapitalize="none" autocorrect="off" spellcheck="false"
+           autocomplete="current-password">
+    <button type="button" id="reveal" aria-label="Show password">Show</button>
+  </div>
+  <div class="msg" id="m-pw"></div>
+  <button class="primary" id="join">Connect</button>
+  <button class="ghost" id="back-net">Back</button>
+</section>
+
+<!-- 3: target -->
+<section class="card hide" id="v-tgt">
+  <h1>Which PC should it wake?</h1>
+  <p class="sub">Wake-on-LAN identifies a machine by its network adapter's MAC address.</p>
+  <label for="tname">Name</label>
+  <input type="text" id="tname" value="My PC" maxlength="24">
+  <label for="tmac">MAC address</label>
+  <input type="text" id="tmac" inputmode="latin" autocapitalize="characters" autocorrect="off"
+         spellcheck="false" placeholder="AA:BB:CC:DD:EE:FF">
+  <div class="msg" id="m-tgt"></div>
+
+  <details>
+    <summary>Where do I find it?</summary>
+    <p class="hint"><b>Windows</b> — Settings › Network &amp; internet › your adapter, then read
+      <code>Physical address (MAC)</code>. Use the <b>wired</b> adapter if the PC has one; Wi-Fi
+      wake is unreliable by design.</p>
+    <p class="hint"><b>macOS</b> — System Settings › Network › your adapter › Details ›
+      Hardware.</p>
+    <p class="hint"><b>Linux</b> — <code>ip link</code>, and read the
+      <code>link/ether</code> line.</p>
+  </details>
+
+  <details>
+    <summary>Advanced</summary>
+    <p class="hint">Only needed if you run your own relay, or you were given a claim code with
+      a kit.</p>
+    <label for="relay">Relay URL</label>
+    <input type="url" id="relay" autocapitalize="none" autocorrect="off" spellcheck="false"
+           placeholder="wss://relay.remotewake.com/ws">
+    <label for="claim">Claim code</label>
+    <input type="text" id="claim" autocapitalize="characters" autocorrect="off"
+           spellcheck="false" maxlength="16" placeholder="Optional">
+  </details>
+
+  <button class="primary" id="save">Save and finish</button>
+</section>
+
+<!-- 4: done -->
+<section class="card hide" id="v-done">
+  <h1>Done</h1>
+  <p class="sub" id="done-sub"></p>
+  <div class="kv" id="creds"></div>
+  <p class="hint" id="done-note"></p>
+</section>
+</div>
+
+<script>
+const $=s=>document.querySelector(s),
+      views=["v-net","v-pw","v-tgt","v-done"];
+let net=null, info={}, busy=false;
+
+function show(id){
+  views.forEach(v=>$("#"+v).classList.toggle("hide",v!==id));
+  const n={"v-net":1,"v-pw":2,"v-tgt":3,"v-done":3}[id];
+  [1,2,3].forEach(i=>$("#s"+i).classList.toggle("on",i<=n));
+  window.scrollTo(0,0);
+}
+function msg(el,text,kind){
+  const e=$(el);
+  if(!text){e.classList.remove("show");return}
+  e.className="msg show "+(kind||"err");
+  e.innerHTML=text;
+}
+function esc(s){
+  return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+}
+async function api(path,body){
+  const o={headers:{"content-type":"application/json"}};
+  if(body!==undefined){o.method="POST";o.body=JSON.stringify(body)}
+  const r=await fetch(path,o);
+  let j={};
+  try{j=await r.json()}catch(e){}
+  if(!r.ok&&!j.err)j.err="http_"+r.status;
+  return j;
+}
+
+/* Signal bars. Thresholds are the usual dBm bands: -55 excellent, -67 good, -75 fair. */
+function bars(rssi){
+  const n=rssi>=-55?4:rssi>=-67?3:rssi>=-75?2:1;
+  let h='<span class="bars" title="'+rssi+' dBm">';
+  for(let i=1;i<=4;i++)h+='<s class="'+(i<=n?"on":"")+'" style="height:'+(i*3+2)+'px"></s>';
+  return h+"</span>";
+}
+const LOCK='<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"'+
+  ' stroke-width="2.4" style="color:var(--dim);flex:0 0 auto"><rect x="4" y="10" width="16"'+
+  ' height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>';
+
+async function scan(){
+  if(busy)return; busy=true;
+  $("#rescan").disabled=true;
+  $("#nets").innerHTML='<li style="padding:14px;color:var(--dim);font-size:14px">'+
+    '<span class="spin"></span>Scanning…</li>';
+  msg("#m-net","");
+  const j=await api("/api/scan");
+  busy=false; $("#rescan").disabled=false;
+  if(j.err||!j.networks){
+    $("#nets").innerHTML="";
+    msg("#m-net","Couldn't scan. Try again in a moment.");
+    return;
+  }
+  if(!j.networks.length){
+    $("#nets").innerHTML="";
+    msg("#m-net","No networks found. Move the dongle closer to your router and scan again.",
+        "warn");
+    return;
+  }
+  $("#nets").innerHTML=j.networks.map((n,i)=>
+    '<li><button data-i="'+i+'">'+bars(n.rssi)+
+    '<span class="nm">'+(n.ssid?esc(n.ssid):"<i>Hidden network</i>")+"</span>"+
+    (n.auth==="open"?"":LOCK)+"</button></li>").join("");
+  $("#nets").querySelectorAll("button").forEach(b=>{
+    b.onclick=()=>pick(j.networks[+b.dataset.i]);
+  });
+}
+
+function pick(n){
+  net=n;
+  $("#pw-title").textContent=n.auth==="open"?"Open network":"Wi-Fi password";
+  $("#pw-sub").textContent=n.auth==="open"
+    ? '"'+n.ssid+'" has no password. Connect to check it works.'
+    : 'Enter the password for "'+n.ssid+'".';
+  $("#psk").value="";
+  const open=n.auth==="open";
+  $("#psk").parentElement.classList.toggle("hide",open);
+  document.querySelector('label[for=psk]').classList.toggle("hide",open);
+  msg("#m-pw","");
+  show("v-pw");
+  if(n.auth!=="open")setTimeout(()=>$("#psk").focus(),50);
+}
+
+const JOIN_ERR={
+  badauth:"That password was rejected. Check for capitals and stray spaces.",
+  notfound:"The dongle can't see that network any more. Scan again.",
+  timeout:"Connected to the network but got no address. Check the router's DHCP is on.",
+  dhcp_timeout:"Connected to the network but got no address. Check the router's DHCP is on."
+};
+
+async function join(){
+  if(busy)return; busy=true;
+  const b=$("#join"); b.disabled=true;
+  b.innerHTML='<span class="spin"></span>Connecting…';
+  msg("#m-pw","");
+  const j=await api("/api/join",{ssid:net.ssid,psk:$("#psk").value});
+  busy=false; b.disabled=false; b.textContent="Connect";
+  if(j.ok){
+    msg("#m-pw","Connected — got "+esc(j.ip)+".","ok");
+    setTimeout(()=>show("v-tgt"),700);
+  }else{
+    msg("#m-pw",JOIN_ERR[j.err]||("Couldn't connect ("+esc(j.err||"unknown")+").")); }
+}
+
+/* Format as the user types, but never fight the caret: only reformat when they are typing at
+   the end, which is what people actually do with a MAC. */
+function fixMac(e){
+  const el=e.target, atEnd=el.selectionStart===el.value.length;
+  let v=el.value.toUpperCase().replace(/[^0-9A-F]/g,"").slice(0,12);
+  v=v.replace(/(.{2})(?=.)/g,"$1:");
+  if(atEnd){el.value=v}
+}
+function macOk(v){return /^[0-9A-F]{2}(:[0-9A-F]{2}){5}$/.test(v.toUpperCase())}
+
+async function save(){
+  if(busy)return;
+  const mac=$("#tmac").value.toUpperCase(), name=$("#tname").value.trim();
+  if(!name){msg("#m-tgt","Give the PC a name.");return}
+  if(!macOk(mac)){msg("#m-tgt","That MAC address doesn't look right — it should be six pairs "+
+    "like <code>AA:BB:CC:DD:EE:FF</code>.");return}
+  busy=true;
+  const b=$("#save"); b.disabled=true; b.innerHTML='<span class="spin"></span>Saving…';
+  msg("#m-tgt","");
+  let j=await api("/api/config",{
+    targets:[{name:name,mac:mac}],
+    relay:$("#relay").value.trim(),
+    claim:$("#claim").value.trim()
+  });
+  if(j.err){
+    busy=false;b.disabled=false;b.textContent="Save and finish";
+    msg("#m-tgt","Couldn't save that ("+esc(j.err)+").");return;
+  }
+  j=await api("/api/commit",{});
+  busy=false;
+  if(j.err){
+    b.disabled=false;b.textContent="Save and finish";
+    msg("#m-tgt","Couldn't write the configuration ("+esc(j.err)+").");return;
+  }
+  done(j);
+}
+
+function row(label,value,copy){
+  return '<div><span>'+label+'</span><code>'+esc(value)+'</code>'+
+    (copy?'<button data-c="'+esc(value)+'">Copy</button>':"")+"</div>";
+}
+function done(j){
+  $("#done-sub").textContent='Saved. The dongle is restarting and will join "'+
+    (net?net.ssid:"your network")+'" in a few seconds.';
+  let h=row("Device ID",j.device_id||info.device_id||"",1);
+  /* The token is shown exactly once, here. The USB channel never returns it, and neither does
+     anything else — a self-hoster who needs it has this one chance to copy it. */
+  if(j.token)h+=row("Token",j.token,1);
+  $("#creds").innerHTML=h;
+  $("#creds").querySelectorAll("button").forEach(b=>{
+    b.onclick=async()=>{
+      try{await navigator.clipboard.writeText(b.dataset.c);b.textContent="Copied"}
+      catch(e){b.textContent="Select it"}
+      setTimeout(()=>b.textContent="Copy",1400);
+    };
+  });
+  $("#done-note").innerHTML=j.token
+    ? "Copy the token now if you're running your own relay — it is never shown again. "+
+      "Otherwise you can ignore it."
+    : "You can close this page. The setup hotspot disappears when the dongle restarts.";
+  show("v-done");
+}
+
+$("#rescan").onclick=scan;
+$("#back-net").onclick=()=>show("v-net");
+$("#manual-go").onclick=()=>{
+  const s=$("#manual").value.trim();
+  if(s)pick({ssid:s,auth:"wpa2",rssi:-70});
+};
+$("#reveal").onclick=()=>{
+  const p=$("#psk"), on=p.type==="password";
+  p.type=on?"text":"password";
+  $("#reveal").textContent=on?"Hide":"Show";
+  $("#reveal").setAttribute("aria-label",(on?"Hide":"Show")+" password");
+};
+$("#join").onclick=join;
+$("#psk").onkeydown=e=>{if(e.key==="Enter")join()};
+$("#tmac").oninput=fixMac;
+$("#save").onclick=save;
+
+(async()=>{
+  info=await api("/api/info");
+  if(info.device_id)$("#did").textContent=info.device_id;
+  scan();
+})();
+</script>
+</body>
+</html>
