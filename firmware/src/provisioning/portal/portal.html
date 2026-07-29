@@ -336,12 +336,42 @@ function fixMac(e){
 }
 function macOk(v){return /^[0-9A-F]{2}(:[0-9A-F]{2}){5}$/.test(v.toUpperCase())}
 
+/* Only what is impossible, never what is merely unreachable. A sleeping PC cannot be probed —
+   that is the whole point of this device — so there is no honest way to check the machine
+   exists. What can be checked is that the address could belong to an adapter at all. */
+function macProblem(v){
+  const b=v.split(":").map(x=>parseInt(x,16));
+  if(b[0]&1) return "That's a multicast address, not a single PC. Check you copied the "+
+    "adapter's own address and not one from a packet capture.";
+  if(b.every(x=>x===0)) return "That's all zeroes, which isn't a real adapter.";
+  if(b.every(x=>x===255)) return "That's the broadcast address, not a single PC.";
+  return null;
+}
+/* Locally-administered addresses are legal and do occur - VMs, some laptops with MAC
+   randomisation - so this warns and lets you continue rather than refusing. */
+function macWarning(v){
+  const b=v.split(":").map(x=>parseInt(x,16));
+  if(b[0]&2) return "This looks like a randomised or virtual adapter address. If your PC has "+
+    "Wi-Fi privacy or random hardware addresses turned on, it changes and the wake will stop "+
+    "working - use the wired adapter's address if you can.";
+  return null;
+}
+
 async function save(){
   if(busy)return;
   const mac=$("#tmac").value.toUpperCase(), name=$("#tname").value.trim();
   if(!name){msg("#m-tgt","Give the PC a name.");return}
   if(!macOk(mac)){msg("#m-tgt","That MAC address doesn't look right — it should be six pairs "+
     "like <code>AA:BB:CC:DD:EE:FF</code>.");return}
+  const problem=macProblem(mac);
+  if(problem){msg("#m-tgt",problem);return}
+  /* Shown once, then the next press goes through: it is advice, not a rule. */
+  const warn=macWarning(mac);
+  if(warn&&!$("#tmac").dataset.warned){
+    $("#tmac").dataset.warned="1";
+    msg("#m-tgt",warn+" Press Save again to use it anyway.","warn");
+    return;
+  }
   busy=true;
   const b=$("#save"); b.disabled=true; b.innerHTML='<span class="spin"></span>Saving…';
   msg("#m-tgt","");

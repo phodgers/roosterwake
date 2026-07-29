@@ -336,6 +336,12 @@ rw_uerr_t rw_stage_add_target(rw_stage_t *stage, const char *name, const char *m
     if (!rw_mac_parse(mac, entry.mac)) {
         return RW_UERR_BAD_ARG;
     }
+    /* Refuse addresses no adapter can have. A wake to a multicast or broadcast address leaves
+     * the device reporting a perfectly successful send while nothing ever powers on, which is
+     * the least debuggable outcome available. */
+    if (!rw_mac_wakeable(entry.mac)) {
+        return RW_UERR_BAD_ARG;
+    }
 
     stage->cfg.targets[stage->cfg.target_count++] = entry;
     stage->dirty                                  = true;

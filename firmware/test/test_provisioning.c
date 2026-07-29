@@ -12,6 +12,7 @@
 #include "provisioning/dhcp_msg.h"
 #include "provisioning/dns_msg.h"
 #include "provisioning/http_req.h"
+#include "usbcfg/cmdline.h"
 
 #define AP_IP     0xC0A80401u /* 192.168.4.1 */
 #define AP_MASK   0xFFFFFF00u
@@ -613,7 +614,48 @@ static void test_http_probes(void) {
     RW_CHECK(rw_http_probe_kind("/canonical.html") == RW_PROBE_REDIRECT);
 }
 
+static void test_mac_wakeable(void) {
+    rw_test_begin("ordinary unicast addresses are accepted");
+    static const uint8_t ok1[6] = {0x88, 0xAE, 0xDD, 0x83, 0xDB, 0x62};
+    static const uint8_t ok2[6] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55};
+    /* Locally-administered (bit 1) is legal and common on VMs — accepted here; the portal warns
+     * about it separately, because a warning the user can override is not the same as a rule. */
+    static const uint8_t ok3[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55};
+    RW_CHECK(rw_mac_wakeable(ok1));
+    RW_CHECK(rw_mac_wakeable(ok2));
+    RW_CHECK(rw_mac_wakeable(ok3));
+
+    rw_test_begin("addresses that cannot identify an adapter are refused");
+    /*
+     * Only the impossible. There is no liveness check anywhere in this codebase, and there must
+     * not be: the only way to prove a machine exists is ARP, a sleeping PC does not answer ARP,
+     * and sleeping PCs are the entire population this product wakes. A "not found" check would
+     * be most confident exactly when the configuration was correct.
+     */
+    static const uint8_t multicast[6] = {0x01, 0x00, 0x5E, 0x00, 0x00, 0x01};
+    static const uint8_t v6mcast[6]   = {0x33, 0x33, 0x00, 0x00, 0x00, 0x01};
+    static const uint8_t broadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    static const uint8_t zero[6]      = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    RW_CHECK(!rw_mac_wakeable(multicast));
+    RW_CHECK(!rw_mac_wakeable(v6mcast));
+    RW_CHECK(!rw_mac_wakeable(broadcast));
+    RW_CHECK(!rw_mac_wakeable(zero));
+    RW_CHECK(!rw_mac_wakeable(NULL));
+
+    rw_test_begin("staging refuses an unwakeable target rather than storing it");
+    rw_config_t base;
+    rw_config_init(&base);
+    rw_stage_t st;
+    rw_stage_init(&st, &base);
+    RW_CHECK(rw_stage_add_target(&st, "Group", "01:00:5E:00:00:01") == RW_UERR_BAD_ARG);
+    RW_CHECK(rw_stage_add_target(&st, "All", "FF:FF:FF:FF:FF:FF") == RW_UERR_BAD_ARG);
+    RW_CHECK_EQ_INT(st.cfg.target_count, 0);
+    RW_CHECK(rw_stage_add_target(&st, "PC", "88:AE:DD:83:DB:62") == RW_UERR_NONE);
+    RW_CHECK_EQ_INT(st.cfg.target_count, 1);
+}
+
 void test_provisioning(void) {
+    test_mac_wakeable();
     test_dhcp_parse();
     test_dhcp_build();
     test_dhcp_reply_dest();

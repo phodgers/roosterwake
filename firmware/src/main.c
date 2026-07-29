@@ -152,7 +152,13 @@ static void update_led(bool provisioned) {
         case RW_RELAY_BACKOFF:
         case RW_RELAY_CONNECTING:
         case RW_RELAY_AUTHENTICATING:
-            rw_led_set(RW_LED_JOINING);
+            /*
+             * Split on whether Wi-Fi is up. Both halves used to show the joining blink, so an
+             * owner could not tell "still trying to reach your router" from "on your network,
+             * just not linked to the cloud" — and the second is a normal, working state for a
+             * self-hosted or unclaimed device, in which local Wake-on-LAN is fine.
+             */
+            rw_led_set(rw_net_state() == RW_NET_JOINED ? RW_LED_ONLINE : RW_LED_JOINING);
             return;
     }
     rw_led_set(RW_LED_JOINING);

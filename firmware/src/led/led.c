@@ -27,6 +27,18 @@ static const led_step_t k_joining[] = {
 };
 
 /*
+ * One short pulse then a long gap: on the network, no relay.
+ *
+ * Same rhythm as the connected pattern with one pulse instead of two, so the pair read as a
+ * scale rather than as unrelated codes — "one beat, nearly there; two beats, all the way".
+ * Counting one flash against two across a room is easy; distinguishing two blink *rates* is
+ * not, which is why this is not simply a third speed.
+ */
+static const led_step_t k_online[] = {
+    {true, 60}, {false, 2940},
+};
+
+/*
  * Two short pulses then a long gap. Mostly dark on purpose: this is the steady state, it runs
  * for months, and a dongle that blinks continuously in a bedroom gets unplugged.
  */
@@ -54,6 +66,7 @@ typedef struct {
 static const led_pattern_def_t k_patterns[] = {
     [RW_LED_SETUP_AP]   = {k_setup_ap, sizeof(k_setup_ap) / sizeof(k_setup_ap[0])},
     [RW_LED_JOINING]    = {k_joining, sizeof(k_joining) / sizeof(k_joining[0])},
+    [RW_LED_ONLINE]     = {k_online, sizeof(k_online) / sizeof(k_online[0])},
     [RW_LED_CONNECTED]  = {k_connected, sizeof(k_connected) / sizeof(k_connected[0])},
     [RW_LED_ERROR]      = {k_error, sizeof(k_error) / sizeof(k_error[0])},
 };

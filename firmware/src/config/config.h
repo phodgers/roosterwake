@@ -133,6 +133,21 @@ int rw_config_select(const uint8_t *a, size_t a_len, const uint8_t *b, size_t b_
 /* Parse "AA:BB:CC:DD:EE:FF", "aa-bb-cc-dd-ee-ff" or "aabbccddeeff" into six octets. */
 bool rw_mac_parse(const char *text, uint8_t mac[6]);
 
+/*
+ * Whether `mac` could plausibly belong to a network adapter that can be woken.
+ *
+ * Rejects only what is impossible, never what is merely unreachable. A multicast address (low
+ * bit of the first octet set) is a group, not an interface, and broadcast and all-zeros are not
+ * addresses at all — none of these can ever identify a PC, so accepting them guarantees a wake
+ * that silently does nothing.
+ *
+ * It deliberately does **not** try to establish that the machine exists. The only way to do
+ * that is ARP, and a sleeping PC does not answer ARP — which is the entire population this
+ * product exists to wake. A liveness check would therefore report "not found" most confidently
+ * for exactly the correctly-configured devices, and that is a worse failure than no check.
+ */
+bool rw_mac_wakeable(const uint8_t mac[6]);
+
 /* Format six octets as the canonical upper-case colon-separated form (PROTOCOL.md §2).
  * `out` must have room for 18 bytes. */
 void rw_mac_format(const uint8_t mac[6], char *out);

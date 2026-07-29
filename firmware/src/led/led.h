@@ -15,6 +15,16 @@
 typedef enum {
     RW_LED_SETUP_AP = 0, /* fast blink   - unprovisioned, setup hotspot is up */
     RW_LED_JOINING,      /* slow blink   - joining Wi-Fi, or waiting on DHCP/SNTP/DNS */
+    /*
+     * Single pulse every 3 s - on the network, but not talking to a relay.
+     *
+     * A real and often perfectly fine state: a self-hosted device before its relay is running,
+     * a device that has not been claimed yet, or one whose relay is briefly down. Wake-on-LAN
+     * from the local network still works. It used to share the slow blink with "joining", which
+     * meant the owner could not tell "still trying to get onto your Wi-Fi" from "on your Wi-Fi,
+     * just not linked to the cloud" — two problems with completely different fixes.
+     */
+    RW_LED_ONLINE,
     RW_LED_CONNECTED,    /* double pulse every 3 s - authenticated to the relay */
     RW_LED_ERROR,        /* SOS          - unrecoverable, or TLS verification disabled */
 } rw_led_pattern_t;

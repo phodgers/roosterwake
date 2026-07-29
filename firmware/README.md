@@ -88,7 +88,8 @@ readable across a room.
 | Pattern | Meaning |
 |---|---|
 | Fast blink | Unprovisioned — the setup hotspot is up |
-| Slow blink | Joining Wi-Fi, or connecting to the relay |
+| Slow blink | Joining Wi-Fi |
+| One pulse every 3 s | On your network, but not connected to a relay. Local Wake-on-LAN works; this is normal for a self-hosted or unclaimed device |
 | Two pulses every 3 s | Authenticated to the relay; this is the resting state |
 | 2 s solid | A wake was just sent |
 | SOS | Authentication failed, deprovisioned, or TLS verification is disabled |

@@ -260,6 +260,29 @@ static int hex_nibble(char c) {
     return -1;
 }
 
+bool rw_mac_wakeable(const uint8_t mac[6]) {
+    if (mac == NULL) {
+        return false;
+    }
+
+    /* Bit 0 of the first octet marks a multicast/group address. A group is not an interface,
+     * so no machine can be woken by naming one. 01:00:5E:.. and 33:33:.. land here, and both
+     * are things people paste in by mistake when reading a packet capture. */
+    if (mac[0] & 0x01u) {
+        return false;
+    }
+
+    bool all_zero = true;
+    bool all_ones = true;
+    for (int i = 0; i < 6; i++) {
+        if (mac[i] != 0x00) all_zero = false;
+        if (mac[i] != 0xFF) all_ones = false;
+    }
+    /* 00:00:00:00:00:00 is "unspecified" and FF:FF:FF:FF:FF:FF is broadcast — the latter caught
+     * because it is also multicast, but named here so the intent survives a refactor. */
+    return !all_zero && !all_ones;
+}
+
 bool rw_mac_parse(const char *text, uint8_t mac[6]) {
     if (text == NULL) {
         return false;
