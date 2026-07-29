@@ -145,9 +145,12 @@ breaks the replay protection for everyone.
   time, and should run the constant-time comparison *before* any "is this device provisioned"
   branch — otherwise short-circuit evaluation quietly reintroduces the oracle this rule exists
   to close.
-- If `hello` is malformed — not valid JSON, missing a required field, or oversized — the relay
-  replies `hello_ack {ok:false, err:"bad_frame"}` and closes with `1008`. It MUST NOT send a
+- If `hello` is malformed — not valid JSON, or missing a required field — the relay replies
+  `hello_ack {ok:false, err:"bad_frame"}` and closes with `1008`. It MUST NOT send a
   `challenge` first, because there is no usable `device_id` to challenge against.
+  An **oversized** frame is not this case: the size check in §1 happens before any parse, so an
+  over-limit `hello` is closed with `1009` like any other over-limit frame, without a
+  `hello_ack`. A receiver cannot report a parse result for bytes it declined to read.
 - On `auth` failure the relay sends `hello_ack {ok:false, err:"auth"}` and closes with `1008`.
 - If the device cannot verify `proof_s`, it MUST close immediately with `1008`, MUST NOT send
   any further frames, and MUST back off before retrying (§8). It SHOULD surface the error
@@ -411,6 +414,11 @@ MUST treat an unrecognised code as `internal` rather than failing.
 | `4002` | Device deprovisioned or token revoked. **The device SHOULD NOT retry**, and reference firmware surfaces the error LED pattern rather than reconnecting forever. |
 | `4003` | Idle timeout — no frame received within the liveness window (§9) |
 
+**`4002` MUST NOT be sent until the device's proof has verified.** Closing early — as soon as
+the relay recognises a revoked `device_id` — turns the close code itself into an oracle: it
+distinguishes "this ID exists but was revoked" from "this ID was never known", which is exactly
+the distinction §3.3 goes to some trouble to hide. Complete the handshake, then close `4002`.
+
 `4003` exists so that "you went quiet" is distinguishable from "you failed authentication".
 Reusing `1008` for both would collide with the rule in §8 that backoff resets only after a
 connection *completes authentication*: a device that could not tell the two apart would either
@@ -466,8 +474,16 @@ connection a router will silently drop.
 
 **Liveness.** A device that receives no frame of any kind for **75 seconds** (three missed
 heartbeats) MUST treat the connection as dead, close it, and reconnect. Relays SHOULD apply a
-similar rule at 90 seconds, biased longer so that the device notices first and reconnects
-cleanly rather than racing the relay's teardown.
+similar rule, biased longer so that the device notices first and reconnects cleanly rather than
+racing the relay's teardown.
+
+**Relays should not arm a dedicated timer to enforce that.** A 90-second liveness alarm on a
+hibernating object wakes it 960 times a day for the sole purpose of observing that nothing has
+happened — which costs more than the heartbeats this section exists to make free. Check
+liveness on a wake-up the relay was already going to have: a presence rollup, the next inbound
+frame, or a command dispatch. A stale connection lingering for a few minutes costs nothing; it
+holds no resource a live one would not, and the device has already given up on it and
+reconnected. Detecting it *promptly* is worth far less than detecting it *cheaply*.
 
 Devices MUST still respond correctly to WebSocket control-frame pings, because intermediate
 proxies and the reference relay use them.
@@ -548,4 +564,5 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 | Version | Date | Change |
 |---|---|---|
 | 1 | 2026-07-29 | Initial specification. |
+| 1 | 2026-07-29 | Clarifications from the second implementation (the hosted relay, on Cloudflare Durable Objects). Three more gaps, all found by deploying rather than by reading. **§1 and §3.3 contradicted each other on oversized frames** — §1 said close `1009`, §3.3 listed "oversized" among malformed-`hello` cases answered `bad_frame` + `1008`. §1 wins: the size check precedes any parse, and a receiver cannot report a parse result for bytes it declined to read. **`4002` must not be sent until the proof verifies** — closing as soon as a revoked `device_id` is recognised makes the close code an oracle distinguishing "known but revoked" from "never known", undoing §3.3. **§9 now says relays should not arm a dedicated liveness timer**: a 90-second alarm on a hibernating object wakes it 960 times a day to observe that nothing happened, costing more than the heartbeats §9 exists to make free. Detecting a stale connection cheaply beats detecting it promptly. |
 | 1 | 2026-07-29 | Clarifications from the first implementation (`relay-reference`). Building against the spec surfaced nine gaps, all closed here. No frame shape changed; two limits narrowed, and one example was wrong. **`sent` is now defined as `ifaces.length × repeat`** and the §4 example corrected from 24 to 12 — the original figure was not derivable from any other field. **Frame size is now a symmetric 2048 bytes**; the device→relay bound was 8192, which no conforming frame approaches. Added close code **`4003`** (idle timeout), which `1008` could not represent without colliding with auth failure and corrupting the §8 backoff-reset rule. Added the **`config`** capability, without which §4's "MUST NOT send a command whose capability the device did not advertise" was unenforceable for `config_push`. **Removed the `log` capability** — no frame could enable it, so declaring it told a relay nothing actionable. Specified the relay's behaviour when a client omits the subprotocol, the response to a malformed `hello`, and `ok`/`err` on `probe_result` (a `probe` with a bad MAC previously had nowhere to report it). Clarified that rate limiting is per `device_id`, and that the unknown-device comparison must run before any provisioned check. |
