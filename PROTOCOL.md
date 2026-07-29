@@ -28,12 +28,20 @@ subtly wrong.
   client MUST then close the connection — this is how a device detects that it has been
   pointed at something that is not a Remote Wake relay (a captive portal, a misconfigured
   reverse proxy, someone's Home Assistant) instead of hanging.
+  Symmetrically, a relay MUST **refuse the upgrade** (HTTP 400) when the client does not offer
+  `remotewake.v1`, rather than accepting the socket and waiting for a `hello` that will never
+  come. Both halves are specified because leaving either undefined lets two conforming relays
+  behave differently, and a third-party firmware then works against one and hangs against the
+  other.
 - **Frames are WebSocket text frames** containing a single JSON object. One object per frame;
   no framing of multiple objects, no newline delimiting.
-- **Size limits.** A relay MUST NOT send a frame larger than **2048 bytes**. A device MUST
+- **Size limits.** **No frame in either direction may exceed 2048 bytes.** A receiver MUST
   reject a larger frame with close code `1009`. Devices are memory-constrained; this limit is
-  a hard part of the contract, not a suggestion. Device→relay frames SHOULD stay under 2048
-  bytes and MUST NOT exceed 8192 (the `hello` frame with eight targets is the largest).
+  a hard part of the contract, not a suggestion.
+  The largest frame either side sends is `hello` with eight targets, and it does not come
+  close: eight entries of a 24-character name plus a 17-character MAC is under 600 bytes, and
+  the rest of the frame adds roughly 200 more. A single symmetric bound is easier to implement
+  correctly than two, and lets both sides size one receive buffer.
 - **Encoding** is UTF-8. Target names may contain any UTF-8; relays MUST NOT assume ASCII.
 
 ### 1.1 TLS requirements
@@ -95,7 +103,7 @@ for the next year. The cost is one extra round trip at connect. That is a good t
 ```
  device                                                    relay
    │                                                         │
-   │──── hello  {device_id, nonce_c, fw, caps, targets} ────►│
+   │─ hello {v, device_id, nonce_c, fw, board, caps, targets}►│
    │                                                         │  look up device_id,
    │                                                         │  load token
    │◄─────────── challenge  {nonce_s} ───────────────────────│
@@ -132,7 +140,14 @@ breaks the replay protection for everyone.
 
 - If the relay does not recognise `device_id`, it MUST still send a `challenge` with a random
   `nonce_s`, and fail at the `auth` step with `err: "auth"`. Failing early at `hello` turns
-  the relay into an oracle for which device IDs exist.
+  the relay into an oracle for which device IDs exist. Implementations should back the unknown
+  case with a throwaway random token so the two paths do the same HMAC work and take the same
+  time, and should run the constant-time comparison *before* any "is this device provisioned"
+  branch — otherwise short-circuit evaluation quietly reintroduces the oracle this rule exists
+  to close.
+- If `hello` is malformed — not valid JSON, missing a required field, or oversized — the relay
+  replies `hello_ack {ok:false, err:"bad_frame"}` and closes with `1008`. It MUST NOT send a
+  `challenge` first, because there is no usable `device_id` to challenge against.
 - On `auth` failure the relay sends `hello_ack {ok:false, err:"auth"}` and closes with `1008`.
 - If the device cannot verify `proof_s`, it MUST close immediately with `1008`, MUST NOT send
   any further frames, and MUST back off before retrying (§8). It SHOULD surface the error
@@ -165,7 +180,23 @@ breaks the replay protection for everyone.
 
 `caps` declares what this firmware can do, so relays feature-detect rather than sniff version
 numbers. A relay MUST NOT send a command whose capability the device did not advertise.
-Defined capabilities: `wake`, `status`, `probe`, `sched`, `log`. Unknown entries are ignored.
+
+Defined capabilities, each naming the relay→device command it gates:
+
+| Capability | Gates |
+|---|---|
+| `wake` | `wake` |
+| `status` | `status` |
+| `probe` | `probe` |
+| `config` | `config_push` |
+| `sched` | reserved for device-side scheduling; no command yet |
+
+Unknown entries are ignored.
+
+There is deliberately **no `log` capability**. Diagnostic logging is enabled locally by the
+operator and there is no frame by which a relay could turn it on, so advertising it would tell
+a relay something it cannot act on. Log frames may arrive from any device whose owner has
+enabled diagnostics, and relays MAY discard them.
 
 `targets` is the device's local view. On a claimed device the relay's view is authoritative
 and is pushed back with `config_push` (§5).
@@ -183,17 +214,25 @@ and is pushed back with `config_push` (§5).
   "t": "wake_result",
   "req_id": "8f14e45f-ea0b-4c1a-9f2d-6e3a7c1b5d90",
   "ok": true,
-  "sent": 24,
+  "sent": 12,
   "ifaces": ["255.255.255.255:9", "192.168.1.255:9", "255.255.255.255:7", "192.168.1.255:7"]
 }
 ```
 
-`sent` is the total number of magic packets that left the device. `ifaces` lists the
-destinations they went to. **These two fields carry most of the diagnostic value in this
-protocol.** The dominant real-world failure is not that the device failed to send — it is
-that the packet never reached the segment the target sits on. `sent: 24` with a subnet
-broadcast that does not match the target's subnet identifies that instantly, and turns an
-unfalsifiable support ticket into a five-second answer.
+`ifaces` lists every destination a datagram went to: the limited broadcast address and the
+subnet-directed broadcast computed from the device's IP and netmask, each on ports 9 and 7.
+
+**`sent` is exactly `ifaces.length × repeat`** — one datagram per destination per burst, with
+`repeat` bursts 100 ms apart (§5, default 3). The example above is four destinations × three
+bursts. This relationship is stated rather than left implied because `sent` is the number a
+support conversation turns on, and a figure nobody can reproduce from the other fields is
+worse than no figure: it looks authoritative and cannot be checked.
+
+**These two fields carry most of the diagnostic value in this protocol.** The dominant
+real-world failure is not that the device failed to send — it is that the packet never reached
+the segment the target sits on. Twelve datagrams sent, with a subnet broadcast that does not
+match the target's subnet, identifies that instantly and turns an unfalsifiable support ticket
+into a five-second answer.
 
 On failure: `{"t":"wake_result","req_id":"…","ok":false,"err":"no_link","sent":0,"ifaces":[]}`.
 
@@ -219,7 +258,15 @@ Sent in response to `probe`, and repeated as the probe progresses. `state` is on
 `waiting`, `up`, `timeout`.
 
 ```json
-{ "t": "probe_result", "req_id": "…", "state": "up", "elapsed_s": 34, "method": "arp" }
+{ "t": "probe_result", "req_id": "…", "ok": true, "state": "up", "elapsed_s": 34, "method": "arp" }
+```
+
+`ok` is `false` when the probe could not be started at all, with `err` carrying a code from §6
+and `state` omitted — a `probe` naming an unparseable MAC otherwise has nowhere to report
+`bad_mac`, and would either be answered with a misleading `timeout` or silently dropped:
+
+```json
+{ "t": "probe_result", "req_id": "…", "ok": false, "err": "bad_mac" }
 ```
 
 ### `config_ack`
@@ -362,6 +409,13 @@ MUST treat an unrecognised code as `internal` rather than failing.
 | `4000` | Protocol version not supported by the relay |
 | `4001` | Superseded — another connection authenticated for this `device_id` |
 | `4002` | Device deprovisioned or token revoked. **The device SHOULD NOT retry**, and reference firmware surfaces the error LED pattern rather than reconnecting forever. |
+| `4003` | Idle timeout — no frame received within the liveness window (§9) |
+
+`4003` exists so that "you went quiet" is distinguishable from "you failed authentication".
+Reusing `1008` for both would collide with the rule in §8 that backoff resets only after a
+connection *completes authentication*: a device that could not tell the two apart would either
+reset its backoff after an auth rejection, or fail to reset it after a healthy connection that
+merely idled out.
 
 `4002` is the only close code that means "stop trying". Everything else is retried with
 backoff.
@@ -458,9 +512,11 @@ MUST therefore treat the token store as secret material: encrypted at rest, neve
 never included in diagnostics. This is a genuine trade-off accepted in exchange for the
 token never crossing the wire, and implementers should know they are making it.
 
-**Rate limiting.** Relays SHOULD limit wake requests per device. Reference behaviour is 30
-per minute — far above any legitimate use, low enough to prevent a compromised account being
-used to hammer a LAN with broadcast traffic.
+**Rate limiting.** Relays SHOULD limit wake requests **per `device_id`**, not per account —
+the resource being protected is one LAN's broadcast domain, and an account with ten dongles in
+ten buildings should not have them share a budget. Reference behaviour is 30 per minute: far
+above any legitimate use, low enough to prevent a compromised account being used to hammer a
+LAN with broadcast traffic.
 
 **Reporting.** Security issues in this protocol or its implementations:
 [`SECURITY.md`](SECURITY.md). Please do not open a public issue.
@@ -492,3 +548,4 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 | Version | Date | Change |
 |---|---|---|
 | 1 | 2026-07-29 | Initial specification. |
+| 1 | 2026-07-29 | Clarifications from the first implementation (`relay-reference`). Building against the spec surfaced nine gaps, all closed here. No frame shape changed; two limits narrowed, and one example was wrong. **`sent` is now defined as `ifaces.length × repeat`** and the §4 example corrected from 24 to 12 — the original figure was not derivable from any other field. **Frame size is now a symmetric 2048 bytes**; the device→relay bound was 8192, which no conforming frame approaches. Added close code **`4003`** (idle timeout), which `1008` could not represent without colliding with auth failure and corrupting the §8 backoff-reset rule. Added the **`config`** capability, without which §4's "MUST NOT send a command whose capability the device did not advertise" was unenforceable for `config_push`. **Removed the `log` capability** — no frame could enable it, so declaring it told a relay nothing actionable. Specified the relay's behaviour when a client omits the subprotocol, the response to a malformed `hello`, and `ok`/`err` on `probe_result` (a `probe` with a bad MAC previously had nowhere to report it). Clarified that rate limiting is per `device_id`, and that the unknown-device comparison must run before any provisioned check. |
