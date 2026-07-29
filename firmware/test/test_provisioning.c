@@ -11,6 +11,7 @@
 
 #include "provisioning/dhcp_msg.h"
 #include "provisioning/dns_msg.h"
+#include "provisioning/http_req.h"
 
 #define AP_IP     0xC0A80401u /* 192.168.4.1 */
 #define AP_MASK   0xFFFFFF00u
@@ -425,10 +426,155 @@ static void test_dns_build(void) {
     RW_CHECK_EQ_INT(rw_dns_build_response(buf, len, &q, AP_IP, 60, tiny, sizeof(tiny)), 0);
 }
 
+/* ── HTTP ────────────────────────────────────────────────────────────────── */
+
+static rw_http_parse_t parse_http(const char *raw, rw_http_request_t *req) {
+    return rw_http_parse(raw, strlen(raw), req);
+}
+
+static void test_http_parse(void) {
+    rw_http_request_t r;
+
+    rw_test_begin("a plain GET parses");
+    RW_CHECK(parse_http("GET / HTTP/1.1\r\nHost: 192.168.4.1\r\n\r\n", &r) == RW_HTTP_PARSE_OK);
+    RW_CHECK(r.method == RW_HTTP_GET);
+    RW_CHECK_EQ_STR(r.path, "/");
+    RW_CHECK_EQ_INT(r.content_length, 0);
+
+    rw_test_begin("a POST reports its content length and where the body starts");
+    const char *post = "POST /api/join HTTP/1.1\r\nHost: x\r\nContent-Length: 27\r\n"
+                       "Content-Type: application/json\r\n\r\n{\"ssid\":\"A\",\"psk\":\"bcdefgh\"}";
+    RW_CHECK(parse_http(post, &r) == RW_HTTP_PARSE_OK);
+    RW_CHECK(r.method == RW_HTTP_POST);
+    RW_CHECK_EQ_STR(r.path, "/api/join");
+    RW_CHECK_EQ_INT(r.content_length, 27);
+    RW_CHECK_EQ_STR(post + r.header_len, "{\"ssid\":\"A\",\"psk\":\"bcdefgh\"}");
+
+    rw_test_begin("header names are case-insensitive, values may be padded");
+    RW_CHECK(parse_http("POST /x HTTP/1.1\r\nCONTENT-LENGTH:   5  \r\n\r\nabcde", &r) ==
+             RW_HTTP_PARSE_OK);
+    RW_CHECK_EQ_INT(r.content_length, 5);
+
+    rw_test_begin("an unterminated head is incomplete, not an error");
+    /* The caller feeds a growing buffer, so "not yet" has to be distinguishable from "no". */
+    RW_CHECK(parse_http("GET / HTTP/1.1\r\nHost: x\r\n", &r) == RW_HTTP_PARSE_INCOMPLETE);
+    RW_CHECK(parse_http("GE", &r) == RW_HTTP_PARSE_INCOMPLETE);
+
+    rw_test_begin("the query string is dropped from the path");
+    RW_CHECK(parse_http("GET /api/scan?t=123 HTTP/1.1\r\n\r\n", &r) == RW_HTTP_PARSE_OK);
+    RW_CHECK_EQ_STR(r.path, "/api/scan");
+
+    rw_test_begin("percent escapes in the path are resolved");
+    RW_CHECK(parse_http("GET /a%2Fb%20c HTTP/1.1\r\n\r\n", &r) == RW_HTTP_PARSE_OK);
+    RW_CHECK_EQ_STR(r.path, "/a/b c");
+
+    rw_test_begin("methods we do not implement still parse, so they can be answered 405");
+    RW_CHECK(parse_http("PUT / HTTP/1.1\r\n\r\n", &r) == RW_HTTP_PARSE_OK);
+    RW_CHECK(r.method == RW_HTTP_METHOD_UNKNOWN);
+    RW_CHECK(parse_http("HEAD / HTTP/1.1\r\n\r\n", &r) == RW_HTTP_PARSE_OK);
+    RW_CHECK(r.method == RW_HTTP_HEAD);
+
+    rw_test_begin("malformed request lines are refused");
+    RW_CHECK(parse_http("GET\r\n\r\n", &r) == RW_HTTP_PARSE_BAD);
+    RW_CHECK(parse_http("GET /\r\n\r\n", &r) == RW_HTTP_PARSE_BAD);      /* no version */
+    RW_CHECK(parse_http("GET  HTTP/1.1\r\n\r\n", &r) == RW_HTTP_PARSE_BAD); /* empty target */
+
+    rw_test_begin("an absolute-form target is refused, not normalised");
+    /* Accepting `GET http://evil/ HTTP/1.1` would make the portal an open redirector on
+     * somebody's LAN. It is legal for proxies and meaningless for us. */
+    RW_CHECK(parse_http("GET http://example.com/ HTTP/1.1\r\n\r\n", &r) == RW_HTTP_PARSE_BAD);
+
+    rw_test_begin("Transfer-Encoding is refused outright (request smuggling)");
+    /* A request carrying both Transfer-Encoding and Content-Length is the classic smuggling
+     * primitive; we support neither chunked bodies nor the ambiguity. */
+    RW_CHECK(parse_http("POST /x HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n", &r) ==
+             RW_HTTP_PARSE_BAD);
+    RW_CHECK(parse_http("POST /x HTTP/1.1\r\nContent-Length: 5\r\n"
+                        "Transfer-Encoding: chunked\r\n\r\n", &r) == RW_HTTP_PARSE_BAD);
+
+    rw_test_begin("a Content-Length that is not purely digits is refused");
+    RW_CHECK(parse_http("POST /x HTTP/1.1\r\nContent-Length: +5\r\n\r\n", &r) ==
+             RW_HTTP_PARSE_BAD);
+    RW_CHECK(parse_http("POST /x HTTP/1.1\r\nContent-Length: 5 6\r\n\r\n", &r) ==
+             RW_HTTP_PARSE_BAD);
+    RW_CHECK(parse_http("POST /x HTTP/1.1\r\nContent-Length: abc\r\n\r\n", &r) ==
+             RW_HTTP_PARSE_BAD);
+
+    rw_test_begin("oversized requests are refused rather than truncated");
+    char big[RW_HTTP_HEADERS_MAX + 64];
+    memset(big, 'a', sizeof(big));
+    big[sizeof(big) - 1] = '\0';
+    RW_CHECK(rw_http_parse(big, sizeof(big) - 1, &r) == RW_HTTP_PARSE_TOO_LARGE);
+
+    char longpath[RW_HTTP_PATH_MAX + 64];
+    int  n = snprintf(longpath, sizeof(longpath), "GET /");
+    memset(longpath + n, 'p', RW_HTTP_PATH_MAX + 4);
+    snprintf(longpath + n + RW_HTTP_PATH_MAX + 4, 24, " HTTP/1.1\r\n\r\n");
+    RW_CHECK(parse_http(longpath, &r) == RW_HTTP_PARSE_TOO_LARGE);
+
+    RW_CHECK(parse_http("POST /x HTTP/1.1\r\nContent-Length: 99999\r\n\r\n", &r) ==
+             RW_HTTP_PARSE_TOO_LARGE);
+}
+
+static void test_http_percent_decode(void) {
+    char out[64];
+
+    rw_test_begin("percent decoding handles the ordinary cases");
+    RW_CHECK(rw_http_percent_decode("abc", 3, out, sizeof(out)));
+    RW_CHECK_EQ_STR(out, "abc");
+    RW_CHECK(rw_http_percent_decode("a%41b", 5, out, sizeof(out)));
+    RW_CHECK_EQ_STR(out, "aAb");
+    RW_CHECK(rw_http_percent_decode("%c3%a9", 6, out, sizeof(out)));
+    RW_CHECK_EQ_STR(out, "\xC3\xA9"); /* é, lower-case hex */
+
+    rw_test_begin("a plus is left alone, because this decodes paths and not form bodies");
+    /* Turning '+' into a space here would quietly corrupt any value carrying one. */
+    RW_CHECK(rw_http_percent_decode("a+b", 3, out, sizeof(out)));
+    RW_CHECK_EQ_STR(out, "a+b");
+
+    rw_test_begin("malformed escapes are refused, not repaired");
+    RW_CHECK(!rw_http_percent_decode("%", 1, out, sizeof(out)));
+    RW_CHECK(!rw_http_percent_decode("%4", 2, out, sizeof(out)));
+    RW_CHECK(!rw_http_percent_decode("%zz", 3, out, sizeof(out)));
+    RW_CHECK(!rw_http_percent_decode("a%2", 3, out, sizeof(out)));
+
+    rw_test_begin("%00 is refused rather than silently truncating the path");
+    /* It would end the string against every downstream strcmp while leaving bytes after it —
+     * which is how a route check gets bypassed. */
+    RW_CHECK(!rw_http_percent_decode("/a%00/b", 7, out, sizeof(out)));
+
+    rw_test_begin("a result that does not fit is refused");
+    char tiny[4];
+    RW_CHECK(!rw_http_percent_decode("abcdefgh", 8, tiny, sizeof(tiny)));
+}
+
+static void test_http_probes(void) {
+    rw_test_begin("every OS connectivity check is recognised");
+    /* Each of these expects a specific successful answer. Giving it one means the OS decides
+     * the network is fine and never offers to open the portal. */
+    RW_CHECK(rw_http_is_captive_probe("/generate_204"));      /* Android */
+    RW_CHECK(rw_http_is_captive_probe("/gen_204"));
+    RW_CHECK(rw_http_is_captive_probe("/hotspot-detect.html")); /* iOS, macOS */
+    RW_CHECK(rw_http_is_captive_probe("/library/test/success.html"));
+    RW_CHECK(rw_http_is_captive_probe("/success.txt"));       /* Firefox */
+    RW_CHECK(rw_http_is_captive_probe("/canonical.html"));    /* Ubuntu */
+    RW_CHECK(rw_http_is_captive_probe("/connecttest.txt"));   /* Windows */
+    RW_CHECK(rw_http_is_captive_probe("/ncsi.txt"));
+
+    rw_test_begin("our own routes are not mistaken for probes");
+    RW_CHECK(!rw_http_is_captive_probe("/"));
+    RW_CHECK(!rw_http_is_captive_probe("/api/scan"));
+    RW_CHECK(!rw_http_is_captive_probe("/generate_204x"));
+    RW_CHECK(!rw_http_is_captive_probe("/generate_20"));
+}
+
 void test_provisioning(void) {
     test_dhcp_parse();
     test_dhcp_build();
     test_dhcp_reply_dest();
     test_dns_parse();
     test_dns_build();
+    test_http_parse();
+    test_http_percent_decode();
+    test_http_probes();
 }

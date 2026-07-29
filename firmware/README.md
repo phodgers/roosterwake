@@ -87,15 +87,31 @@ readable across a room.
 
 | Pattern | Meaning |
 |---|---|
-| Fast blink | Unprovisioned — waiting for configuration |
+| Fast blink | Unprovisioned — the setup hotspot is up |
 | Slow blink | Joining Wi-Fi, or connecting to the relay |
 | Two pulses every 3 s | Authenticated to the relay; this is the resting state |
 | 2 s solid | A wake was just sent |
 | SOS | Authentication failed, deprovisioned, or TLS verification is disabled |
 
+## Provisioning
+
+Three ways in, all writing the same flash record. Whichever finishes first wins.
+
+| Path | How |
+|---|---|
+| **Setup hotspot** | An unconfigured device raises an open AP called `RemoteWake-Setup-XXXX`. Join it from a phone and the captive portal opens by itself — pick a network, enter the password, give it a PC's MAC address |
+| **USB serial** | The line protocol in [`docs/usbcfg.md`](docs/usbcfg.md), driven from a terminal, a script, or `setup.remotewake.com` via Web Serial |
+| **Config UF2** | [`tools/mkconfig`](../tools/mkconfig) builds an image carrying a whole configuration; drag it onto BOOTSEL and the device comes up provisioned with no interaction at all |
+
+The portal is a single HTML file in [`src/provisioning/portal/`](src/provisioning/portal), gzipped
+into flash at build time and served with `Content-Encoding: gzip`. `mock-server.mjs` next to it
+serves the same page against a fake API, so the UI can be worked on without a Pico attached.
+
+The DHCP and DNS servers behind it are written from scratch rather than vendored, so everything
+under `firmware/` is MIT.
+
 ## What is not here yet
 
-The USB command parser ([`docs/usbcfg.md`](docs/usbcfg.md)) and the Wi-Fi setup hotspot are
-separate components and are not part of this build. Until they land, a device is provisioned
-with a config UF2 from [`tools/mkconfig`](../tools/mkconfig). See §12 of
+No over-the-air firmware update: updates happen by UF2, either drag-and-drop or through the
+setup page's WebUSB flashing. This is a deliberate v1 decision rather than a gap — see §12 of
 [`docs/architecture.md`](docs/architecture.md).

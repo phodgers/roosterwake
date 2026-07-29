@@ -14,6 +14,7 @@
 #include "brand.h"
 #include "config/config_flash.h"
 #include "net/net.h"
+#include "net/scan.h"
 #include "proto/json.h"
 #include "proto/proto.h"
 #include "rw_log.h"
@@ -29,24 +30,10 @@
  */
 #define RESP_MAX 1600
 
-/* usbcfg.md §4: "Takes up to 10 seconds." */
-#define SCAN_TIMEOUT_MS 10000
-
-/* Enough networks that a dense block of flats still shows the user's own, few enough that the
- * response stays inside RESP_MAX. Extras are dropped weakest-first, never truncated mid-object. */
-#define SCAN_MAX_NETWORKS 20
-
 /* usbcfg.md §4: the response goes out before the port disappears, so the host sees the outcome
  * rather than a disconnect. */
 #define REBOOT_DELAY_MS         1000
 #define REBOOT_DELAY_SHORT_MS   250
-
-typedef struct {
-    char    ssid[RW_CFG_SSID_LEN];
-    int16_t rssi;
-    uint16_t channel;
-    uint8_t auth_mode;
-} scan_entry_t;
 
 static rw_config_t *s_live;
 static rw_stage_t   s_stage;
@@ -56,10 +43,6 @@ static bool         s_reboot_pending;
 static char   s_line[RW_USBCFG_MAX_LINE];
 static size_t s_line_len;
 static bool   s_overflowed;
-
-/* Scan state. The cyw43 callback runs on the main context in poll mode, so no locking. */
-static scan_entry_t s_scan[SCAN_MAX_NETWORKS];
-static int          s_scan_count;
 
 /* ── Output ──────────────────────────────────────────────────────────────── */
 
@@ -81,129 +64,15 @@ static bool is_configured(const rw_config_t *cfg) {
     return cfg->ssid[0] != '\0';
 }
 
-/*
- * Map the scan result's auth byte.
- *
- * This is the CYW43 scan capability byte, which is not the same encoding as the CYW43_AUTH_*
- * constants used when joining. It distinguishes open from WPA from WPA2, but **not WPA2 from
- * WPA3** — both present as an AES-PSK capability here, and the SAE bit that would separate them
- * is not carried in this field. Reporting "wpa2" for a WPA3 network is therefore possible and
- * deliberate; inventing a confident "wpa3" from a byte that cannot express it would be worse.
- *
- * Nothing depends on getting this exactly right: SET_WIFI stages RW_WIFI_AUTH_AUTO regardless,
- * and the join negotiates whatever the router actually offers. It is a display hint for the
- * lock icon in a setup UI, and it is documented as such.
- */
-static const char *scan_auth_name(uint8_t auth_mode) {
-    if (auth_mode == 0) {
-        return "open";
-    }
-    if (auth_mode & 0x04u) {
-        return "wpa2";
-    }
-    if (auth_mode & 0x02u) {
-        return "wpa";
-    }
-    return "secured";
-}
-
 /* ── SCAN ────────────────────────────────────────────────────────────────── */
 
-static int scan_result_cb(void *env, const cyw43_ev_scan_result_t *result) {
-    (void)env;
-    if (result == NULL || result->ssid_len == 0) {
-        /* A hidden network. usbcfg.md §4 says these appear with an empty ssid, but only once —
-         * every beacon from every hidden AP would otherwise fill the list with blanks. */
-        return 0;
-    }
-
-    char ssid[RW_CFG_SSID_LEN];
-    size_t len = result->ssid_len;
-    if (len >= sizeof(ssid)) {
-        len = sizeof(ssid) - 1;
-    }
-    memcpy(ssid, result->ssid, len);
-    ssid[len] = '\0';
-
-    /* An SSID the radio reports with a NUL or invalid UTF-8 in it would travel into a JSON
-     * response and out to a browser. Drop it rather than repair it. */
-    if (strlen(ssid) != len || !rw_utf8_valid(ssid)) {
-        return 0;
-    }
-
-    /* Collapse duplicates to the strongest: every band and every mesh node beacons separately,
-     * and a picker listing "HomeNet" six times is worse than useless. */
-    for (int i = 0; i < s_scan_count; i++) {
-        if (strcmp(s_scan[i].ssid, ssid) == 0) {
-            if (result->rssi > s_scan[i].rssi) {
-                s_scan[i].rssi      = result->rssi;
-                s_scan[i].channel   = result->channel;
-                s_scan[i].auth_mode = result->auth_mode;
-            }
-            return 0;
-        }
-    }
-
-    int slot;
-    if (s_scan_count < SCAN_MAX_NETWORKS) {
-        slot = s_scan_count++;
-    } else {
-        /* Full: displace the weakest, but only if this one beats it. The list is then the
-         * strongest N the radio heard rather than the first N, which matters in a block of
-         * flats where the user's own router is rarely the first to answer. */
-        slot = 0;
-        for (int i = 1; i < s_scan_count; i++) {
-            if (s_scan[i].rssi < s_scan[slot].rssi) {
-                slot = i;
-            }
-        }
-        if (result->rssi <= s_scan[slot].rssi) {
-            return 0;
-        }
-    }
-
-    snprintf(s_scan[slot].ssid, sizeof(s_scan[slot].ssid), "%s", ssid);
-    s_scan[slot].rssi      = result->rssi;
-    s_scan[slot].channel   = result->channel;
-    s_scan[slot].auth_mode = result->auth_mode;
-    return 0;
-}
-
-static void scan_sort_by_rssi(void) {
-    /* Insertion sort over at most 20 entries: the obvious algorithm at this size, and it keeps
-     * equal-strength networks in discovery order. */
-    for (int i = 1; i < s_scan_count; i++) {
-        scan_entry_t key = s_scan[i];
-        int          j   = i - 1;
-        while (j >= 0 && s_scan[j].rssi < key.rssi) {
-            s_scan[j + 1] = s_scan[j];
-            j--;
-        }
-        s_scan[j + 1] = key;
-    }
-}
-
 static void cmd_scan(void) {
-    if (cyw43_wifi_scan_active(&cyw43_state)) {
+    rw_scan_entry_t nets[RW_SCAN_MAX];
+    int             count = rw_scan_run(nets, RW_SCAN_MAX);
+    if (count < 0) {
         respond_err(RW_UERR_BUSY);
         return;
     }
-
-    s_scan_count = 0;
-    cyw43_wifi_scan_options_t opts;
-    memset(&opts, 0, sizeof(opts));
-    if (cyw43_wifi_scan(&cyw43_state, &opts, NULL, scan_result_cb) != 0) {
-        respond_err(RW_UERR_INTERNAL);
-        return;
-    }
-
-    absolute_time_t deadline = make_timeout_time_ms(SCAN_TIMEOUT_MS);
-    while (cyw43_wifi_scan_active(&cyw43_state) && !time_reached(deadline)) {
-        /* Pumps the stack and feeds the watchdog: an eight-second scan would otherwise trip it. */
-        rw_sys_pump_ms(50);
-    }
-
-    scan_sort_by_rssi();
 
     char    buf[RESP_MAX];
     rw_jw_t w;
@@ -211,22 +80,22 @@ static void cmd_scan(void) {
     rw_jw_raw(&w, "{");
     rw_jw_key(&w, "networks");
     rw_jw_raw(&w, "[");
-    for (int i = 0; i < s_scan_count; i++) {
+    for (int i = 0; i < count; i++) {
         if (i > 0) {
             rw_jw_raw(&w, ",");
         }
         rw_jw_raw(&w, "{");
         rw_jw_key(&w, "ssid");
-        rw_jw_str(&w, s_scan[i].ssid);
+        rw_jw_str(&w, nets[i].ssid);
         rw_jw_raw(&w, ",");
         rw_jw_key(&w, "rssi");
-        rw_jw_int(&w, s_scan[i].rssi);
+        rw_jw_int(&w, nets[i].rssi);
         rw_jw_raw(&w, ",");
         rw_jw_key(&w, "auth");
-        rw_jw_str(&w, scan_auth_name(s_scan[i].auth_mode));
+        rw_jw_str(&w, rw_scan_auth_name(nets[i].auth_mode));
         rw_jw_raw(&w, ",");
         rw_jw_key(&w, "channel");
-        rw_jw_int(&w, s_scan[i].channel);
+        rw_jw_int(&w, nets[i].channel);
         rw_jw_raw(&w, "}");
     }
     rw_jw_raw(&w, "]}");

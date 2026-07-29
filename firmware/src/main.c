@@ -21,6 +21,7 @@
 #include "net/net.h"
 #include "proto/auth.h"
 #include "proto/proto.h"
+#include "provisioning/provisioning.h"
 #include "rw_log.h"
 #include "sys/sys.h"
 #include "sys/wallclock.h"
@@ -204,13 +205,18 @@ int main(void) {
         rw_relay_start();
     } else {
         /*
-         * Unprovisioned. The LED shows the setup pattern and the USB CDC channel is up and
-         * waiting for the usbcfg commands that write a configuration. The Wi-Fi setup hotspot
-         * and its captive portal are a separate component and are not part of this firmware
-         * build; a device in this state is configured over USB or with a config UF2 from
-         * tools/mkconfig.
+         * Unprovisioned: bring up the setup hotspot and its captive portal, so a person with
+         * nothing but a phone can get the device onto their network. The usbcfg channel and a
+         * config UF2 from tools/mkconfig remain available in parallel — all three paths write
+         * the same record, and whichever completes first wins.
          */
-        RW_LOG_WARN("unprovisioned: waiting for configuration");
+        RW_LOG_WARN("unprovisioned: starting setup mode");
+        if (!rw_provisioning_start(&s_config)) {
+            /* No hotspot means no over-the-air setup at all. Say so on the LED rather than
+             * sitting there looking like a device that is merely waiting. */
+            RW_LOG_ERROR("setup mode failed to start; USB configuration only");
+            rw_led_set(RW_LED_ERROR);
+        }
     }
 
     while (true) {
@@ -234,6 +240,7 @@ int main(void) {
             rw_net_task();
             rw_arp_learn_tick();
             rw_relay_task();
+            rw_provisioning_task();
         }
 
         update_led(provisioned);

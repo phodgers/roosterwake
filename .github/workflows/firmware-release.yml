@@ -1,0 +1,166 @@
+name: firmware release
+
+# Publishes a downloadable UF2.
+#
+# This workflow is the reason nobody has to install a toolchain to own this device. The three
+# ways firmware gets onto a dongle - pre-flashed in a kit, flashed by setup.remotewake.com over
+# WebUSB, or dragged onto the BOOTSEL drive - all end up pulling the artefact this job attaches
+# to a GitHub release. `firmware build` produces an Actions artefact, which expires after 90
+# days and needs a GitHub login; that is fine for CI and useless as a download.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build and release (must already exist)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    env:
+      PICO_SDK_PATH: ${{ github.workspace }}/pico-sdk
+      PICO_SDK_VERSION: '2.2.0'
+      ARM_RELEASE: 14.2.rel1
+      ARM_SHA256: 62a63b981fe391a9cbad7ef51b17e49aeaa3e7b0d029b36ca1e9c3b2a9b78823
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0   # release notes are generated from the log since the previous tag
+
+      - name: Work out the version
+        id: ver
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$tag"                 >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}"         >> "$GITHUB_OUTPUT"
+
+      # The firmware reports its version in `hello`, in status_result and in usbcfg INFO. A
+      # release whose binary disagrees with its tag is a support conversation nobody can win,
+      # so the mismatch is a build failure rather than a note in the release body.
+      - name: Check brand.h agrees with the tag
+        run: |
+          set -euo pipefail
+          in_header=$(grep -oP '#define RW_FW_VERSION "\K[^"]+' firmware/src/brand.h)
+          want="${{ steps.ver.outputs.version }}"
+          if [ "$in_header" != "$want" ]; then
+            echo "::error::brand.h says RW_FW_VERSION \"$in_header\" but the tag is \"$want\"."
+            echo "::error::Update firmware/src/brand.h and re-tag."
+            exit 1
+          fi
+          echo "version $want confirmed"
+
+      - name: Install cmake and ninja
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build
+
+      - name: Install the ARM toolchain
+        run: |
+          set -euo pipefail
+          tarball="arm-gnu-toolchain-${ARM_RELEASE}-x86_64-arm-none-eabi.tar.xz"
+          curl -fsSL --retry 3 --retry-delay 5 -o "$tarball" \
+            "https://developer.arm.com/-/media/Files/downloads/gnu/${ARM_RELEASE}/binrel/${tarball}"
+          echo "${ARM_SHA256}  ${tarball}" | sha256sum -c -
+          sudo mkdir -p /opt/arm-none-eabi
+          sudo tar -xf "$tarball" -C /opt/arm-none-eabi --strip-components=1
+          echo "/opt/arm-none-eabi/bin" >> "$GITHUB_PATH"
+
+      - name: Check out the pico-sdk
+        uses: actions/checkout@v4
+        with:
+          repository: raspberrypi/pico-sdk
+          ref: ${{ env.PICO_SDK_VERSION }}
+          path: pico-sdk
+          submodules: recursive
+
+      - name: Build
+        run: |
+          cmake -S firmware -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+
+      - name: Name the artefacts and checksum them
+        id: art
+        run: |
+          set -euo pipefail
+          v="${{ steps.ver.outputs.version }}"
+          mkdir -p dist
+          cp build/remotewake.uf2 "dist/remotewake-${v}.uf2"
+          cp build/remotewake.elf "dist/remotewake-${v}.elf"
+          cd dist
+          sha256sum "remotewake-${v}.uf2" "remotewake-${v}.elf" > "remotewake-${v}.sha256"
+          cat "remotewake-${v}.sha256"
+          echo "size=$(stat -c%s ../build/remotewake.bin)" >> "$GITHUB_OUTPUT"
+
+      - name: Write the release notes
+        id: notes
+        run: |
+          set -euo pipefail
+          v="${{ steps.ver.outputs.version }}"
+          prev=$(git describe --tags --abbrev=0 "${{ steps.ver.outputs.tag }}^" 2>/dev/null || true)
+
+          {
+            echo "## Install"
+            echo
+            echo "**You do not need a toolchain.** Pick whichever suits you:"
+            echo
+            echo "1. **Browser** — open <https://setup.remotewake.com>, plug the dongle in, and"
+            echo "   follow the steps. Chromium-based browsers only (Web Serial and WebUSB)."
+            echo "2. **Drag and drop** — hold BOOTSEL while plugging the board in, then copy"
+            echo "   \`remotewake-${v}.uf2\` onto the \`RP2350\` drive that appears. Works everywhere."
+            echo "3. **Already flashed** — kits ship ready to go; just plug it in."
+            echo
+            echo "Configuration in flash survives a firmware update, so a device reflashed this"
+            echo "way comes back already provisioned."
+            echo
+            echo "Verify the download against \`remotewake-${v}.sha256\`."
+            echo
+            echo "Flash used: ${{ steps.art.outputs.size }} of 4,186,112 bytes."
+            echo
+            echo "## Changes"
+            echo
+            if [ -n "$prev" ]; then
+              git log --no-merges --pretty='- %s' "${prev}..${{ steps.ver.outputs.tag }}"
+            else
+              echo "- First release."
+            fi
+          } > notes.md
+          cat notes.md
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: Remote Wake firmware ${{ steps.ver.outputs.version }}
+          body_path: notes.md
+          files: dist/*
+          fail_on_unmatched_files: true
+
+      # Tells the dashboard and setup.remotewake.com that a new build exists, so neither has a
+      # hardcoded version in it. Skipped rather than failed when the secret is absent: the admin
+      # app does not exist yet, and a release that cannot publish itself is still a release
+      # people can download.
+      - name: Notify the cloud
+        env:
+          ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_API_KEY:-}" ]; then
+            echo "::notice::ADMIN_API_KEY is not set; skipping the firmware-registry callback."
+            exit 0
+          fi
+          v="${{ steps.ver.outputs.version }}"
+          sha=$(awk '/\.uf2$/ {print $1}' "dist/remotewake-${v}.sha256")
+          curl -fsS -X POST "https://admin.remotewake.com/api/firmware/releases" \
+            -H "authorization: Bearer ${ADMIN_API_KEY}" \
+            -H 'content-type: application/json' \
+            -d "{\"version\":\"${v}\",\"channel\":\"stable\",\"sha256\":\"${sha}\",\"size\":${{ steps.art.outputs.size }},\"url\":\"https://github.com/${{ github.repository }}/releases/download/${{ steps.ver.outputs.tag }}/remotewake-${v}.uf2\"}"

@@ -45,6 +45,9 @@ set(RW_PORTABLE_SOURCES
     src/net/url.c
     src/proto/auth.c
     src/proto/json.c
+    src/provisioning/dhcp_msg.c
+    src/provisioning/dns_msg.c
+    src/provisioning/http_req.c
     src/usbcfg/cmdline.c
     src/vendor/jsmn.c
     src/wol/magic.c
@@ -59,8 +62,13 @@ set(RW_DEVICE_SOURCES
     src/led/led.c
     src/net/arplearn.c
     src/net/net.c
+    src/net/scan.c
     src/proto/probe.c
     src/proto/proto.c
+    src/provisioning/dhcpserver.c
+    src/provisioning/dnsserver.c
+    src/provisioning/httpd.c
+    src/provisioning/provisioning.c
     src/sys/sys.c
     src/sys/wallclock.c
     src/tls/ca_bundle.c
@@ -71,7 +79,34 @@ set(RW_DEVICE_SOURCES
     src/ws/ws.c
 )
 
+# ── Captive portal page ───────────────────────────────────────────────────────
+#
+# The portal is one self-contained HTML file, gzipped at build time and served straight out of
+# flash with Content-Encoding: gzip. Every browser that can render a captive portal can also
+# decompress one, so this costs nothing and turns ~16 KB into ~6 KB. Serving it from flash
+# rather than a buffer means the page costs no SRAM at all.
+#
+# The generator is Python because it is already a hard dependency of the SDK's build, so this
+# adds nothing to what a contributor must install. Regenerating on every change of the source
+# file is what keeps the committed HTML and the shipped blob from ever disagreeing.
+set(RW_PORTAL_SRC ${CMAKE_CURRENT_LIST_DIR}/src/provisioning/portal/portal.html)
+set(RW_PORTAL_HDR ${CMAKE_CURRENT_BINARY_DIR}/generated/portal_html.h)
+
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+add_custom_command(
+    OUTPUT ${RW_PORTAL_HDR}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/generated
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_LIST_DIR}/tools/gzip_header.py
+            ${RW_PORTAL_SRC} ${RW_PORTAL_HDR} k_portal_html_gz
+    DEPENDS ${RW_PORTAL_SRC} ${CMAKE_CURRENT_LIST_DIR}/tools/gzip_header.py
+    COMMENT "Compressing the captive portal into portal_html.h"
+    VERBATIM
+)
+add_custom_target(rw_portal_html DEPENDS ${RW_PORTAL_HDR})
+
 add_executable(remotewake ${RW_PORTABLE_SOURCES} ${RW_DEVICE_SOURCES})
+add_dependencies(remotewake rw_portal_html)
 
 target_include_directories(remotewake PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/src

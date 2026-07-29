@@ -61,6 +61,7 @@ set(RW_PORTABLE_SOURCES
     ${RW_SRC}/proto/json.c
     ${RW_SRC}/provisioning/dhcp_msg.c
     ${RW_SRC}/provisioning/dns_msg.c
+    ${RW_SRC}/provisioning/http_req.c
     ${RW_SRC}/usbcfg/cmdline.c
     ${RW_SRC}/vendor/jsmn.c
     ${RW_SRC}/wol/magic.c
