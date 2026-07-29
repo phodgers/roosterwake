@@ -340,17 +340,21 @@ static void test_dns_parse(void) {
     RW_CHECK(!rw_dns_parse_query(buf, len, &q));
 
     rw_test_begin("a name longer than 255 bytes is refused");
+    /* Five 63-byte labels is 320 bytes of name, comfortably past RW_DNS_NAME_MAX, and the whole
+     * message still fits RW_DNS_MSG_MAX. Eight labels would overrun `buf` itself — which is
+     * exactly what an earlier version of this test did, and Ubuntu's stack protector caught in
+     * CI after a MinGW build without one had waved it through. */
     memset(buf, 0, sizeof(buf));
-    buf[5]     = 1;
-    buf[3]     = 0x00;
+    buf[5]     = 1; /* qdcount */
     size_t pos = RW_DNS_HEADER_LEN;
-    for (int i = 0; i < 8; i++) { /* 8 x 63-byte labels = 512 bytes */
+    for (int i = 0; i < 5; i++) {
         buf[pos++] = 63;
         memset(buf + pos, 'a', 63);
         pos += 63;
     }
     buf[pos++] = 0;
     buf[pos++] = 0; buf[pos++] = 1; buf[pos++] = 0; buf[pos++] = 1;
+    RW_CHECK(pos <= sizeof(buf));
     RW_CHECK(!rw_dns_parse_query(buf, pos, &q));
 }
 

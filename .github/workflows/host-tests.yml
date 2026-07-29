@@ -46,7 +46,15 @@ jobs:
         run: git submodule update --init lib/mbedtls
 
       - name: Configure
-        run: cmake -S firmware/test -B build-test -G Ninja -DCMAKE_BUILD_TYPE=Debug
+        # Sanitizers on. Half this suite exists to feed malformed packets to parsers that will
+        # face them for real on an open hotspot, and a memory bug those parsers hit is worth
+        # far more caught here than inferred later from a device that reboots.
+        # MinGW ships no ASan, so contributors on Windows get -fstack-protector-strong instead
+        # and this job is where the rest is enforced.
+        run: >
+          cmake -S firmware/test -B build-test -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DRW_TEST_SANITIZE=ON
 
       - name: Build
         run: cmake --build build-test

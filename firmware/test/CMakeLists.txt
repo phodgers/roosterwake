@@ -98,7 +98,30 @@ target_compile_definitions(rw_tests PRIVATE
 
 target_compile_options(rw_tests PRIVATE
     -Wall -Wextra -Wshadow -Wundef -Werror
+    # Unconditional, because it is the cheapest possible insurance and it is portable. Ubuntu's
+    # GCC turns this on by default and MinGW does not, and that difference alone once let a test
+    # with a 529-byte write into a 512-byte buffer pass locally and abort in CI. A check that
+    # only some contributors get is a check that finds bugs at the least convenient moment.
+    -fstack-protector-strong
 )
+
+# ── Sanitizers ────────────────────────────────────────────────────────────────
+#
+# ASan and UBSan are the right tools for code whose whole job is parsing hostile input, but
+# MinGW-w64 ships neither, so they cannot be the default without breaking the Windows build.
+# CI turns them on; `-DRW_TEST_SANITIZE=ON` gets you the same locally on Linux or macOS.
+option(RW_TEST_SANITIZE "Build the host tests with ASan and UBSan" OFF)
+
+if (RW_TEST_SANITIZE)
+    # -fno-sanitize-recover makes UBSan abort rather than print and carry on. A warning in a log
+    # that still exits 0 is a warning nobody reads.
+    set(RW_SAN_FLAGS -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+    target_compile_options(rw_tests PRIVATE ${RW_SAN_FLAGS})
+    target_link_options(rw_tests PRIVATE ${RW_SAN_FLAGS})
+    # mbedTLS is exempted from our warning settings but not from the sanitizers: a bug there
+    # would corrupt our memory just as thoroughly.
+    message(STATUS "Host tests built with ASan and UBSan")
+endif()
 # mbedTLS is held to its own warning settings, not ours.
 set_source_files_properties(${MBEDTLS_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
 
