@@ -1,0 +1,44 @@
+# Remote Wake reference relay.
+#
+#   cp config.json.example config.json   # then edit it
+#   docker compose up -d
+#   curl http://127.0.0.1:8080/healthz
+#
+# This publishes plain HTTP on the loopback interface only. Devices need wss://, so put a
+# reverse proxy or a Cloudflare Tunnel in front of it — README.md has a copy-paste config for
+# both. Exposing 8080 straight to the internet would carry device tokens' worth of authority
+# over an unencrypted hop.
+
+services:
+  relay:
+    build: .
+    image: remotewake-relay-reference:1.0.0
+    container_name: remotewake-relay
+    restart: unless-stopped
+
+    # 127.0.0.1 on purpose. Change it to "8080:8080" only if something else terminates TLS.
+    ports:
+      - "127.0.0.1:8080:8080"
+
+    # Read-only, because the relay's entire persistent state is this one file.
+    volumes:
+      - ./config.json:/app/config.json:ro
+
+    environment:
+      RW_LOG: info
+
+    # The relay writes nothing and needs no privileges. If a dependency ever tries to, this
+    # turns a silent compromise into a loud crash.
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,13 @@
+# config.json holds every device token this relay knows. It is mounted at run time, never
+# copied into an image layer. This line is the reason .dockerignore exists here at all.
+config.json
+*.local.json
+
+node_modules
+npm-debug.log*
+.git
+.gitignore
+Dockerfile
+docker-compose.yml
+.dockerignore
+tmp-screenshots
