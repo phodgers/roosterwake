@@ -176,6 +176,19 @@ rw_http_parse_t rw_http_parse(const char *buf, size_t len, rw_http_request_t *ou
             return RW_HTTP_PARSE_BAD;
         } else if (starts_with_ci(p, hl, "expect:")) {
             out->expects_continue = true;
+        } else if (starts_with_ci(p, hl, "accept-encoding:")) {
+            /* A substring match is enough here. The only coding we can produce is gzip, and the
+             * alternative — parsing the full q-value grammar to honour `gzip;q=0` — would be a
+             * lot of code to serve a client that has gone out of its way to refuse the one
+             * encoding we have. Such a client still gets the uncompressed stub. */
+            const char *v  = p + strlen("accept-encoding:");
+            size_t      vl = hl - strlen("accept-encoding:");
+            for (size_t k = 0; k + 4 <= vl; k++) {
+                if (starts_with_ci(v + k, vl - k, "gzip")) {
+                    out->accepts_gzip = true;
+                    break;
+                }
+            }
         }
 
         p = eol + 2;
@@ -184,22 +197,38 @@ rw_http_parse_t rw_http_parse(const char *buf, size_t len, rw_http_request_t *ou
     return RW_HTTP_PARSE_OK;
 }
 
-bool rw_http_is_captive_probe(const char *path) {
-    static const char *const k_probes[] = {
-        "/generate_204",            /* Android */
-        "/gen_204",                 /* Android, older */
-        "/hotspot-detect.html",     /* iOS, macOS */
-        "/library/test/success.html", /* macOS */
-        "/success.txt",             /* Firefox */
-        "/canonical.html",          /* Ubuntu / NetworkManager */
-        "/connecttest.txt",         /* Windows */
-        "/ncsi.txt",                /* Windows, older */
-        "/redirect",                /* Windows follows this after connecttest */
+rw_http_probe_t rw_http_probe_kind(const char *path) {
+    static const struct {
+        const char     *path;
+        rw_http_probe_t kind;
+    } k_probes[] = {
+        /*
+         * Apple. Served the page directly rather than redirected, because the Captive Network
+         * Assistant judges *this* response: a 200 that does not say "Success" opens the sheet
+         * immediately, whereas a redirect makes it fetch and evaluate a second URL first.
+         * Lower-case too — iOS has used both spellings of the Library path over the years.
+         */
+        {"/hotspot-detect.html", RW_PROBE_INLINE},
+        {"/library/test/success.html", RW_PROBE_INLINE},
+        {"/Library/test/success.html", RW_PROBE_INLINE},
+
+        /* Everyone else treats a redirect as the definitive portal signal. */
+        {"/generate_204", RW_PROBE_REDIRECT},   /* Android */
+        {"/gen_204", RW_PROBE_REDIRECT},        /* Android, older */
+        {"/success.txt", RW_PROBE_REDIRECT},    /* Firefox */
+        {"/canonical.html", RW_PROBE_REDIRECT}, /* Ubuntu / NetworkManager */
+        {"/connecttest.txt", RW_PROBE_REDIRECT},/* Windows */
+        {"/ncsi.txt", RW_PROBE_REDIRECT},       /* Windows, older */
+        {"/redirect", RW_PROBE_REDIRECT},       /* Windows follows this after connecttest */
     };
     for (size_t i = 0; i < sizeof(k_probes) / sizeof(k_probes[0]); i++) {
-        if (strcmp(path, k_probes[i]) == 0) {
-            return true;
+        if (strcmp(path, k_probes[i].path) == 0) {
+            return k_probes[i].kind;
         }
     }
-    return false;
+    return RW_PROBE_NONE;
+}
+
+bool rw_http_is_captive_probe(const char *path) {
+    return rw_http_probe_kind(path) != RW_PROBE_NONE;
 }

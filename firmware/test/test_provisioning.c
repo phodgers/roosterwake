@@ -455,6 +455,31 @@ static void test_http_parse(void) {
              RW_HTTP_PARSE_OK);
     RW_CHECK_EQ_INT(r.content_length, 5);
 
+    rw_test_begin("Accept-Encoding decides whether we may compress (RFC 9110)");
+    /*
+     * This is why the captive-portal sheet would not open. The portal is stored gzipped and was
+     * served with Content-Encoding: gzip unconditionally — fine for browsers, which always ask
+     * for it, and fatal for Apple's probe client, which sends no Accept-Encoding at all and got
+     * back a body it could not decode. It concluded the network was broken rather than captive.
+     */
+    RW_CHECK(parse_http("GET / HTTP/1.1\r\nAccept-Encoding: gzip, deflate\r\n\r\n", &r) ==
+             RW_HTTP_PARSE_OK);
+    RW_CHECK(r.accepts_gzip);
+    RW_CHECK(parse_http("GET / HTTP/1.1\r\naccept-encoding: GZIP\r\n\r\n", &r) ==
+             RW_HTTP_PARSE_OK);
+    RW_CHECK(r.accepts_gzip);
+    RW_CHECK(parse_http("GET / HTTP/1.1\r\nAccept-Encoding: br, gzip;q=0.8\r\n\r\n", &r) ==
+             RW_HTTP_PARSE_OK);
+    RW_CHECK(r.accepts_gzip);
+
+    rw_test_begin("no Accept-Encoding means no compression, which is the probe's case");
+    RW_CHECK(parse_http("GET /hotspot-detect.html HTTP/1.1\r\nHost: captive.apple.com\r\n\r\n",
+                        &r) == RW_HTTP_PARSE_OK);
+    RW_CHECK(!r.accepts_gzip);
+    RW_CHECK(parse_http("GET / HTTP/1.1\r\nAccept-Encoding: deflate, br\r\n\r\n", &r) ==
+             RW_HTTP_PARSE_OK);
+    RW_CHECK(!r.accepts_gzip);
+
     rw_test_begin("an unterminated head is incomplete, not an error");
     /* The caller feeds a growing buffer, so "not yet" has to be distinguishable from "no". */
     RW_CHECK(parse_http("GET / HTTP/1.1\r\nHost: x\r\n", &r) == RW_HTTP_PARSE_INCOMPLETE);
@@ -566,6 +591,26 @@ static void test_http_probes(void) {
     RW_CHECK(!rw_http_is_captive_probe("/api/scan"));
     RW_CHECK(!rw_http_is_captive_probe("/generate_204x"));
     RW_CHECK(!rw_http_is_captive_probe("/generate_20"));
+    RW_CHECK(rw_http_probe_kind("/") == RW_PROBE_NONE);
+
+    rw_test_begin("Apple's probes are answered inline, everyone else's by redirect");
+    /*
+     * The Captive Network Assistant judges the probe response itself, so a 200 that does not say
+     * "Success" opens the sheet at once. Handed a redirect it must fetch and evaluate a second
+     * URL first, and losing that race is what makes the portal appear on the second join but not
+     * the first. Android and Windows treat the redirect as the definitive signal, so they keep
+     * it — answering *them* inline would be the same mistake in reverse.
+     */
+    RW_CHECK(rw_http_probe_kind("/hotspot-detect.html") == RW_PROBE_INLINE);
+    RW_CHECK(rw_http_probe_kind("/library/test/success.html") == RW_PROBE_INLINE);
+    RW_CHECK(rw_http_probe_kind("/Library/test/success.html") == RW_PROBE_INLINE);
+
+    RW_CHECK(rw_http_probe_kind("/generate_204") == RW_PROBE_REDIRECT);
+    RW_CHECK(rw_http_probe_kind("/gen_204") == RW_PROBE_REDIRECT);
+    RW_CHECK(rw_http_probe_kind("/connecttest.txt") == RW_PROBE_REDIRECT);
+    RW_CHECK(rw_http_probe_kind("/ncsi.txt") == RW_PROBE_REDIRECT);
+    RW_CHECK(rw_http_probe_kind("/success.txt") == RW_PROBE_REDIRECT);
+    RW_CHECK(rw_http_probe_kind("/canonical.html") == RW_PROBE_REDIRECT);
 }
 
 void test_provisioning(void) {

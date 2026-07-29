@@ -46,6 +46,44 @@ static struct tcp_pcb *s_listen;
 static uint32_t        s_server_ip;
 static char            s_redirect[64];
 
+/*
+ * Probe timing, which is the only visibility we get into whether the sheet will open.
+ *
+ * Nothing tells the device that a phone opened the portal — the OS decides silently and never
+ * reports back. What we can see is the shape of the probe traffic, and that is diagnostic
+ * enough: a first probe arriving promptly and answered once usually means the sheet appeared,
+ * while a probe repeated every few seconds means the OS is still unconvinced.
+ */
+static absolute_time_t s_listen_since;
+static uint32_t        s_probe_count;
+
+/*
+ * A small uncompressed page, built once at start-up.
+ *
+ * Two jobs. It is what a captive-portal probe gets — deliberately *not* containing the word
+ * Apple looks for, so the sheet opens — and it is what any client that cannot accept gzip gets
+ * in place of the compressed portal. The meta refresh then pulls the real page in, which by
+ * then is being fetched by a browser that does accept gzip.
+ *
+ * It has to be uncompressed: the probe clients send no Accept-Encoding, and serving them a
+ * gzipped body is what stopped the sheet opening in the first place.
+ */
+static char s_stub[420];
+static size_t s_stub_len;
+
+static void build_stub(void) {
+    s_stub_len = (size_t)snprintf(
+        s_stub, sizeof(s_stub),
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "<title>Remote Wake setup</title>"
+        "<meta http-equiv=\"refresh\" content=\"0;url=%s\"></head>"
+        "<body style=\"font:16px system-ui,sans-serif;margin:2rem\">"
+        "<h1>Remote Wake setup</h1>"
+        "<p>Continue to <a href=\"%s\">%s</a></p></body></html>",
+        s_redirect, s_redirect, s_redirect);
+}
+
 static conn_t *conn_alloc(void) {
     for (int i = 0; i < RW_HTTPD_MAX_CONNS; i++) {
         if (!s_conns[i].in_use) {
@@ -210,7 +248,15 @@ static void respond_redirect(conn_t *c) {
 
 static void handle_request(conn_t *c, const rw_http_request_t *r, const char *body,
                            size_t body_len) {
-    RW_LOG_INFO("http: method=%d path=%s", (int)r->method, r->path);
+    rw_http_probe_t probe = rw_http_probe_kind(r->path);
+    if (probe != RW_PROBE_NONE) {
+        s_probe_count++;
+        RW_LOG_INFO("http: probe #%lu %s (%s) at +%lld ms", (unsigned long)s_probe_count,
+                    r->path, probe == RW_PROBE_INLINE ? "inline" : "redirect",
+                    (long long)(absolute_time_diff_us(s_listen_since, get_absolute_time()) / 1000));
+    } else {
+        RW_LOG_INFO("http: method=%d path=%s", (int)r->method, r->path);
+    }
     /* CORS preflight: the portal is same-origin, but a browser extension or a user driving the
      * API from another page will send one, and a bare 200 is cheaper than a support question. */
     if (r->method == RW_HTTP_OPTIONS) {
@@ -268,12 +314,32 @@ static void handle_request(conn_t *c, const rw_http_request_t *r, const char *bo
             respond(c, "405 Method Not Allowed", "text/plain", "", 0, "Allow: GET\r\n", false);
             return;
         }
+        if (!r->accepts_gzip) {
+            /* We only hold the page compressed, so a client that cannot decompress gets the
+             * stub instead. Its refresh is harmless here: whatever follows it will be a real
+             * browser, and browsers all advertise gzip. */
+            respond(c, "200 OK", "text/html; charset=utf-8", s_stub, s_stub_len, NULL, false);
+            return;
+        }
         respond(c, "200 OK", "text/html; charset=utf-8", k_portal_html_gz, k_portal_html_gz_len,
                 NULL, true);
         return;
     }
 
-    /* Probes and anything else alike: send them to the portal. */
+    /*
+     * Probes get the answer their OS reacts to best; anything else is redirected to the portal.
+     *
+     * Serving Apple's probe inline costs one extra copy of a 6 KB page and removes a round trip
+     * from the moment that decides whether the sheet opens at all. That is a trade worth making
+     * every time: a portal the user has to go and find by hand is, to them, a portal that did
+     * not work.
+     */
+    if (probe == RW_PROBE_INLINE) {
+        /* Uncompressed, always: this client sent no Accept-Encoding and a gzipped body is
+         * exactly what it cannot read. Small, not "Success", and it refreshes into the portal. */
+        respond(c, "200 OK", "text/html; charset=utf-8", s_stub, s_stub_len, NULL, false);
+        return;
+    }
     respond_redirect(c);
 }
 
@@ -410,6 +476,9 @@ bool rw_httpd_start(uint32_t server_ip) {
         return false;
     }
     tcp_accept(s_listen, on_accept);
+    build_stub();
+    s_listen_since = get_absolute_time();
+    s_probe_count  = 0;
 
     RW_LOG_INFO("portal: http on %s (%u bytes gzipped)", s_redirect,
                 (unsigned)k_portal_html_gz_len);
