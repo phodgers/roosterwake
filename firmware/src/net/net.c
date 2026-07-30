@@ -66,6 +66,28 @@ void rw_sntp_set_system_time(uint32_t sec) {
     }
 }
 
+/*
+ * Auth modes tried, in order, when the configuration says "auto".
+ *
+ * The transitional mode first, because it associates with both WPA2 and WPA3 and covers most
+ * access points. But it is NOT universal, and the way it fails is silent: some WPA2-only routers
+ * refuse the association outright rather than negotiating down, because the transitional mode
+ * advertises SAE and management-frame protection they do not implement. The radio reports
+ * CYW43_LINK_FAIL - not `badauth`, not `nonet` - so a device that only ever offers one mode sits
+ * in a retry loop for ever against a network it is perfectly capable of joining.
+ *
+ * So "auto" means what it says: try the next one. Found on hardware against an access point that
+ * scans as `wpa2` and refuses the transitional handshake.
+ */
+static const uint32_t k_auto_auth[] = {
+    CYW43_AUTH_WPA3_WPA2_AES_PSK,
+    CYW43_AUTH_WPA2_AES_PSK,
+    CYW43_AUTH_WPA3_SAE_AES_PSK,
+};
+
+/* Which of the above the next join uses. Advanced only by an association failure. */
+static size_t s_auth_attempt;
+
 static uint32_t auth_to_cyw43(uint8_t wifi_auth, const char *psk) {
     if (psk[0] == '\0') {
         return CYW43_AUTH_OPEN;
@@ -78,10 +100,18 @@ static uint32_t auth_to_cyw43(uint8_t wifi_auth, const char *psk) {
         case RW_WIFI_AUTH_WPA3:
             return CYW43_AUTH_WPA3_SAE_AES_PSK;
         default:
-            /* Auto-detect. The WPA2/WPA3 transitional mode associates with both, which covers
-             * every consumer access point sold in the last decade and spares the user a
-             * question they cannot answer from the label on the router. */
-            return CYW43_AUTH_WPA3_WPA2_AES_PSK;
+            return k_auto_auth[s_auth_attempt % (sizeof(k_auto_auth) / sizeof(k_auto_auth[0]))];
+    }
+}
+
+/** The mode about to be tried, named for the log. */
+static const char *auth_attempt_name(uint8_t wifi_auth, const char *psk) {
+    if (psk[0] == '\0') return "open";
+    switch (auth_to_cyw43(wifi_auth, psk)) {
+        case CYW43_AUTH_OPEN:             return "open";
+        case CYW43_AUTH_WPA2_AES_PSK:     return "wpa2";
+        case CYW43_AUTH_WPA3_SAE_AES_PSK: return "wpa3";
+        default:                          return "wpa2/wpa3";
     }
 }
 
@@ -137,9 +167,10 @@ bool rw_net_init(void) {
 void rw_net_start(const char *ssid, const char *psk, uint8_t wifi_auth) {
     snprintf(s_ssid, sizeof(s_ssid), "%s", ssid != NULL ? ssid : "");
     snprintf(s_psk, sizeof(s_psk), "%s", psk != NULL ? psk : "");
-    s_auth       = wifi_auth;
-    s_backoff_ms = JOIN_BACKOFF_MIN_MS;
-    s_last_error = NULL;
+    s_auth         = wifi_auth;
+    s_backoff_ms   = JOIN_BACKOFF_MIN_MS;
+    s_last_error   = NULL;
+    s_auth_attempt = 0;
 
     if (s_ssid[0] == '\0') {
         s_state = RW_NET_IDLE;
@@ -150,7 +181,7 @@ void rw_net_start(const char *ssid, const char *psk, uint8_t wifi_auth) {
 }
 
 static void begin_join(void) {
-    RW_LOG_INFO("wifi: joining %s", s_ssid);
+    RW_LOG_INFO("wifi: joining %s (%s)", s_ssid, auth_attempt_name(s_auth, s_psk));
     int rc = cyw43_arch_wifi_connect_async(s_ssid, s_psk[0] ? s_psk : NULL,
                                            auth_to_cyw43(s_auth, s_psk));
     if (rc != 0) {
@@ -219,6 +250,13 @@ void rw_net_task(void) {
             schedule_retry("nonet");
             return;
         case CYW43_LINK_FAIL:
+            /*
+             * Advance the ladder. Only here: `badauth` means the password is wrong and `nonet`
+             * means the network is not there, and neither is fixed by a different handshake -
+             * cycling modes for those would relabel one failure three times and make the log
+             * harder to read.
+             */
+            s_auth_attempt++;
             schedule_retry("failed");
             return;
         default:

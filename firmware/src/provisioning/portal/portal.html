@@ -29,6 +29,8 @@ header span{margin-left:auto;font-size:12px;color:var(--dim);font-variant-numeri
 h1{font-size:20px;margin:0 0 6px;letter-spacing:-.02em}
 p.sub{margin:0 0 16px;color:var(--dim);font-size:14px}
 label{display:block;font-size:13px;font-weight:600;margin:14px 0 6px}
+.block{margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}
+.block label{margin-top:0}
 input[type=text],input[type=password],input[type=url]{
   width:100%;padding:11px 12px;font:inherit;color:var(--fg);
   background:var(--bg);border:1px solid var(--line);border-radius:9px;
@@ -168,12 +170,14 @@ details[open] summary::before{transform:rotate(90deg)}
       <code>link/ether</code> line.</p>
   </details>
 
-  <label for="email">Your email address</label>
-  <input type="email" id="email" inputmode="email" autocapitalize="none" autocorrect="off"
-         spellcheck="false" maxlength="128" placeholder="you@example.com">
-  <p class="hint">This is how the dongle finds your account once it is online. If you have not
-    made an account yet, we will send you a link. Leave it blank if you run your own relay.</p>
-  <div class="msg" id="m-email"></div>
+  <div class="block">
+    <label for="email">Your email address</label>
+    <input type="email" id="email" inputmode="email" autocapitalize="none" autocorrect="off"
+           spellcheck="false" maxlength="128" placeholder="you@example.com" required>
+    <p class="hint">This is how the dongle finds your account once it is online — without it, it
+      will sit here doing nothing. If you have not made an account yet we will email you a link.</p>
+    <div class="msg" id="m-email"></div>
+  </div>
 
   <details>
     <summary>Advanced</summary>
@@ -381,6 +385,17 @@ async function save(){
    * Getting it wrong means a factory reset, so it is worth one press to confirm.
    */
   const email=$("#email").value.trim();
+  /*
+   * Required, unless the relay has been pointed somewhere else. A dongle set up against our
+   * service with no address enrols, sits online and does nothing — it is a dead end produced by
+   * letting somebody walk past a field. Somebody running their own relay genuinely does not want
+   * an account, and for them the Advanced box is the statement of that.
+   */
+  const selfHosted=$("#relay").value.trim()!=="";
+  if(!email&&!selfHosted){
+    msg("#m-email","We need this to link the dongle to your account. If you run your own relay, "+
+      "put its address in Advanced below and this is not needed.");
+    $("#email").focus();return}
   if(email&&!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){
     msg("#m-email","That does not look like an email address.");return}
   if(email&&!$("#email").dataset.confirmed){
