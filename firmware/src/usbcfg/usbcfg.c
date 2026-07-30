@@ -320,7 +320,7 @@ static void cmd_factory_reset(const rw_cmdline_t *cl) {
         return;
     }
 
-    if (rw_config_flash_erase_all() != RW_FLASH_OK) {
+    if (rw_config_flash_factory_reset() != RW_FLASH_OK) {
         respond_err(RW_UERR_FLASH_ERROR);
         return;
     }
@@ -423,9 +423,9 @@ static void dispatch(const rw_cmdline_t *cl) {
             return;
         }
 
-        case RW_CMD_SET_CLAIM: {
+        case RW_CMD_SET_EMAIL: {
             if (!arity(cl, 1, 1)) { respond_err(RW_UERR_BAD_ARGS); return; }
-            rw_uerr_t err = rw_stage_set_claim(&s_stage, cl->argv[1]);
+            rw_uerr_t err = rw_stage_set_email(&s_stage, cl->argv[1]);
             if (err != RW_UERR_NONE) { respond_err(err); return; }
             respond_ok_bare();
             return;

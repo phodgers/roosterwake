@@ -41,7 +41,7 @@ static bool build_config(const rw_doc_t *doc, int cfg_obj, rw_config_t *out) {
     rw_doc_str(doc, cfg_obj, "relay_url", out->relay_url, sizeof(out->relay_url));
     rw_doc_str(doc, cfg_obj, "device_id", out->device_id, sizeof(out->device_id));
     rw_doc_str(doc, cfg_obj, "token", out->token, sizeof(out->token));
-    rw_doc_str(doc, cfg_obj, "claim_code", out->claim_code, sizeof(out->claim_code));
+    rw_doc_str(doc, cfg_obj, "owner_email", out->owner_email, sizeof(out->owner_email));
 
     char auth[16] = "auto";
     rw_doc_str(doc, cfg_obj, "wifi_auth", auth, sizeof(auth));
@@ -97,9 +97,9 @@ static void check_decoded(const rw_doc_t *doc, int dec_obj, const rw_config_t *g
     rw_doc_str(doc, dec_obj, "token", expect, sizeof(expect));
     RW_CHECK_MSG(strcmp(got->token, expect) == 0, "%s: token mismatch", vector_name);
 
-    rw_doc_str(doc, dec_obj, "claim_code", expect, sizeof(expect));
-    RW_CHECK_MSG(strcmp(got->claim_code, expect) == 0, "%s: claim_code \"%s\" != \"%s\"",
-                 vector_name, got->claim_code, expect);
+    rw_doc_str(doc, dec_obj, "owner_email", expect, sizeof(expect));
+    RW_CHECK_MSG(strcmp(got->owner_email, expect) == 0, "%s: owner_email \"%s\" != \"%s\"",
+                 vector_name, got->owner_email, expect);
 
     rw_doc_str(doc, dec_obj, "wifi_auth", expect, sizeof(expect));
     RW_CHECK_MSG(strcmp(wifi_auth_name(got->wifi_auth), expect) == 0,

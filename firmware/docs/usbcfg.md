@@ -161,10 +161,23 @@ eight targets; the ninth returns `ERR too_many`.
 < OK {"targets":0}
 ```
 
-### `SET_CLAIM <code>`
+### `SET_EMAIL <address>`
 
-Stage an account claim code, used by the hosted service to bind this device to an account on
-its first connection. Max 16 characters. Self-hosters never need this.
+Stage the account address this device will offer to a hosted relay with PROTOCOL.md's `adopt`
+frame, so the service binds it to that account. Max 128 bytes. Self-hosters never need this.
+
+```
+> SET_EMAIL philip@example.com
+< OK
+```
+
+Validated for shape only — something before an `@`, one `@`, and a dot inside the domain. The
+device cannot tell a deliverable address from a merely well-formed one; what this catches is an
+SSID or a MAC typed into the wrong field, which would otherwise be written to flash and offered
+on every connection.
+
+Not a credential, and no relay should treat it as one. It is erased from flash as soon as the
+relay acknowledges the adoption.
 
 ### `SET_TOKEN <token>`
 
@@ -202,7 +215,7 @@ Return the staged-and-saved configuration **with all secrets omitted**.
 ```
 > GET_CONFIG
 < OK {"ssid":"HomeNet","auth":"wpa2","psk_set":true,"relay":"wss://relay.remotewake.com/ws",
-     "device_id":"a1b2c3d4e5f60718","token_set":true,"claim_set":false,
+     "device_id":"a1b2c3d4e5f60718","token_set":true,"email_set":false,
      "targets":[{"name":"Office Desktop","mac":"AA:BB:CC:DD:EE:FF"}],"flags":0}
 ```
 
@@ -213,7 +226,8 @@ dongle someone plugged in to charge. The captive portal displays the token once 
 provisioning because a self-hoster genuinely needs it; this channel never does.
 
 `token_set` is how a host confirms after the `COMMIT` reboot that the token it staged actually
-landed, without either side quoting the secret back.
+landed, without either side quoting the secret back. `email_set` reports the same for an address
+staged with `SET_EMAIL`, and turns itself off once the relay has acknowledged the adoption.
 
 ### `COMMIT`
 
@@ -275,8 +289,16 @@ will help.
 < OK {"erased":true,"reboot_in_ms":1000}
 ```
 
-Erases both config slots and reboots into setup mode. The literal argument `CONFIRM` is
-required; without it, `ERR needs_confirm`. There is no undo, and the Wi-Fi password is gone.
+Clears everything a person configured — Wi-Fi, targets, relay override, account address, and the
+enrolled flag — and reboots into setup mode. The literal argument `CONFIRM` is required; without
+it, `ERR needs_confirm`. There is no undo, and the Wi-Fi password is gone.
+
+**`device_id` and `token` survive**, because they identify the hardware rather than its owner.
+config-format.md §8 explains why at length; the short version is that a device which came back
+with a fresh token would be refused by any relay that already knew it, turning the recovery
+action into the thing that needs recovering. Re-running setup afterwards can bind the device to a
+different account, which is what makes reset the answer for a mistyped address, a gift or a
+resale.
 
 ### `REBOOT`
 
@@ -314,7 +336,7 @@ config sectors — so a device reflashed this way comes back already provisioned
 < OK {"targets":1}
 > SET_RELAY wss://relay.remotewake.com/ws
 < OK
-> SET_TOKEN aabbccddeeff00112233445566778899aabbccddeeff001122334455667788aa
+> SET_EMAIL philip@example.com
 < OK
 > COMMIT
 < OK {"saved":true,"seq":1,"reboot_in_ms":1000}
@@ -323,7 +345,7 @@ config sectors — so a device reflashed this way comes back already provisioned
 
 > GET_CONFIG
 < OK {"ssid":"HomeNet","auth":"auto","psk_set":true,"relay":"wss://relay.remotewake.com/ws",
-     "device_id":"a1b2c3d4e5f60718","token_set":true,"claim_set":false,
+     "device_id":"a1b2c3d4e5f60718","token_set":true,"email_set":false,
      "targets":[{"name":"Office Desktop","mac":"AA:BB:CC:DD:EE:FF"}],"flags":0}
 > STATUS
 < OK {"wifi":"joined","ssid":"HomeNet","rssi":-47,"ip":"192.168.1.42",
@@ -337,8 +359,11 @@ that window is minutes long rather than seconds.
 
 A host that only needs the device on **its own** relay can send `SET_TOKEN` and add the same
 value to that relay's device list by hand — there is nothing hosted-specific about the command.
-`SET_CLAIM` is the older route to the same end and remains supported: it binds a device the
-hosted service already knows about, which is the shape a boxed kit arrives in.
+
+`SET_TOKEN` is not required against a relay that implements PROTOCOL.md's `enrol`: a device with
+a token the relay has never seen presents it on first contact and is recorded then. Setting one
+here is for the case where the host wants to choose the value — because it is registering the
+device through some other channel, or because it maintains the relay's device list itself.
 
 ---
 

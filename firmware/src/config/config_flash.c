@@ -140,6 +140,40 @@ rw_flash_status_t rw_config_flash_save(rw_config_t *cfg) {
     return RW_FLASH_OK;
 }
 
+rw_flash_status_t rw_config_flash_factory_reset(void) {
+    rw_config_t current;
+    int         winner = rw_config_select(slot_ptr(RW_CFG_SLOT_A_OFFSET), RW_CFG_SECTOR_SIZE,
+                                          slot_ptr(RW_CFG_SLOT_B_OFFSET), RW_CFG_SECTOR_SIZE, &current);
+
+    /* Nothing readable in either slot: there is no identity to keep, so a plain erase is both
+     * correct and the only thing available. */
+    if (winner == 0 || current.token[0] == '\0') {
+        return rw_config_flash_erase_all();
+    }
+
+    /*
+     * Keep the identity, drop everything a person chose. Built from a zeroed config rather than
+     * by clearing fields on the live one, so a field added later is erased by default — the
+     * opposite arrangement leaks the next secret somebody adds into every reset device.
+     */
+    rw_config_t fresh;
+    rw_config_init(&fresh);
+    memcpy(fresh.device_id, current.device_id, sizeof(fresh.device_id));
+    memcpy(fresh.token, current.token, sizeof(fresh.token));
+
+    /*
+     * The erase happens first and the write second, which is the opposite of `rw_config_flash_save`
+     * and deliberate. Save writes to the inactive slot so power loss keeps the old configuration;
+     * here the old configuration is exactly what must not survive. Losing power between the two
+     * leaves a device with no valid slot, which boots into setup mode — a reset that completed.
+     */
+    rw_flash_status_t st = rw_config_flash_erase_all();
+    if (st != RW_FLASH_OK) {
+        return st;
+    }
+    return rw_config_flash_save(&fresh);
+}
+
 rw_flash_status_t rw_config_flash_erase_all(void) {
     /* B first: if power is lost between the two erases the device still boots on slot A. */
     static const uint32_t order[2] = {RW_CFG_SLOT_B_OFFSET, RW_CFG_SLOT_A_OFFSET};

@@ -20,8 +20,8 @@ export const MAGIC_BYTES = Uint8Array.from([0x52, 0x57, 0x43, 0x46]); // 'R','W'
 export const VERSION = 1;
 
 export const HEADER_LEN = 32;
-export const PAYLOAD_LEN_V1 = 580;
-export const RECORD_LEN_V1 = HEADER_LEN + PAYLOAD_LEN_V1; // 612
+export const PAYLOAD_LEN_V1 = 692;
+export const RECORD_LEN_V1 = HEADER_LEN + PAYLOAD_LEN_V1; // 724
 export const SECTOR_SIZE = 4096;
 
 export const MAX_TARGETS = 8;
@@ -35,10 +35,10 @@ export const OFF = {
   relay_url: 99,
   device_id: 228,
   token: 245,
-  claim_code: 310,
-  flags: 327,
-  target_count: 331,
-  targets: 332,
+  owner_email: 310,
+  flags: 439,
+  target_count: 443,
+  targets: 444,
 };
 
 /** Field widths, including the mandatory NUL terminator for strings. */
@@ -48,7 +48,7 @@ export const LEN = {
   relay_url: 129,
   device_id: 17,
   token: 65,
-  claim_code: 17,
+  owner_email: 129,
   target_name: 25,
 };
 
@@ -194,7 +194,7 @@ function assertHex(value, chars, field) {
  * @param {string} [cfg.relay_url]
  * @param {string} [cfg.device_id]   16 lower-case hex chars
  * @param {string} [cfg.token]       64 lower-case hex chars
- * @param {string} [cfg.claim_code]
+ * @param {string} [cfg.owner_email]
  * @param {number} [cfg.flags=0]
  * @param {Array<{name:string, mac:string}>} [cfg.targets=[]]
  * @param {number} [cfg.seq=GENERATED_SEQ]
@@ -227,7 +227,7 @@ export function encode(cfg = {}) {
     assertHex(cfg.token, 64, 'token');
     putStr(payload, OFF.token, LEN.token, cfg.token, 'token');
   }
-  putStr(payload, OFF.claim_code, LEN.claim_code, cfg.claim_code, 'claim_code');
+  putStr(payload, OFF.owner_email, LEN.owner_email, cfg.owner_email, 'owner_email');
 
   const flags = cfg.flags ?? 0;
   if (!Number.isInteger(flags) || flags < 0 || flags > 0xffffffff) {
@@ -306,7 +306,7 @@ export function decode(bytes) {
     relay_url: getStr(payload, OFF.relay_url, LEN.relay_url),
     device_id: getStr(payload, OFF.device_id, LEN.device_id),
     token: getStr(payload, OFF.token, LEN.token),
-    claim_code: getStr(payload, OFF.claim_code, LEN.claim_code),
+    owner_email: getStr(payload, OFF.owner_email, LEN.owner_email),
     flags: pv.getUint32(OFF.flags, true),
     targets,
   };

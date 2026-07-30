@@ -416,17 +416,24 @@ size_t rw_portal_api_config(const char *body, size_t len, char *buf, size_t cap)
         return json_err(buf, cap, "bad_arg");
     }
 
-    /* Optional relay override and claim code. An empty string means "leave it alone", which is
-     * what the portal sends when the advanced section was never opened. */
+    /* Optional relay override and account address. An empty string means "leave it alone", which
+     * is what the portal sends when the advanced section was never opened, or when somebody is
+     * setting a device up against their own relay and wants no account at all. */
     char scratch[RW_CFG_RELAY_URL_LEN];
     if (body_str(body, len, "relay", scratch, sizeof(scratch)) && scratch[0] != '\0') {
         if (rw_stage_set_relay(&s_stage, scratch) != RW_UERR_NONE) {
             return json_err(buf, cap, "bad_relay");
         }
     }
-    if (body_str(body, len, "claim", scratch, sizeof(scratch)) && scratch[0] != '\0') {
-        if (rw_stage_set_claim(&s_stage, scratch) != RW_UERR_NONE) {
-            return json_err(buf, cap, "bad_claim");
+    /*
+     * The address the device will offer with `adopt`. This is the only moment it can be
+     * collected: the person is on the setup access point, which has no route to the internet, so
+     * nothing here can look an account up or send them anywhere. The device carries it out.
+     */
+    char email[RW_CFG_OWNER_EMAIL_LEN];
+    if (body_str(body, len, "email", email, sizeof(email)) && email[0] != '\0') {
+        if (rw_stage_set_email(&s_stage, email) != RW_UERR_NONE) {
+            return json_err(buf, cap, "bad_email");
         }
     }
 

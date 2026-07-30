@@ -168,16 +168,19 @@ details[open] summary::before{transform:rotate(90deg)}
       <code>link/ether</code> line.</p>
   </details>
 
+  <label for="email">Your email address</label>
+  <input type="email" id="email" inputmode="email" autocapitalize="none" autocorrect="off"
+         spellcheck="false" maxlength="128" placeholder="you@example.com">
+  <p class="hint">This is how the dongle finds your account once it is online. If you have not
+    made an account yet, we will send you a link. Leave it blank if you run your own relay.</p>
+  <div class="msg" id="m-email"></div>
+
   <details>
     <summary>Advanced</summary>
-    <p class="hint">Only needed if you run your own relay, or you were given a claim code with
-      a kit.</p>
+    <p class="hint">Only needed if you run your own relay.</p>
     <label for="relay">Relay URL</label>
     <input type="url" id="relay" autocapitalize="none" autocorrect="off" spellcheck="false"
            placeholder="wss://relay.remotewake.com/ws">
-    <label for="claim">Claim code</label>
-    <input type="text" id="claim" autocapitalize="characters" autocorrect="off"
-           spellcheck="false" maxlength="16" placeholder="Optional">
   </details>
 
   <button class="primary" id="save">Save and finish</button>
@@ -372,13 +375,27 @@ async function save(){
     msg("#m-tgt",warn+" Press Save again to use it anyway.","warn");
     return;
   }
+  /*
+   * Read the address back before committing. Every other field on this page is fixable later
+   * from the dashboard; this one is not, because it is the thing that gets you to the dashboard.
+   * Getting it wrong means a factory reset, so it is worth one press to confirm.
+   */
+  const email=$("#email").value.trim();
+  if(email&&!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){
+    msg("#m-email","That does not look like an email address.");return}
+  if(email&&!$("#email").dataset.confirmed){
+    $("#email").dataset.confirmed="1";
+    msg("#m-email","We will link this dongle to <b>"+esc(email)+"</b>. "+
+      "Press Save again if that is right.","warn");
+    return;
+  }
   busy=true;
   const b=$("#save"); b.disabled=true; b.innerHTML='<span class="spin"></span>Saving…';
   msg("#m-tgt","");
   let j=await api("/api/config",{
     targets:[{name:name,mac:mac}],
     relay:$("#relay").value.trim(),
-    claim:$("#claim").value.trim()
+    email:$("#email").value.trim()
   });
   if(j.err){
     busy=false;b.disabled=false;b.textContent="Save and finish";
@@ -435,6 +452,7 @@ $("#join").onclick=join;
 $("#psk").onkeydown=e=>{if(e.key==="Enter")join()};
 $("#tmac").oninput=fixMac;
 $("#save").onclick=save;
+$("#email").oninput=()=>{delete $("#email").dataset.confirmed;msg("#m-email","")};
 
 (async()=>{
   info=await api("/api/info");

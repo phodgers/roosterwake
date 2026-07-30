@@ -27,8 +27,8 @@
 
 #define RW_CFG_VERSION     1
 #define RW_CFG_HEADER_LEN  32
-#define RW_CFG_PAYLOAD_LEN 580
-#define RW_CFG_RECORD_LEN  (RW_CFG_HEADER_LEN + RW_CFG_PAYLOAD_LEN) /* 612 */
+#define RW_CFG_PAYLOAD_LEN 692
+#define RW_CFG_RECORD_LEN  (RW_CFG_HEADER_LEN + RW_CFG_PAYLOAD_LEN) /* 724 */
 #define RW_CFG_SECTOR_SIZE 4096
 
 #define RW_CFG_MAX_TARGETS      8
@@ -40,8 +40,14 @@
 #define RW_CFG_RELAY_URL_LEN   129
 #define RW_CFG_DEVICE_ID_LEN   17
 #define RW_CFG_TOKEN_LEN       65
-#define RW_CFG_CLAIM_CODE_LEN  17
 #define RW_CFG_TARGET_NAME_LEN 25
+
+/*
+ * 128 bytes plus a terminator. RFC 5321 caps an address at 254 octets, but the local part at 64
+ * and real addresses beyond about 60 are vanishingly rare; 128 covers everything anyone will
+ * actually type while keeping the record comfortably inside one flash sector.
+ */
+#define RW_CFG_OWNER_EMAIL_LEN 129
 
 /* Payload offsets. These never move; new fields are appended (config-format.md §6). */
 #define RW_CFG_OFF_SSID         0
@@ -50,10 +56,10 @@
 #define RW_CFG_OFF_RELAY_URL    99
 #define RW_CFG_OFF_DEVICE_ID    228
 #define RW_CFG_OFF_TOKEN        245
-#define RW_CFG_OFF_CLAIM_CODE   310
-#define RW_CFG_OFF_FLAGS        327
-#define RW_CFG_OFF_TARGET_COUNT 331
-#define RW_CFG_OFF_TARGETS      332
+#define RW_CFG_OFF_OWNER_EMAIL  310
+#define RW_CFG_OFF_FLAGS        439
+#define RW_CFG_OFF_TARGET_COUNT 443
+#define RW_CFG_OFF_TARGETS      444
 
 /* wifi_auth values (config-format.md §2.2). */
 #define RW_WIFI_AUTH_OPEN 0
@@ -65,6 +71,13 @@
 #define RW_CFG_FLAG_TLS_INSECURE (1u << 0)
 #define RW_CFG_FLAG_DIAG_LOG     (1u << 1)
 #define RW_CFG_FLAG_WOL_UNICAST  (1u << 2)
+/*
+ * Set once the relay has answered `hello_ack {ok:true}`, and never cleared except by a factory
+ * reset. PROTOCOL.md §3.2 requires a device to decide between `auth` and `enrol` from this and
+ * NOT from whether the relay just rejected it — retrying `enrol` after a failed `auth` is how a
+ * device whose record was displaced would talk its way back over whoever holds it now.
+ */
+#define RW_CFG_FLAG_ENROLLED     (1u << 3)
 
 /* Sequence number a generated (mkconfig / dashboard) image carries; see config-format.md §5. */
 #define RW_CFG_GENERATED_SEQ 0x40000000u
@@ -83,7 +96,10 @@ typedef struct {
     char        relay_url[RW_CFG_RELAY_URL_LEN];
     char        device_id[RW_CFG_DEVICE_ID_LEN];
     char        token[RW_CFG_TOKEN_LEN];
-    char        claim_code[RW_CFG_CLAIM_CODE_LEN];
+    /* Typed into the setup page, offered to the relay with `adopt`, and erased as soon as the
+     * relay acknowledges it — a routing hint for one connection, not a stored property of the
+     * device, and a dongle that changes hands must not carry it to its next owner. */
+    char        owner_email[RW_CFG_OWNER_EMAIL_LEN];
     uint32_t    flags;
     uint8_t     target_count;
     rw_target_t targets[RW_CFG_MAX_TARGETS];

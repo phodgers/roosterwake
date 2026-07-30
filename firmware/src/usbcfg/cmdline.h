@@ -70,7 +70,7 @@ typedef enum {
     RW_CMD_SET_RELAY,
     RW_CMD_ADD_TARGET,
     RW_CMD_CLEAR_TARGETS,
-    RW_CMD_SET_CLAIM,
+    RW_CMD_SET_EMAIL,
     RW_CMD_SET_TOKEN,
     RW_CMD_GET_CONFIG,
     RW_CMD_COMMIT,
@@ -144,7 +144,17 @@ rw_uerr_t rw_stage_set_relay(rw_stage_t *stage, const char *url);
 
 rw_uerr_t rw_stage_add_target(rw_stage_t *stage, const char *name, const char *mac);
 rw_uerr_t rw_stage_clear_targets(rw_stage_t *stage);
-rw_uerr_t rw_stage_set_claim(rw_stage_t *stage, const char *code);
+/*
+ * Stage the account address the device offers with PROTOCOL.md's `adopt` frame.
+ *
+ * The address names the person, which is the one thing the device cannot learn any other way:
+ * the setup access point has no route to the internet, so nothing else in that moment can carry
+ * who the owner is.
+ *
+ * Not a credential and never treated as one. It is a routing hint, erased as soon as the relay
+ * acknowledges it.
+ */
+rw_uerr_t rw_stage_set_email(rw_stage_t *stage, const char *email);
 
 /*
  * Stage a device token chosen by the host: exactly 64 hex digits, stored lower-case.

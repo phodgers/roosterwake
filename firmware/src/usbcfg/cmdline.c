@@ -68,7 +68,7 @@ static const cmd_entry_t k_commands[] = {
     {RW_CMD_SET_RELAY,     "SET_RELAY"},
     {RW_CMD_ADD_TARGET,    "ADD_TARGET"},
     {RW_CMD_CLEAR_TARGETS, "CLEAR_TARGETS"},
-    {RW_CMD_SET_CLAIM,     "SET_CLAIM"},
+    {RW_CMD_SET_EMAIL,     "SET_EMAIL"},
     {RW_CMD_SET_TOKEN,     "SET_TOKEN"},
     {RW_CMD_GET_CONFIG,    "GET_CONFIG"},
     {RW_CMD_COMMIT,        "COMMIT"},
@@ -356,11 +356,34 @@ rw_uerr_t rw_stage_clear_targets(rw_stage_t *stage) {
     return RW_UERR_NONE;
 }
 
-rw_uerr_t rw_stage_set_claim(rw_stage_t *stage, const char *code) {
-    if (code == NULL) {
+rw_uerr_t rw_stage_set_email(rw_stage_t *stage, const char *email) {
+    if (email == NULL) {
         return RW_UERR_BAD_ARG;
     }
-    if (!copy_field(stage->cfg.claim_code, RW_CFG_CLAIM_CODE_LEN, code)) {
+    if (!rw_utf8_valid(email)) {
+        return RW_UERR_BAD_FRAME;
+    }
+
+    /*
+     * Shape only: something before an `@`, exactly one `@`, and a dot inside the domain with
+     * something after it. Deliberately not an RFC 5321 parse — the device cannot tell a
+     * deliverable address from a merely well-formed one, the relay revalidates, and the real
+     * check is whether anybody answers the invitation.
+     *
+     * What this does catch is the mistake worth catching at this end: an SSID or a MAC typed
+     * into the wrong box. That would otherwise be written to flash and offered to the relay on
+     * every connection until somebody factory-resets the device to correct it.
+     */
+    const char *at = strchr(email, '@');
+    if (at == NULL || at == email || strchr(at + 1, '@') != NULL) {
+        return RW_UERR_BAD_ARG;
+    }
+    const char *dot = strchr(at + 1, '.');
+    if (dot == NULL || dot == at + 1 || dot[1] == '\0') {
+        return RW_UERR_BAD_ARG;
+    }
+
+    if (!copy_field(stage->cfg.owner_email, RW_CFG_OWNER_EMAIL_LEN, email)) {
         return RW_UERR_BAD_ARG;
     }
     stage->dirty = true;
@@ -488,8 +511,8 @@ size_t rw_usbcfg_config_json(const rw_config_t *cfg, char *buf, size_t cap) {
     rw_jw_key(&w, "token_set");
     rw_jw_raw(&w, cfg->token[0] ? "true" : "false");
     rw_jw_raw(&w, ",");
-    rw_jw_key(&w, "claim_set");
-    rw_jw_raw(&w, cfg->claim_code[0] ? "true" : "false");
+    rw_jw_key(&w, "email_set");
+    rw_jw_raw(&w, cfg->owner_email[0] ? "true" : "false");
     rw_jw_raw(&w, ",");
 
     rw_jw_key(&w, "targets");

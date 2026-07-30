@@ -40,7 +40,7 @@ static void test_command_lookup(void) {
     RW_CHECK(rw_cmd_lookup("SET_RELAY") == RW_CMD_SET_RELAY);
     RW_CHECK(rw_cmd_lookup("ADD_TARGET") == RW_CMD_ADD_TARGET);
     RW_CHECK(rw_cmd_lookup("CLEAR_TARGETS") == RW_CMD_CLEAR_TARGETS);
-    RW_CHECK(rw_cmd_lookup("SET_CLAIM") == RW_CMD_SET_CLAIM);
+    RW_CHECK(rw_cmd_lookup("SET_EMAIL") == RW_CMD_SET_EMAIL);
     RW_CHECK(rw_cmd_lookup("SET_TOKEN") == RW_CMD_SET_TOKEN);
     RW_CHECK(rw_cmd_lookup("GET_CONFIG") == RW_CMD_GET_CONFIG);
     RW_CHECK(rw_cmd_lookup("COMMIT") == RW_CMD_COMMIT);
@@ -299,11 +299,33 @@ static void test_staging(void) {
     name25[25] = '\0';
     RW_CHECK(rw_stage_add_target(&st, name25, "AABBCCDDEEFF") == RW_UERR_BAD_ARG);
 
-    rw_test_begin("SET_CLAIM caps at 16 characters");
+    rw_test_begin("SET_EMAIL takes an address and refuses what is obviously not one");
     rw_stage_init(&st, &base);
-    RW_CHECK(rw_stage_set_claim(&st, "7QX4-9F2B") == RW_UERR_NONE);
-    RW_CHECK(rw_stage_set_claim(&st, "ZZZZ-9999-XXXX-7") == RW_UERR_NONE);
-    RW_CHECK(rw_stage_set_claim(&st, "ZZZZ-9999-XXXX-78") == RW_UERR_BAD_ARG);
+    RW_CHECK(rw_stage_set_email(&st, "philip@example.com") == RW_UERR_NONE);
+    RW_CHECK_EQ_STR(st.cfg.owner_email, "philip@example.com");
+    RW_CHECK(rw_stage_set_email(&st, "a.b+tag@sub.example.co.uk") == RW_UERR_NONE);
+
+    /* The mistakes this exists to catch: the SSID or the MAC typed into the wrong box. Either
+     * would otherwise be written to flash and offered to the relay on every connection. */
+    RW_CHECK(rw_stage_set_email(&st, "HomeNet") == RW_UERR_BAD_ARG);
+    RW_CHECK(rw_stage_set_email(&st, "A0:B1:C2:D3:E4:F5") == RW_UERR_BAD_ARG);
+    RW_CHECK(rw_stage_set_email(&st, "@example.com") == RW_UERR_BAD_ARG);
+    RW_CHECK(rw_stage_set_email(&st, "philip@") == RW_UERR_BAD_ARG);
+    RW_CHECK(rw_stage_set_email(&st, "philip@localhost") == RW_UERR_BAD_ARG);
+    RW_CHECK(rw_stage_set_email(&st, "philip@.com") == RW_UERR_BAD_ARG);
+    RW_CHECK(rw_stage_set_email(&st, "philip@example.") == RW_UERR_BAD_ARG);
+    RW_CHECK(rw_stage_set_email(&st, "two@at@example.com") == RW_UERR_BAD_ARG);
+    RW_CHECK(rw_stage_set_email(&st, NULL) == RW_UERR_BAD_ARG);
+
+    /* A refused address leaves the last accepted one intact. */
+    RW_CHECK_EQ_STR(st.cfg.owner_email, "a.b+tag@sub.example.co.uk");
+
+    rw_test_begin("SET_EMAIL bounds the field rather than truncating into flash");
+    char long_local[RW_CFG_OWNER_EMAIL_LEN + 16];
+    memset(long_local, 'a', sizeof(long_local) - 1);
+    long_local[sizeof(long_local) - 1] = '\0';
+    memcpy(long_local + RW_CFG_OWNER_EMAIL_LEN, "@example.com", 13);
+    RW_CHECK(rw_stage_set_email(&st, long_local) == RW_UERR_BAD_ARG);
 
     rw_test_begin("SET_TOKEN takes exactly 64 hex digits and stores them lower-case");
     rw_stage_init(&st, &base);
@@ -378,7 +400,7 @@ static void test_response_encoders(void) {
     snprintf(cfg.ssid, sizeof(cfg.ssid), "HomeNet");
     snprintf(cfg.psk, sizeof(cfg.psk), "SUPERSECRETWIFIPASSWORD");
     snprintf(cfg.token, sizeof(cfg.token), "d34db33fd34db33fd34db33fd34db33f");
-    snprintf(cfg.claim_code, sizeof(cfg.claim_code), "7QX4-9F2B");
+    snprintf(cfg.owner_email, sizeof(cfg.owner_email), "philip@example.com");
     snprintf(cfg.relay_url, sizeof(cfg.relay_url), "wss://relay.remotewake.com/ws");
     snprintf(cfg.device_id, sizeof(cfg.device_id), "a1b2c3d4e5f60718");
     cfg.wifi_auth       = RW_WIFI_AUTH_WPA2;
@@ -393,7 +415,7 @@ static void test_response_encoders(void) {
     RW_CHECK(strstr(buf, "\"auth\":\"wpa2\"") != NULL);
     RW_CHECK(strstr(buf, "\"psk_set\":true") != NULL);
     RW_CHECK(strstr(buf, "\"token_set\":true") != NULL);
-    RW_CHECK(strstr(buf, "\"claim_set\":true") != NULL);
+    RW_CHECK(strstr(buf, "\"email_set\":true") != NULL);
     RW_CHECK(strstr(buf, "\"name\":\"Office Desktop\"") != NULL);
     RW_CHECK(strstr(buf, "\"mac\":\"AA:BB:CC:DD:EE:FF\"") != NULL);
 
@@ -415,7 +437,7 @@ static void test_response_encoders(void) {
     RW_CHECK(n > 0);
     RW_CHECK(strstr(buf, "\"psk_set\":false") != NULL);
     RW_CHECK(strstr(buf, "\"token_set\":false") != NULL);
-    RW_CHECK(strstr(buf, "\"claim_set\":false") != NULL);
+    RW_CHECK(strstr(buf, "\"email_set\":false") != NULL);
     RW_CHECK(strstr(buf, "\"targets\":[]") != NULL);
 
     rw_test_begin("an unset relay reports the default rather than an empty string");

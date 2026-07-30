@@ -88,4 +88,28 @@ bool rw_config_ensure_token(rw_config_t *cfg);
  */
 rw_flash_status_t rw_config_flash_erase_all(void);
 
+/*
+ * Reset everything a person configured, and keep the device's identity.
+ *
+ * This is what FACTORY_RESET actually calls. Wi-Fi credentials, targets, the account address,
+ * the relay override and the enrolled flag all go; `device_id` and `token` survive.
+ *
+ * ── WHY THE TOKEN SURVIVES ────────────────────────────────────────────────
+ *
+ * The token is the hardware's identity, not the owner's, and `device_id` is already treated that
+ * way — it is derived from the flash unique id and cannot be erased at all. A reset that minted a
+ * fresh token would leave the device presenting a known `device_id` with a token no relay has
+ * seen, which PROTOCOL.md §3.4 requires an owned record to REFUSE. The board would come back up
+ * unable to reach the service it was working with five minutes earlier, and the only route back
+ * would be a cable and a computer.
+ *
+ * That matters because reset is the recovery path for the mistake people actually make: a
+ * mistyped address at setup. Hold the button, do it again. Preserving the token is what makes
+ * that work, and it costs nothing — ownership lives on the service side, and possession of the
+ * hardware is what re-pairing to a different account requires.
+ *
+ * A device that has never had a token still gets one at the next COMMIT, as before.
+ */
+rw_flash_status_t rw_config_flash_factory_reset(void);
+
 #endif /* RW_CONFIG_FLASH_H */

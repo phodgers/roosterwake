@@ -61,7 +61,7 @@ const cases = [
       relay_url: 'wss://' + 'c'.repeat(107) + '.example.com/ws',
       device_id: '0123456789abcdef',
       token: '0123456789abcdef'.repeat(4),
-      claim_code: 'ZZZZ-9999-XXXX-7',
+      owner_email: 'philip@example.com',
       flags: FLAG.TLS_INSECURE | FLAG.DIAG_LOG | FLAG.WOL_UNICAST,
       targets: Array.from({ length: 8 }, (_, i) => ({
         name: `Machine ${i + 1}`,

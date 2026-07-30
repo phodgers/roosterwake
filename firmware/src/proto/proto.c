@@ -73,6 +73,11 @@ static struct {
     char probe_req_id[REQ_ID_MAX];
     bool probe_owned; /* a probe belonging to the current connection is running */
 
+    /* `enrol` was sent on this connection and its outcome is not yet known. */
+    bool enrolling;
+    /* A configuration change made in a network callback, to be written on the main loop. */
+    bool persist_pending;
+
     char out[OUT_MAX];
 } s;
 
@@ -150,14 +155,12 @@ static bool send_hello(void) {
     rw_jw_raw(&w, RW_CAPS_JSON);
     rw_jw_raw(&w, ",");
     write_targets(&w);
-    if (s.cfg->claim_code[0] != '\0') {
-        /* Carried on every connection until the relay stops caring. A device that was claimed
-         * months ago is harmless to re-offer, and a device whose first connection raced a
-         * dashboard that had not finished creating the account would otherwise never bind. */
-        rw_jw_raw(&w, ",");
-        rw_jw_key(&w, "claim");
-        rw_jw_str(&w, s.cfg->claim_code);
-    }
+    /*
+     * No account information here. An earlier build carried a claim code on every `hello`, which
+     * PROTOCOL.md never defined and no relay ever read. Binding is now its own frame, sent after
+     * the handshake and acknowledged — which is what the claim field could not do, and why it
+     * would have gone on being re-offered for the life of the device.
+     */
     rw_jw_raw(&w, "}");
     rw_jw_finish(&w);
 
@@ -186,6 +189,61 @@ static bool send_auth(const char *nonce_s) {
     rw_jw_raw(&w, ",");
     rw_jw_key(&w, "proof_c");
     rw_jw_str(&w, proof_c);
+    rw_jw_raw(&w, "}");
+    rw_jw_finish(&w);
+
+    return send_json(&w);
+}
+
+/*
+ * PROTOCOL.md §4 `enrol`, sent in place of `auth` on first contact.
+ *
+ * The only frame that carries the token, and §3.1 permits it under two rules this function is
+ * responsible for. They are checked by the caller — `may_enrol()` — rather than here, so that a
+ * refusal is a decision the connection state machine makes and logs, not a silent no-op inside a
+ * serialiser.
+ *
+ * `expected_proof_s` is still precomputed, because the relay must return `proof_s` keyed with the
+ * token it has just stored and the device must verify it. That check is the device's only
+ * evidence that the right bytes landed.
+ */
+static bool send_enrol(const char *nonce_s) {
+    if (!rw_auth_proof(s.cfg->token, RW_PROOF_TAG_SERVER, s.cfg->device_id, s.nonce_c, nonce_s,
+                       s.expected_proof_s)) {
+        RW_LOG_ERROR("proto: cannot compute proof_s - device_id or token is malformed");
+        return false;
+    }
+
+    rw_jw_t w;
+    rw_jw_init(&w, s.out, sizeof(s.out));
+    rw_jw_raw(&w, "{");
+    rw_jw_key(&w, "t");
+    rw_jw_str(&w, "enrol");
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "token");
+    rw_jw_str(&w, s.cfg->token);
+    rw_jw_raw(&w, "}");
+    rw_jw_finish(&w);
+
+    return send_json(&w);
+}
+
+/*
+ * PROTOCOL.md §4 `adopt` — offer the address typed into the setup page.
+ *
+ * Sent once per connection while an address is staged, and stopped the moment `adopt_ack`
+ * arrives. Repeating across connections rather than giving up after one is deliberate: the first
+ * connection after setup is the one most likely to be cut short by a network still settling.
+ */
+static bool send_adopt(void) {
+    rw_jw_t w;
+    rw_jw_init(&w, s.out, sizeof(s.out));
+    rw_jw_raw(&w, "{");
+    rw_jw_key(&w, "t");
+    rw_jw_str(&w, "adopt");
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "email");
+    rw_jw_str(&w, s.cfg->owner_email);
     rw_jw_raw(&w, "}");
     rw_jw_finish(&w);
 
@@ -468,6 +526,33 @@ static void fail_auth(const char *why) {
     rw_ws_close(&s.ws, RW_WS_CLOSE_POLICY, "auth");
 }
 
+/*
+ * May this device send `enrol`? PROTOCOL.md §3.1's two rules, and they live here because the
+ * relay cannot check either of them — only the device knows how it connected.
+ *
+ * 1. The certificate must have been validated. A build with verification disabled, or a
+ *    configuration that turns it off, would be handing its token to whatever answered the socket.
+ * 2. The relay URL must be the one compiled into this firmware. A device pointed somewhere else
+ *    is a self-hosted device, and its operator adds the token to their own relay by hand — which
+ *    is exactly why self-hosting is unaffected by any of this.
+ */
+static bool may_enrol(void) {
+    if (s.cfg->flags & RW_CFG_FLAG_TLS_INSECURE) {
+        RW_LOG_WARN("proto: not enrolling - certificate verification is disabled");
+        return false;
+    }
+#ifdef RW_TLS_INSECURE
+    RW_LOG_WARN("proto: not enrolling - this build does not verify certificates");
+    return false;
+#else
+    if (s.cfg->relay_url[0] != '\0' && strcmp(s.cfg->relay_url, RW_DEFAULT_RELAY_URL) != 0) {
+        RW_LOG_INFO("proto: not enrolling - relay URL is not the built-in one");
+        return false;
+    }
+    return true;
+#endif
+}
+
 static void handle_challenge(const char *js, const jsmntok_t *tok, int count) {
     if (s.state != RW_RELAY_AUTHENTICATING) {
         return; /* unexpected here; §2 says ignore rather than error */
@@ -479,8 +564,28 @@ static void handle_challenge(const char *js, const jsmntok_t *tok, int count) {
         fail_auth("challenge carried no usable nonce_s");
         return;
     }
-    if (!send_auth(nonce_s)) {
-        fail_auth("could not send auth");
+
+    /*
+     * §3.2: which frame goes here is decided by whether this device has ever been accepted, and
+     * by nothing else. Deciding from a rejection instead — trying `auth`, then `enrol` when it
+     * fails — is how a device whose record was displaced would talk its way back over the top of
+     * whoever holds it now.
+     */
+    if (s.cfg->flags & RW_CFG_FLAG_ENROLLED) {
+        if (!send_auth(nonce_s)) {
+            fail_auth("could not send auth");
+        }
+        return;
+    }
+
+    if (!may_enrol()) {
+        fail_auth("never enrolled, and enrolment is not permitted on this connection");
+        return;
+    }
+    RW_LOG_INFO("proto: first contact - enrolling");
+    s.enrolling = true;
+    if (!send_enrol(nonce_s)) {
+        fail_auth("could not send enrol");
     }
 }
 
@@ -529,6 +634,62 @@ static void handle_hello_ack(const char *js, const jsmntok_t *tok, int count) {
      * rejects at auth would otherwise be hammered at one-second intervals for ever. */
     s.backoff_ms = RW_RELAY_BACKOFF_MIN_MS;
     s.next_ping  = make_timeout_time_ms(RW_RELAY_PING_INTERVAL_MS);
+
+    /*
+     * Enrolment is only complete once `proof_s` has verified, which is why the flag is set here
+     * and not when `enrol` was sent. The relay returning a proof keyed with the token it stored
+     * is the device's only evidence that the right bytes landed; recording success any earlier
+     * would mean a corrupted store left a device that never tries to enrol again.
+     */
+    if (s.enrolling) {
+        s.enrolling = false;
+        RW_LOG_INFO("proto: enrolled");
+        s.cfg->flags |= RW_CFG_FLAG_ENROLLED;
+        s.persist_pending = true;
+    }
+
+    /*
+     * Offer the account address, if the setup page left one. Once per connection, and only while
+     * unacknowledged — see PROTOCOL.md §4 `adopt`.
+     */
+    if (s.cfg->owner_email[0] != '\0') {
+        if (!send_adopt()) {
+            RW_LOG_WARN("proto: could not send adopt; will retry on the next connection");
+        }
+    }
+}
+
+/*
+ * PROTOCOL.md §5 `adopt_ack`. Either state means the same thing to us: the service has taken
+ * responsibility for the request, so stop offering and forget the address.
+ *
+ * Erasing it is not tidiness. It is a person's email sitting in the flash of a device that may be
+ * resold, and it has no further use — the binding it asked for either happened or is now the
+ * service's to chase.
+ */
+static void handle_adopt_ack(const char *js, const jsmntok_t *tok, int count) {
+    int ok_idx = rw_json_find(js, tok, count, "ok");
+    if (ok_idx < 0 || !rw_json_is_true(js, &tok[ok_idx])) {
+        char err[24] = "internal";
+        int  e       = rw_json_find(js, tok, count, "err");
+        if (e >= 0) {
+            rw_json_str(js, &tok[e], err, sizeof(err));
+        }
+        /* Not retried on this connection: §5 says so, and an address the relay called malformed
+         * will not become well-formed by being sent again. It stays in flash so the next
+         * connection tries once more, and a factory reset is how a person corrects it. */
+        RW_LOG_WARN("proto: adoption refused (%s)", err);
+        return;
+    }
+
+    char state[16] = "";
+    int  st        = rw_json_find(js, tok, count, "state");
+    if (st >= 0) {
+        rw_json_str(js, &tok[st], state, sizeof(state));
+    }
+    RW_LOG_INFO("proto: adoption acknowledged (%s)", state[0] ? state : "bound");
+    s.cfg->owner_email[0] = '\0';
+    s.persist_pending     = true;
 }
 
 static void handle_wake(const char *js, const jsmntok_t *tok, int count, const char *req_id) {
@@ -719,6 +880,10 @@ static void on_text(rw_ws_client_t *ws, void *ctx, char *text, size_t len) {
         handle_hello_ack(text, tokens, count);
         return;
     }
+    if (rw_json_eq(text, &tokens[t_idx], "adopt_ack")) {
+        handle_adopt_ack(text, tokens, count);
+        return;
+    }
 
     if (s.state != RW_RELAY_READY) {
         /* A command before authentication completes is not trusted input. §2's "ignore
@@ -847,6 +1012,23 @@ void rw_relay_task(void) {
     /* Deferred commands run here, on the main loop, where blocking is safe. */
     if (s.state == RW_RELAY_READY) {
         run_pending();
+    }
+
+    /*
+     * Enrolment and adoption both change the stored configuration, and both are decided inside a
+     * network callback where a flash write would stall the stack mid-frame. So the callback sets
+     * a flag and the write happens here, exactly as `config_push` already does.
+     *
+     * A failure is logged and dropped rather than retried. Losing the enrolled flag costs one
+     * redundant `enrol` on the next connection, which the relay accepts because the token still
+     * matches; losing the erased address costs one redundant `adopt`, which is acknowledged
+     * again. Neither is worth a retry loop against a flash chip that has just refused a write.
+     */
+    if (s.persist_pending) {
+        s.persist_pending = false;
+        if (s.hooks.save_config == NULL || !s.hooks.save_config(s.cfg)) {
+            RW_LOG_WARN("proto: could not persist enrolment state; will re-offer next connection");
+        }
     }
 
     if (!s.enabled || s.state == RW_RELAY_STOPPED) {

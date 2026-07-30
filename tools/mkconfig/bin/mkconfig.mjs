@@ -41,7 +41,7 @@ RELAY
                            [default: wss://relay.remotewake.com/ws]
   --device-id <hex16>      Device ID, 16 lower-case hex chars. Generated if omitted.
   --token <hex64>          Device token, 64 lower-case hex chars. Generated if omitted.
-  --claim <code>           Account claim code (hosted service only, max 16 chars)
+  --email <address>        Account address to adopt to (hosted service only)
 
 TARGETS
   --target "<name>=<mac>"  A PC to wake. Repeatable, up to 8.
@@ -87,7 +87,7 @@ NOTE
 function parseArgs(argv) {
   const out = { targets: [], flags: 0 };
   const wantsValue = new Set([
-    'ssid', 'psk', 'auth', 'relay', 'device-id', 'token', 'claim',
+    'ssid', 'psk', 'auth', 'relay', 'device-id', 'token', 'email',
     'target', 'out', 'slot', 'seq', 'family', 'verify', 'board',
   ]);
   for (let i = 0; i < argv.length; i++) {
@@ -159,7 +159,7 @@ function doVerify(path) {
   console.log(`  Relay:     ${cfg.relay_url || '(default)'}`);
   console.log(`  Device ID: ${cfg.device_id || '(unset)'}`);
   console.log(`  Token:     ${cfg.token ? '(set — not shown)' : '(unset)'}`);
-  console.log(`  Claim:     ${cfg.claim_code || '(none)'}`);
+  console.log(`  Email:     ${cfg.owner_email || '(none)'}`);
   console.log(`  Flags:     0x${cfg.flags.toString(16).padStart(8, '0')}`);
   console.log(`  Targets:   ${cfg.targets.length}`);
   for (const t of cfg.targets) console.log(`    - ${t.name} -> ${t.mac}`);
@@ -189,7 +189,7 @@ function main() {
     relay_url: args.relay ?? 'wss://relay.remotewake.com/ws',
     device_id: args.device_id ?? randomBytes(8).toString('hex'),
     token: args.token ?? randomBytes(32).toString('hex'),
-    claim_code: args.claim,
+    owner_email: args.email,
     flags:
       (args.insecure_tls ? 1 : 0) |
       (args.diag_log ? 2 : 0) |

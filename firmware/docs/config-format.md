@@ -82,12 +82,17 @@ it is zero.
 | 99 | 129 | `relay_url` | Max 128 bytes + NUL. e.g. `wss://relay.remotewake.com/ws` |
 | 228 | 17 | `device_id` | 16 lower-case hex chars + NUL |
 | 245 | 65 | `token` | 64 lower-case hex chars + NUL |
-| 310 | 17 | `claim_code` | Max 16 chars + NUL. Empty if not claiming |
-| 327 | 4 | `flags` | See §2.3 |
-| 331 | 1 | `target_count` | `0`–`8` |
-| 332 | 248 | `targets` | 8 × 31-byte entries, see §2.4 |
+| 310 | 129 | `owner_email` | Max 128 bytes + NUL. Empty unless an adoption is pending |
+| 439 | 4 | `flags` | See §2.3 |
+| 443 | 1 | `target_count` | `0`–8 |
+| 444 | 248 | `targets` | 8 × 31-byte entries, see §2.4 |
 
-Total: **580 bytes**. Record total: 612 bytes, comfortably inside one 4096-byte sector.
+Total: **692 bytes**. Record total: 724 bytes, comfortably inside one 4096-byte sector.
+
+`owner_email` is the address typed into the setup page, carried out to the relay by PROTOCOL.md's
+`adopt` frame and erased as soon as it is acknowledged. It is a routing hint for one connection
+rather than a stored property of the device: a dongle that changes hands must not carry the
+previous owner's address to the next one.
 
 Bytes from `payload_len` to the end of the sector are ignored by readers and SHOULD be written
 as `0x00` by writers.
@@ -99,7 +104,13 @@ as `0x00` by writers.
 | 0 | `TLS_INSECURE` | Skip TLS certificate verification. **Default off.** Firmware flashes the error LED pattern continuously while this is set, and logs a warning on every connection |
 | 1 | `DIAG_LOG` | Send `log` frames to the relay (see PROTOCOL.md §4) |
 | 2 | `WOL_UNICAST` | Additionally send magic packets unicast to the target's last-known IP |
-| 3–31 | reserved | Must be `0`. Readers MUST ignore unknown bits rather than rejecting the record |
+| 3 | `ENROLLED` | This device has completed a handshake with its relay at least once. Set after `hello_ack {ok:true}`, cleared only by a factory reset |
+| 4–31 | reserved | Must be `0`. Readers MUST ignore unknown bits rather than rejecting the record |
+
+`ENROLLED` decides whether the device sends `auth` or `enrol` on its next connection
+(PROTOCOL.md §3.2). A generator writing a record for a device whose token the relay already
+knows — `tools/mkconfig` pointed at a self-hosted relay, for instance — SHOULD set it, so the
+device authenticates straight away rather than offering a token that endpoint may not want.
 
 ### 2.4 Target entry (31 bytes each)
 
@@ -229,7 +240,37 @@ record with every defined flag set.
 
 ---
 
-## 8. Security note
+## 8. Factory reset
+
+Holding BOOTSEL for five seconds at power-on, or `FACTORY_RESET CONFIRM` over usbcfg, clears
+everything a person configured and keeps the device's identity:
+
+| Cleared | Kept |
+|---|---|
+| `ssid`, `psk`, `wifi_auth` | `device_id` |
+| `relay_url` | `token` |
+| `targets`, `target_count` | |
+| `owner_email` | |
+| `flags`, including `ENROLLED` | |
+
+`device_id` is derived from the board's unique flash id and is re-derived on every boot, so it
+could not be erased even in principle. **The token is kept deliberately**, and the reason is
+worth stating because "factory reset" usually implies otherwise.
+
+A reset that minted a fresh token would leave the device presenting a `device_id` the relay knows
+alongside a token it has never seen — which PROTOCOL.md §3.4 requires an *owned* record to
+refuse. The board would come back unable to reach the service it was working with minutes
+earlier, and the only route back would be a cable and a computer.
+
+That matters because reset is the recovery path for the mistake people actually make: a mistyped
+address during setup. Hold the button, do it again, type it correctly. Keeping the token is what
+makes that work, and it costs nothing — ownership is recorded by the service, not by the device,
+and re-pairing to a different account is allowed precisely because it requires physical
+possession.
+
+A device that has never held a token still mints one at the next commit, as before.
+
+## 9. Security note
 
 The device token and the Wi-Fi PSK are stored **in plaintext** in flash.
 

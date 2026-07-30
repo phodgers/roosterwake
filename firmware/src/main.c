@@ -110,7 +110,7 @@ static void check_factory_reset(void) {
 
     RW_LOG_WARN("factory reset: erasing both config slots");
     rw_led_set(RW_LED_ERROR);
-    if (rw_config_flash_erase_all() != RW_FLASH_OK) {
+    if (rw_config_flash_factory_reset() != RW_FLASH_OK) {
         RW_LOG_ERROR("factory reset failed");
         return;
     }

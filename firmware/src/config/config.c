@@ -114,7 +114,7 @@ size_t rw_config_encode(const rw_config_t *cfg, uint8_t *out, size_t out_len) {
         !put_str(payload, RW_CFG_OFF_RELAY_URL, RW_CFG_RELAY_URL_LEN, cfg->relay_url) ||
         !put_str(payload, RW_CFG_OFF_DEVICE_ID, RW_CFG_DEVICE_ID_LEN, cfg->device_id) ||
         !put_str(payload, RW_CFG_OFF_TOKEN, RW_CFG_TOKEN_LEN, cfg->token) ||
-        !put_str(payload, RW_CFG_OFF_CLAIM_CODE, RW_CFG_CLAIM_CODE_LEN, cfg->claim_code)) {
+        !put_str(payload, RW_CFG_OFF_OWNER_EMAIL, RW_CFG_OWNER_EMAIL_LEN, cfg->owner_email)) {
         return 0;
     }
 
@@ -190,7 +190,7 @@ bool rw_config_decode(const uint8_t *record, size_t len, rw_config_t *out) {
     get_str(payload, RW_CFG_OFF_RELAY_URL, RW_CFG_RELAY_URL_LEN, out->relay_url);
     get_str(payload, RW_CFG_OFF_DEVICE_ID, RW_CFG_DEVICE_ID_LEN, out->device_id);
     get_str(payload, RW_CFG_OFF_TOKEN, RW_CFG_TOKEN_LEN, out->token);
-    get_str(payload, RW_CFG_OFF_CLAIM_CODE, RW_CFG_CLAIM_CODE_LEN, out->claim_code);
+    get_str(payload, RW_CFG_OFF_OWNER_EMAIL, RW_CFG_OWNER_EMAIL_LEN, out->owner_email);
 
     uint8_t auth = payload[RW_CFG_OFF_WIFI_AUTH];
     /* Anything outside the defined set means auto-detect. The alternative — rejecting the whole
