@@ -65,7 +65,7 @@ subtly wrong.
 |---|---|
 | `device_id` | 16 lower-case hex characters (8 bytes). Derived from the board's unique ID at manufacture. Stable for the life of the device; survives factory reset. |
 | `token` | 32 random bytes, 64 lower-case hex characters. Generated at provisioning. **Never transmitted** — see §3. |
-| `mac` | Six octets, upper-case hex, colon-separated: `AA:BB:CC:DD:EE:FF`. Relays MUST accept lower-case and `-` separators on input and MUST normalise to this form on output. |
+| `mac` | Six octets, upper-case hex, colon-separated: `AA:BB:CC:DD:EE:FF`. Relays MUST accept lower-case and `-` separators on input and MUST normalise to this form on output. MUST be a unicast address — see below. |
 | `req_id` | Opaque string, 1–36 characters, unique per in-flight request from a given relay. UUIDv4 recommended. Devices echo it verbatim and MUST NOT parse it. |
 | `name` | Target display name, 1–24 UTF-8 characters after trimming. |
 | `nonce` | 16 random bytes, 32 lower-case hex characters. |
@@ -73,6 +73,25 @@ subtly wrong.
 Unknown fields in any frame MUST be ignored. Unknown `t` values MUST be ignored silently —
 not answered with an error, not logged as a failure. This is what makes additive protocol
 changes safe (§10).
+
+### Wakeable addresses
+
+A `mac` naming a wake target MUST be a unicast address. Three cases are excluded, and a relay
+SHOULD reject them at its own edge with `bad_mac` (§6) rather than forwarding them:
+
+* **Multicast/group** — bit 0 of the first octet set. A group is not an interface, so no machine
+  can be woken by naming one. `01:00:5E:…` and `33:33:…` are the common accidents, both of which
+  come from reading a packet capture.
+* **All zeroes** — `00:00:00:00:00:00` means "unspecified".
+* **Broadcast** — `FF:FF:FF:FF:FF:FF`. Also multicast by the rule above, but named separately
+  because it is typed deliberately, by someone expecting it to wake every machine at once.
+
+This is stated because the constraint is enforced in practice and an unstated constraint is how
+independent implementations diverge: a device that refuses these while a relay forwards them
+produces a wake that fails at the far end with nothing useful to report. Note that a
+locally-administered address (bit 1 of the first octet) is perfectly wakeable and MUST NOT be
+rejected — though a dashboard may reasonably warn that Windows and mobile privacy features
+rotate such addresses, which will silently invalidate a saved target.
 
 ---
 
@@ -356,7 +375,7 @@ at resolution or timeout. Only sent to devices advertising the `probe` capabilit
   "req_id": "…",
   "targets": [
     { "name": "Desktop", "mac": "AA:BB:CC:DD:EE:FF" },
-    { "name": "NAS", "mac": "11:22:33:44:55:66" }
+    { "name": "NAS", "mac": "10:22:33:44:55:66" }
   ]
 }
 ```
