@@ -117,6 +117,24 @@ attacks in real time while the device is connected to it, which no amount of cle
 this layer fixes — but it cannot walk away with a credential that wakes someone's machine
 for the next year. The cost is one extra round trip at connect. That is a good trade.
 
+**Enrolment is the one deliberate exception, and it is fenced by the three cases above.**
+A device the relay has never seen has no shared secret to prove, so `enrol` (§4) transmits the
+token exactly once, on first contact. Read against the list above, that is only safe under two
+rules, and both are the device's to enforce because the relay cannot see either:
+
+1. **Only over a connection whose certificate was validated.** A build with verification
+   disabled MUST NOT enrol. This is case two, and it is the whole of it.
+2. **Only to the relay URL compiled into the firmware.** A device whose `relay_url` has been
+   overridden MUST NOT enrol; its operator configures the token on their own relay by hand.
+   This is case one, and it is why self-hosting is unaffected by any of this.
+
+Case three then answers itself: the operator of the relay a device enrols with already holds
+that token, because §11 requires relays to store it unhashed. Enrolment hands it to nobody who
+would not have had it anyway.
+
+After enrolment the token never crosses the wire again, in either direction, for the life of
+the device. Every subsequent connection is the challenge-response above.
+
 ### 3.2 The handshake
 
 ```
@@ -155,6 +173,27 @@ relay leaks the expected proof to a patient attacker.
 RP2350 hardware TRNG. A relay that reuses `nonce_s`, or a device that reuses `nonce_c`,
 breaks the replay protection for everyone.
 
+**First contact substitutes `enrol` for `auth`.** A device that has never completed a handshake
+with this relay has no proof to offer, so it sends `enrol {token}` where `auth {proof_c}` would
+go. Everything either side of that step is unchanged, including `proof_s`:
+
+```
+   │─ hello {v, device_id, nonce_c, …} ─────────────────────►│
+   │◄─────────── challenge  {nonce_s} ───────────────────────│
+   │─────────────── enrol  {token} ─────────────────────────►│  §3.4 rules
+   │◄──── hello_ack  {ok:true, proof_s, server, now} ────────│
+```
+
+The relay still returns `proof_s`, computed with the token it has just stored, and the device
+still verifies it. That is not ceremony: it is the device's only evidence that the relay kept
+the right bytes. An enrolment that appeared to succeed but stored a corrupted token would
+otherwise present as a device that authenticates once and never again.
+
+A device knows which frame to send from whether it has ever received `hello_ack {ok:true}` —
+reference firmware keeps a flag beside the token. It MUST NOT decide by whether the relay
+happens to reject it, because retrying `enrol` after a failed `auth` is how a device with a
+displaced token would talk its way back over the top of whoever holds it now.
+
 ### 3.3 Failure handling
 
 - If the relay does not recognise `device_id`, it MUST still send a `challenge` with a random
@@ -171,6 +210,34 @@ breaks the replay protection for everyone.
   over-limit `hello` is closed with `1009` like any other over-limit frame, without a
   `hello_ack`. A receiver cannot report a parse result for bytes it declined to read.
 - On `auth` failure the relay sends `hello_ack {ok:false, err:"auth"}` and closes with `1008`.
+- **A refused `enrol` is reported as `err: "auth"`, identically.** The four outcomes in §3.4
+  collapse to two on the wire — accepted, or not — and deliberately so. An `enrol`-specific
+  refusal would tell a caller that a given `device_id` exists *and is in use*, which is the
+  oracle the first rule in this section exists to close, reopened at a different step.
+
+### 3.4 Enrolment rules
+
+A relay receiving `enrol` for `device_id` D with token T decides on what it already holds:
+
+| State of D | Action |
+|---|---|
+| Not known | Store T. Accept. Nobody could be harmed: the id was unclaimed. |
+| Known, stored token equals T | Accept. This is a device that lost its enrolled flag — a factory reset — and is proving it is the same hardware. |
+| Known, token differs, **no owner** | Replace with T. Accept. A record nobody adopted is a reservation, not a possession, and it loses to hardware that has actually turned up. |
+| Known, token differs, **has an owner** | Refuse, `err: "auth"`. |
+
+The last row is the only one that protects anybody, and it is the reason a relay cannot simply
+trust `enrol`: without it, knowing a `device_id` would be enough to take a working device off
+its owner from anywhere in the world.
+
+The third row is what stops that protection becoming a denial of service. Without it, anyone
+could enrol ids they do not hold and lock out the boards that later arrive carrying them.
+Ownership rather than mere connection is the test, because connecting proves only that
+somebody holds *a* token — and in that scenario they chose it.
+
+Relays SHOULD rate-limit enrolment by source address. A relay that does not implement `enrol`
+at all is conforming; it simply requires its operator to configure tokens by hand, which is the
+normal arrangement for a self-hosted deployment.
 - If the device cannot verify `proof_s`, it MUST close immediately with `1008`, MUST NOT send
   any further frames, and MUST back off before retrying (§8). It SHOULD surface the error
   locally — reference firmware shows the error LED pattern, because a device that silently
@@ -228,6 +295,43 @@ and is pushed back with `config_push` (§5).
 ```json
 { "t": "auth", "proof_c": "3f2a9c81b4e05d7602ff1a8c9d3e4b57" }
 ```
+
+### `enrol` — sent in place of `auth`, on first contact only
+
+```json
+{ "t": "enrol", "token": "a1b2…64 lower-case hex characters…7f" }
+```
+
+The **only** frame in this protocol that carries a token, sent at most once in a device's life
+against a given relay. §3.1 sets out why the exception is defensible and the two rules a device
+MUST satisfy before sending it; §3.4 sets out what a relay does with it. A device that has
+already completed a handshake MUST send `auth`.
+
+`token` is the 64-character lower-case hex form, not the raw bytes — the same form
+`config-format.md` stores and `usbcfg`'s `SET_TOKEN` accepts. Relays MUST reject any other
+length or alphabet as `bad_frame` rather than storing something a later HMAC cannot key with.
+
+### `adopt` — optional, hosted services only
+
+```json
+{ "t": "adopt", "email": "someone@example.com" }
+```
+
+Sent after a successful handshake by a device that is carrying an account address and has not
+yet been told it is adopted. It asks the relay to bind this device to that account.
+
+This exists because the person setting up a device is standing in front of it with a phone and
+no route to the internet — the setup access point has no upstream — so the only thing that can
+carry their identity out of that moment is the device itself. The address is typed locally,
+stored in the device's configuration, and offered on the next connection.
+
+`email` is at most 128 bytes of UTF-8. A relay MUST NOT treat it as authenticated: it is text a
+person typed into a captive portal, and establishing that they control that address is the
+service's problem, not this protocol's. Relays that offer no accounts SHOULD ignore this frame.
+
+The device repeats it once per connection until acknowledged, and MUST stop and erase the
+address once it is. Retrying is deliberate: the first connection after setup is also the one
+most likely to be interrupted by a Wi-Fi network still settling.
 
 ### `wake_result`
 
@@ -338,6 +442,28 @@ result. Devices MUST NOT use it *instead* of SNTP for certificate validation —
 this frame arrives, the certificate has already been accepted.
 
 Rejection: `{ "t": "hello_ack", "ok": false, "err": "auth" }` followed by close `1008`.
+
+### `adopt_ack`
+
+```json
+{ "t": "adopt_ack", "ok": true, "state": "bound" }
+```
+
+Answers `adopt`. `state` is one of:
+
+| `state` | Meaning |
+|---|---|
+| `bound` | The device now belongs to that account. |
+| `pending` | The address has no account yet. The service has taken responsibility for the request — typically by inviting the address to create one — and the device's part is over. |
+
+Both are `ok: true` and both mean the same thing to the device: stop offering, erase the
+address. `pending` is reported separately only so a device can say something more useful than
+"done" on a local status page.
+
+A refusal is `{ "t": "adopt_ack", "ok": false, "err": "bad_frame" }` for an address that is not
+plausibly one, or `"internal"`. A device MUST NOT retry a refusal on the same connection; a
+relay that does not implement adoption simply never answers, and the device gives up at the
+end of the connection.
 
 ### `wake`
 
@@ -547,19 +673,35 @@ MUST therefore treat the token store as secret material: encrypted at rest, neve
 never included in diagnostics. This is a genuine trade-off accepted in exchange for the
 token never crossing the wire, and implementers should know they are making it.
 
-**How a relay comes to hold a token.** Out of band, always — this protocol has no enrolment
-frame and deliberately does not get one. The token is established at provisioning time by
-whoever provisions the device: a config image carries a token the generator also recorded in the
-relay's device list (`tools/mkconfig`), a USB provisioning session writes one the host generated
-and registered first (`SET_TOKEN` in `firmware/docs/usbcfg.md`), and a device that mints its own
-token displays it for its operator to enter by hand. In all three cases the relay knows the
-device before the device first dials in.
+**How a relay comes to hold a token.** Four ways, and which apply depends on who is running the
+relay:
 
-The alternative — a device presenting some weaker credential and being issued a token in reply —
-would make that credential the real secret, and it would be a short human-typed code travelling
-over the same wire this protocol is careful never to put a token on. An `auth_failed` close on a
-device the relay has never heard of is the correct and intended outcome, not a gap to be
-closed.
+- **The device enrols itself** on first contact (`enrol`, §4), under the two rules in §3.1.
+  This is the ordinary path for a hosted service, and it is what lets a person set a device up
+  with nothing but a phone.
+- **A config image carries one** that its generator also recorded in the relay's device list
+  (`tools/mkconfig`).
+- **A USB provisioning session writes one** the host generated and registered first
+  (`SET_TOKEN`, `firmware/docs/usbcfg.md`).
+- **The device mints its own and shows it** on its setup page, for an operator to add to their
+  own relay by hand. This is the self-hosting path and it needs nothing from us.
+
+What is *not* available, and is the thing to keep refusing: issuing a token in exchange for some
+weaker credential — a short human-typed code, an email address, a device id on a sticker. That
+would make the weaker thing the real secret, and put it on the wire this protocol is careful to
+keep tokens off. Note that `enrol` is not that: the device presents the token *itself*, once,
+and thereafter proves possession without transmitting it.
+
+**Possession of the hardware is the ownership claim.** A hosted service MAY treat a device that
+proves it holds the token as entitled to be re-bound to a different account — the reference
+service does, because the alternative is a second-hand buyer holding hardware that cannot be
+made to work. The token only reaches flash through physical access: a USB cable, a config image,
+or a setup page that only runs after the button has been held down at power-on. Refusing the
+transfer would not protect anyone who has already lost that access; it would only make honest
+resale, gifting and returns require support.
+
+An `auth` close on a device the relay has never heard of remains correct where enrolment is not
+offered.
 
 **Rate limiting.** Relays SHOULD limit wake requests **per `device_id`**, not per account —
 the resource being protected is one LAN's broadcast domain, and an account with ten dongles in
@@ -585,7 +727,15 @@ A relay is v1-conformant if it:
 6. Never sends a frame larger than 2048 bytes.
 7. Enforces one live connection per `device_id`, closing the displaced one with `4001`.
 
-Everything else — `status`, `probe`, `config_push`, `log` — is optional.
+Everything else — `status`, `probe`, `config_push`, `log`, `enrol`, `adopt` — is optional.
+
+**`enrol` and `adopt` are optional on purpose.** A self-hosted relay whose operator adds tokens
+to a list by hand needs neither, and requiring them would mean every minimal implementation had
+to carry an account model. A relay that ignores them is conforming; a device that offers them
+and is ignored simply never becomes enrolled or adopted, which is the correct outcome on a relay
+that does not know what an account is. Any relay that DOES implement `enrol` MUST implement all
+four rows of §3.4 — the refusal without the replacement is a lockout, and the replacement
+without the refusal is a takeover.
 
 [`relay-reference/test/fake-device.js`](relay-reference/test/fake-device.js) speaks this
 protocol and is the fastest way to test a relay implementation with no hardware.
@@ -597,6 +747,7 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 | Version | Date | Change |
 |---|---|---|
 | 1 | 2026-07-29 | Initial specification. |
+| 1 | 2026-07-30 | **Enrolment and adoption.** Three new frames — `enrol`, `adopt`, `adopt_ack` — and the §3.4 rules a relay applies to the first. Until now a relay could only learn a token out of band, which meant a device nobody had registered in advance could never reach a hosted service at all: no path existed from a board somebody flashed themselves to a relay that would speak to it. `enrol` transmits the token exactly once, on first contact, and §3.1 now sets out why that exception is defensible and the two rules — a validated certificate, and the compiled-in relay URL — that fence it. §3.4's four-row table is the whole of the security argument: refuse only where the id is already owned, replace freely where it is not, so that the protection cannot itself become a way to lock people out of boards they hold. `adopt` carries an account address off a captive portal that has no route to the internet, which is the only moment in setup where the person's identity can be captured. §11 restates how a relay comes to hold a token, and records that possession of the hardware is treated as the ownership claim. |
 | 1 | 2026-07-30 | Two rules the specification relied on but never stated, both found by building a surface on top of it rather than by reading it. **§2 now defines a wakeable address** — the relay had been accepting multicast and broadcast MACs that the firmware refuses, so a target saved in the dashboard was one the device silently declined to wake; the §5 example was itself a multicast address and is corrected. **§11 now says how a relay comes to hold a token**: out of band at provisioning time, in all cases, and explains why there is deliberately no enrolment frame — a device presenting a weaker credential to be issued a token would make that credential the real secret and would put it on the wire this protocol keeps tokens off. Neither change alters a frame. |
 | 1 | 2026-07-29 | Clarifications from the second implementation (the hosted relay, on Cloudflare Durable Objects). Three more gaps, all found by deploying rather than by reading. **§1 and §3.3 contradicted each other on oversized frames** — §1 said close `1009`, §3.3 listed "oversized" among malformed-`hello` cases answered `bad_frame` + `1008`. §1 wins: the size check precedes any parse, and a receiver cannot report a parse result for bytes it declined to read. **`4002` must not be sent until the proof verifies** — closing as soon as a revoked `device_id` is recognised makes the close code an oracle distinguishing "known but revoked" from "never known", undoing §3.3. **§9 now says relays should not arm a dedicated liveness timer**: a 90-second alarm on a hibernating object wakes it 960 times a day to observe that nothing happened, costing more than the heartbeats §9 exists to make free. Detecting a stale connection cheaply beats detecting it promptly. |
 | 1 | 2026-07-29 | Clarifications from the first implementation (`relay-reference`). Building against the spec surfaced nine gaps, all closed here. No frame shape changed; two limits narrowed, and one example was wrong. **`sent` is now defined as `ifaces.length × repeat`** and the §4 example corrected from 24 to 12 — the original figure was not derivable from any other field. **Frame size is now a symmetric 2048 bytes**; the device→relay bound was 8192, which no conforming frame approaches. Added close code **`4003`** (idle timeout), which `1008` could not represent without colliding with auth failure and corrupting the §8 backoff-reset rule. Added the **`config`** capability, without which §4's "MUST NOT send a command whose capability the device did not advertise" was unenforceable for `config_push`. **Removed the `log` capability** — no frame could enable it, so declaring it told a relay nothing actionable. Specified the relay's behaviour when a client omits the subprotocol, the response to a malformed `hello`, and `ok`/`err` on `probe_result` (a `probe` with a bad MAC previously had nowhere to report it). Clarified that rate limiting is per `device_id`, and that the unknown-device comparison must run before any provisioned check. |
