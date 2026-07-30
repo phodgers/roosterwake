@@ -71,6 +71,7 @@ typedef enum {
     RW_CMD_ADD_TARGET,
     RW_CMD_CLEAR_TARGETS,
     RW_CMD_SET_CLAIM,
+    RW_CMD_SET_TOKEN,
     RW_CMD_GET_CONFIG,
     RW_CMD_COMMIT,
     RW_CMD_STATUS,
@@ -144,6 +145,33 @@ rw_uerr_t rw_stage_set_relay(rw_stage_t *stage, const char *url);
 rw_uerr_t rw_stage_add_target(rw_stage_t *stage, const char *name, const char *mac);
 rw_uerr_t rw_stage_clear_targets(rw_stage_t *stage);
 rw_uerr_t rw_stage_set_claim(rw_stage_t *stage, const char *code);
+
+/*
+ * Stage a device token chosen by the host: exactly 64 hex digits, stored lower-case.
+ *
+ * ── WHY A HOST IS ALLOWED TO CHOOSE THE TOKEN ────────────────────────────────
+ *
+ * A relay can only verify the §3 handshake if it holds the same 32 bytes the device does, and
+ * PROTOCOL.md §11 forbids the device from ever transmitting them. So SOMEBODY has to tell the
+ * relay, and the device cannot. Without this command the only ways are the config UF2 that
+ * tools/mkconfig writes — which already puts a host-chosen token into exactly this field — or
+ * reading it off the captive portal and typing it in by hand.
+ *
+ * This is therefore not a new capability, it is the same capability over a cable: a host that
+ * provisions a device end to end (its own relay, or ours) generates the token, registers it, and
+ * writes it here. If no token is staged, COMMIT still mints one, so the portal path is unchanged.
+ *
+ * ── WHAT IT DOES NOT DO ──────────────────────────────────────────────────────
+ *
+ * It does not make the token readable. usbcfg.md §4's guarantee is about the direction that
+ * matters — nothing on this channel ever returns a token, so a dongle plugged into an untrusted
+ * machine still cannot have its credentials harvested. Overwriting one requires physical access,
+ * and anyone with that can already FACTORY_RESET the device, so no new power is granted.
+ *
+ * Lower-case because PROTOCOL.md §2 specifies lower-case hex on the wire, and normalising at the
+ * point of entry means the relay never has to compare case-insensitively against a secret.
+ */
+rw_uerr_t rw_stage_set_token(rw_stage_t *stage, const char *token);
 
 /*
  * Final validation before a flash write. Catches the combinations no single command can see —

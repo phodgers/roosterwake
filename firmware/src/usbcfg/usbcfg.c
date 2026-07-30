@@ -269,9 +269,11 @@ static void cmd_commit(void) {
     }
 
     rw_config_t to_save = s_stage.cfg;
-    /* Same as the portal: a device with no token cannot authenticate to any relay. The value is
-     * never echoed back here — usbcfg.md §4 forbids it — so a self-hoster provisioning over USB
-     * reads it from their own relay's records or uses tools/mkconfig, which prints it. */
+    /* Same as the portal: a device with no token cannot authenticate to any relay. `ensure` is
+     * the operative word — a token staged by SET_TOKEN is left exactly as the host chose it, and
+     * one is minted only when nothing was staged. Either way the value is never echoed back
+     * here, which usbcfg.md §4 forbids; a host that did not choose the token has to read it from
+     * its relay's records or use tools/mkconfig, which prints it. */
     rw_config_ensure_token(&to_save);
 
     rw_flash_status_t st = rw_config_flash_save(&to_save);
@@ -424,6 +426,14 @@ static void dispatch(const rw_cmdline_t *cl) {
         case RW_CMD_SET_CLAIM: {
             if (!arity(cl, 1, 1)) { respond_err(RW_UERR_BAD_ARGS); return; }
             rw_uerr_t err = rw_stage_set_claim(&s_stage, cl->argv[1]);
+            if (err != RW_UERR_NONE) { respond_err(err); return; }
+            respond_ok_bare();
+            return;
+        }
+
+        case RW_CMD_SET_TOKEN: {
+            if (!arity(cl, 1, 1)) { respond_err(RW_UERR_BAD_ARGS); return; }
+            rw_uerr_t err = rw_stage_set_token(&s_stage, cl->argv[1]);
             if (err != RW_UERR_NONE) { respond_err(err); return; }
             respond_ok_bare();
             return;

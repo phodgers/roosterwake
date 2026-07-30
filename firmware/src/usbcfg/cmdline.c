@@ -69,6 +69,7 @@ static const cmd_entry_t k_commands[] = {
     {RW_CMD_ADD_TARGET,    "ADD_TARGET"},
     {RW_CMD_CLEAR_TARGETS, "CLEAR_TARGETS"},
     {RW_CMD_SET_CLAIM,     "SET_CLAIM"},
+    {RW_CMD_SET_TOKEN,     "SET_TOKEN"},
     {RW_CMD_GET_CONFIG,    "GET_CONFIG"},
     {RW_CMD_COMMIT,        "COMMIT"},
     {RW_CMD_STATUS,        "STATUS"},
@@ -362,6 +363,39 @@ rw_uerr_t rw_stage_set_claim(rw_stage_t *stage, const char *code) {
     if (!copy_field(stage->cfg.claim_code, RW_CFG_CLAIM_CODE_LEN, code)) {
         return RW_UERR_BAD_ARG;
     }
+    stage->dirty = true;
+    return RW_UERR_NONE;
+}
+
+rw_uerr_t rw_stage_set_token(rw_stage_t *stage, const char *token) {
+    if (token == NULL) {
+        return RW_UERR_BAD_ARG;
+    }
+
+    /* Exactly 64, not "at most": a short token is not a weaker token, it is a token that will
+     * fail every handshake, and the failure surfaces minutes later at the relay as an auth
+     * refusal with nothing to connect it back to a typo here. */
+    size_t len = strlen(token);
+    if (len != RW_CFG_TOKEN_LEN - 1) {
+        return RW_UERR_BAD_ARG;
+    }
+
+    char normalised[RW_CFG_TOKEN_LEN];
+    for (size_t i = 0; i < len; i++) {
+        char c = token[i];
+        if (c >= '0' && c <= '9') {
+            normalised[i] = c;
+        } else if (c >= 'a' && c <= 'f') {
+            normalised[i] = c;
+        } else if (c >= 'A' && c <= 'F') {
+            normalised[i] = (char)(c - 'A' + 'a');
+        } else {
+            return RW_UERR_BAD_ARG;
+        }
+    }
+    normalised[len] = '\0';
+
+    memcpy(stage->cfg.token, normalised, RW_CFG_TOKEN_LEN);
     stage->dirty = true;
     return RW_UERR_NONE;
 }

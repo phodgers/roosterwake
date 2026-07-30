@@ -41,6 +41,7 @@ static void test_command_lookup(void) {
     RW_CHECK(rw_cmd_lookup("ADD_TARGET") == RW_CMD_ADD_TARGET);
     RW_CHECK(rw_cmd_lookup("CLEAR_TARGETS") == RW_CMD_CLEAR_TARGETS);
     RW_CHECK(rw_cmd_lookup("SET_CLAIM") == RW_CMD_SET_CLAIM);
+    RW_CHECK(rw_cmd_lookup("SET_TOKEN") == RW_CMD_SET_TOKEN);
     RW_CHECK(rw_cmd_lookup("GET_CONFIG") == RW_CMD_GET_CONFIG);
     RW_CHECK(rw_cmd_lookup("COMMIT") == RW_CMD_COMMIT);
     RW_CHECK(rw_cmd_lookup("STATUS") == RW_CMD_STATUS);
@@ -303,6 +304,36 @@ static void test_staging(void) {
     RW_CHECK(rw_stage_set_claim(&st, "7QX4-9F2B") == RW_UERR_NONE);
     RW_CHECK(rw_stage_set_claim(&st, "ZZZZ-9999-XXXX-7") == RW_UERR_NONE);
     RW_CHECK(rw_stage_set_claim(&st, "ZZZZ-9999-XXXX-78") == RW_UERR_BAD_ARG);
+
+    rw_test_begin("SET_TOKEN takes exactly 64 hex digits and stores them lower-case");
+    rw_stage_init(&st, &base);
+    const char *upper = "AABBCCDDEEFF00112233445566778899AABBCCDDEEFF001122334455667788AA";
+    RW_CHECK(rw_stage_set_token(&st, upper) == RW_UERR_NONE);
+    RW_CHECK_EQ_STR(st.cfg.token,
+                    "aabbccddeeff00112233445566778899aabbccddeeff001122334455667788aa");
+    /* 63 and 65 digits both fail. A short token is not a weak token, it is one that fails every
+     * handshake minutes later at the relay with nothing pointing back at the typo. */
+    RW_CHECK(rw_stage_set_token(&st, "aabbccddeeff00112233445566778899aabbccddeeff0011223344556677") ==
+             RW_UERR_BAD_ARG);
+    RW_CHECK(rw_stage_set_token(
+                 &st, "aabbccddeeff00112233445566778899aabbccddeeff001122334455667788aab") ==
+             RW_UERR_BAD_ARG);
+    /* 'g' is not hex; the 'x' of an 0x prefix is the mistake a person actually makes here. */
+    RW_CHECK(rw_stage_set_token(
+                 &st, "gabbccddeeff00112233445566778899aabbccddeeff001122334455667788aa") ==
+             RW_UERR_BAD_ARG);
+    RW_CHECK(rw_stage_set_token(&st, "") == RW_UERR_BAD_ARG);
+    RW_CHECK(rw_stage_set_token(&st, NULL) == RW_UERR_BAD_ARG);
+    /* A refused token leaves the previously accepted one alone — a validation failure must not
+     * half-write the field it was checking. */
+    RW_CHECK_EQ_STR(st.cfg.token,
+                    "aabbccddeeff00112233445566778899aabbccddeeff001122334455667788aa");
+
+    rw_test_begin("SET_TOKEN is a staged change like any other");
+    rw_stage_init(&st, &base);
+    RW_CHECK(rw_stage_validate(&st) == RW_UERR_NOTHING_STAGED);
+    RW_CHECK(rw_stage_set_token(&st, upper) == RW_UERR_NONE);
+    RW_CHECK(st.dirty);
 
     rw_test_begin("COMMIT without an ssid is refused rather than writing a dead config");
     rw_stage_init(&st, &base);

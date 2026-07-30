@@ -547,6 +547,20 @@ MUST therefore treat the token store as secret material: encrypted at rest, neve
 never included in diagnostics. This is a genuine trade-off accepted in exchange for the
 token never crossing the wire, and implementers should know they are making it.
 
+**How a relay comes to hold a token.** Out of band, always — this protocol has no enrolment
+frame and deliberately does not get one. The token is established at provisioning time by
+whoever provisions the device: a config image carries a token the generator also recorded in the
+relay's device list (`tools/mkconfig`), a USB provisioning session writes one the host generated
+and registered first (`SET_TOKEN` in `firmware/docs/usbcfg.md`), and a device that mints its own
+token displays it for its operator to enter by hand. In all three cases the relay knows the
+device before the device first dials in.
+
+The alternative — a device presenting some weaker credential and being issued a token in reply —
+would make that credential the real secret, and it would be a short human-typed code travelling
+over the same wire this protocol is careful never to put a token on. An `auth_failed` close on a
+device the relay has never heard of is the correct and intended outcome, not a gap to be
+closed.
+
 **Rate limiting.** Relays SHOULD limit wake requests **per `device_id`**, not per account —
 the resource being protected is one LAN's broadcast domain, and an account with ten dongles in
 ten buildings should not have them share a budget. Reference behaviour is 30 per minute: far
@@ -583,5 +597,6 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 | Version | Date | Change |
 |---|---|---|
 | 1 | 2026-07-29 | Initial specification. |
+| 1 | 2026-07-30 | Two rules the specification relied on but never stated, both found by building a surface on top of it rather than by reading it. **§2 now defines a wakeable address** — the relay had been accepting multicast and broadcast MACs that the firmware refuses, so a target saved in the dashboard was one the device silently declined to wake; the §5 example was itself a multicast address and is corrected. **§11 now says how a relay comes to hold a token**: out of band at provisioning time, in all cases, and explains why there is deliberately no enrolment frame — a device presenting a weaker credential to be issued a token would make that credential the real secret and would put it on the wire this protocol keeps tokens off. Neither change alters a frame. |
 | 1 | 2026-07-29 | Clarifications from the second implementation (the hosted relay, on Cloudflare Durable Objects). Three more gaps, all found by deploying rather than by reading. **§1 and §3.3 contradicted each other on oversized frames** — §1 said close `1009`, §3.3 listed "oversized" among malformed-`hello` cases answered `bad_frame` + `1008`. §1 wins: the size check precedes any parse, and a receiver cannot report a parse result for bytes it declined to read. **`4002` must not be sent until the proof verifies** — closing as soon as a revoked `device_id` is recognised makes the close code an oracle distinguishing "known but revoked" from "never known", undoing §3.3. **§9 now says relays should not arm a dedicated liveness timer**: a 90-second alarm on a hibernating object wakes it 960 times a day to observe that nothing happened, costing more than the heartbeats §9 exists to make free. Detecting a stale connection cheaply beats detecting it promptly. |
 | 1 | 2026-07-29 | Clarifications from the first implementation (`relay-reference`). Building against the spec surfaced nine gaps, all closed here. No frame shape changed; two limits narrowed, and one example was wrong. **`sent` is now defined as `ifaces.length × repeat`** and the §4 example corrected from 24 to 12 — the original figure was not derivable from any other field. **Frame size is now a symmetric 2048 bytes**; the device→relay bound was 8192, which no conforming frame approaches. Added close code **`4003`** (idle timeout), which `1008` could not represent without colliding with auth failure and corrupting the §8 backoff-reset rule. Added the **`config`** capability, without which §4's "MUST NOT send a command whose capability the device did not advertise" was unenforceable for `config_push`. **Removed the `log` capability** — no frame could enable it, so declaring it told a relay nothing actionable. Specified the relay's behaviour when a client omits the subprotocol, the response to a malformed `hello`, and `ok`/`err` on `probe_result` (a `probe` with a bad MAC previously had nowhere to report it). Clarified that rate limiting is per `device_id`, and that the unknown-device comparison must run before any provisioned check. |
