@@ -83,23 +83,29 @@ jobs:
           path: pico-sdk
           submodules: recursive
 
-      - name: Build
-        run: |
-          cmake -S firmware -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-          cmake --build build
-
-      - name: Name the artefacts and checksum them
+      # Both boards, every release. This used to build one image with no board in its name, which
+      # was fine while the only consumer was a human reading the release page and wrong the moment
+      # anything automated existed: `firmware_releases.board` is part of that table's uniqueness
+      # constraint, and setup.remotewake.com asks for an image by board because RP2040 firmware on
+      # an RP2350 does not boot. An unnamed image is one somebody eventually flashes to the wrong
+      # chip.
+      - name: Build both boards and checksum them
         id: art
         run: |
           set -euo pipefail
           v="${{ steps.ver.outputs.version }}"
           mkdir -p dist
-          cp build/remotewake.uf2 "dist/remotewake-${v}.uf2"
-          cp build/remotewake.elf "dist/remotewake-${v}.elf"
+          for board in pico2_w pico_w; do
+            cmake -S firmware -B "build-${board}" -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release -DPICO_BOARD="${board}"
+            cmake --build "build-${board}"
+            cp "build-${board}/remotewake.uf2" "dist/remotewake-${v}-${board}.uf2"
+            cp "build-${board}/remotewake.elf" "dist/remotewake-${v}-${board}.elf"
+            echo "size_${board}=$(stat -c%s "build-${board}/remotewake.bin")" >> "$GITHUB_OUTPUT"
+          done
           cd dist
-          sha256sum "remotewake-${v}.uf2" "remotewake-${v}.elf" > "remotewake-${v}.sha256"
+          sha256sum remotewake-${v}-*.uf2 remotewake-${v}-*.elf > "remotewake-${v}.sha256"
           cat "remotewake-${v}.sha256"
-          echo "size=$(stat -c%s ../build/remotewake.bin)" >> "$GITHUB_OUTPUT"
 
       - name: Write the release notes
         id: notes
@@ -115,16 +121,24 @@ jobs:
             echo
             echo "1. **Browser** — open <https://setup.remotewake.com>, plug the dongle in, and"
             echo "   follow the steps. Chromium-based browsers only (Web Serial and WebUSB)."
-            echo "2. **Drag and drop** — hold BOOTSEL while plugging the board in, then copy"
-            echo "   \`remotewake-${v}.uf2\` onto the \`RP2350\` drive that appears. Works everywhere."
+            echo "2. **Drag and drop** — hold BOOTSEL while plugging the board in, then copy the"
+            echo "   image for your board onto the drive that appears. Works everywhere."
             echo "3. **Already flashed** — kits ship ready to go; just plug it in."
+            echo
+            echo "| Board | Image |"
+            echo "|---|---|"
+            echo "| Pico 2 W (RP2350) — the product | \`remotewake-${v}-pico2_w.uf2\` |"
+            echo "| Pico W (RP2040) | \`remotewake-${v}-pico_w.uf2\` |"
+            echo
+            echo "**The two are not interchangeable.** RP2040 firmware on an RP2350 does not boot."
             echo
             echo "Configuration in flash survives a firmware update, so a device reflashed this"
             echo "way comes back already provisioned."
             echo
             echo "Verify the download against \`remotewake-${v}.sha256\`."
             echo
-            echo "Flash used: ${{ steps.art.outputs.size }} of 4,186,112 bytes."
+            echo "Flash used: ${{ steps.art.outputs.size_pico2_w }} bytes on the Pico 2 W of"
+            echo "4,186,112 available; ${{ steps.art.outputs.size_pico_w }} on the Pico W of 2,088,960."
             echo
             echo "## Changes"
             echo
@@ -145,11 +159,20 @@ jobs:
           files: dist/*
           fail_on_unmatched_files: true
 
-      # Tells the dashboard and setup.remotewake.com that a new build exists, so neither has a
-      # hardcoded version in it. Skipped rather than failed when the secret is absent: the admin
-      # app does not exist yet, and a release that cannot publish itself is still a release
-      # people can download.
-      - name: Notify the cloud
+      # Publishes each image to the firmware registry, so neither the dashboard nor
+      # setup.remotewake.com has a version number compiled into it. Without this step a release is
+      # a file on a web page: setup.remotewake.com reads `firmware_releases`, so an unpublished
+      # build is invisible to it and there is nothing for it to install.
+      #
+      # The BYTES are uploaded, not a download URL for the endpoint to fetch. This repository is
+      # private until launch, so a release asset URL needs a credential the cloud would have to hold
+      # and rotate - and a fetch that happens later can fetch something else. Posting the file means
+      # what is published is exactly what was built, and the endpoint computes the digest itself
+      # rather than trusting the one in the request.
+      #
+      # Skipped rather than failed when the secret is absent: a release that cannot publish itself
+      # is still a release people can download by hand.
+      - name: Publish to the firmware registry
         env:
           ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
         run: |
@@ -159,8 +182,18 @@ jobs:
             exit 0
           fi
           v="${{ steps.ver.outputs.version }}"
-          sha=$(awk '/\.uf2$/ {print $1}' "dist/remotewake-${v}.sha256")
-          curl -fsS -X POST "https://admin.remotewake.com/api/firmware/releases" \
-            -H "authorization: Bearer ${ADMIN_API_KEY}" \
-            -H 'content-type: application/json' \
-            -d "{\"version\":\"${v}\",\"channel\":\"stable\",\"sha256\":\"${sha}\",\"size\":${{ steps.art.outputs.size }},\"url\":\"https://github.com/${{ github.repository }}/releases/download/${{ steps.ver.outputs.tag }}/remotewake-${v}.uf2\"}"
+          for board in pico2_w pico_w; do
+            file="dist/remotewake-${v}-${board}.uf2"
+            sha=$(sha256sum "$file" | cut -d' ' -f1)
+            echo "publishing ${board} (${sha})"
+            # --fail-with-body so a refusal prints the endpoint's explanation rather than just an
+            # exit code. A 409 means this version already exists with different contents, which is
+            # a real problem and should stop the workflow rather than be logged and ignored.
+            curl -sS --fail-with-body -X POST \
+              "https://admin.remotewake.com/api/firmware/releases?version=${v}&board=${board}&channel=stable" \
+              -H "authorization: Bearer ${ADMIN_API_KEY}" \
+              -H 'content-type: application/octet-stream' \
+              -H "x-firmware-sha256: ${sha}" \
+              --data-binary "@${file}"
+            echo
+          done
