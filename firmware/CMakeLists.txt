@@ -83,6 +83,7 @@ set(RW_DEVICE_SOURCES
     src/main.c
     src/rw_log.c
     src/config/config_flash.c
+    src/diag/radio_trace.c
     src/led/led.c
     src/net/arplearn.c
     src/net/net.c
@@ -180,6 +181,25 @@ target_compile_definitions(remotewake PRIVATE
     USBD_MANUFACTURER="Remote Wake"
     USBD_PRODUCT="Remote Wake"
 )
+
+# ── Radio tracing shim ────────────────────────────────────────────────────────
+#
+# src/diag/radio_trace.h is force-included into every C translation unit, ours and the SDK's,
+# so that it can claim CYW43_PRINTF before cyw43_config.h defines it as printf. That macro is
+# the only seam the cyw43 driver offers — the callback that processes async events is compiled
+# into the driver's own object alongside symbols the link needs, so a replacement is a duplicate
+# symbol rather than an override — and the events it carries are the only place the radio says
+# WHY an association was refused. See the header for the full argument.
+#
+# C only. `-include` applies to whatever language the option reaches, and feeding a C header to
+# the assembler breaks the SDK's crt0. Two list entries rather than one string because `-include`
+# takes its filename as a separate argument, and this path contains a space.
+set(RW_TRACE_HEADER ${CMAKE_CURRENT_LIST_DIR}/src/diag/radio_trace.h)
+target_compile_options(remotewake PRIVATE
+    $<$<COMPILE_LANGUAGE:C>:-include>
+    $<$<COMPILE_LANGUAGE:C>:${RW_TRACE_HEADER}>
+)
+set_property(TARGET remotewake APPEND PROPERTY LINK_DEPENDS ${RW_TRACE_HEADER})
 
 # Strict warnings, but only on our own sources. The SDK's libraries are INTERFACE targets whose
 # sources compile into this executable, and holding third-party code to our warning settings

@@ -265,6 +265,36 @@ Together these turn "it isn't working" into a specific answer: `wifi:"failed"` w
 is a device that is on the network but not recognised by the relay. Different problems,
 different fixes, and the channel distinguishes them rather than making the user guess.
 
+### `WIFI_TRACE [from]`
+
+What the radio reported, verbatim, in order. `STATUS` gives the verdict; this gives the
+evidence behind it.
+
+```
+> WIFI_TRACE
+< OK {"from":0,"total":9,"lines":[
+    "[    4120] target ssid=HomeNet",
+    "[    4121] join #1 auth=wpa2/wpa3",
+    "[    4890] ASYNC(0000,SET_SSID,1,0,0)",
+    "[    4891] result failed js=0002", ...]}
+```
+
+The `ASYNC(flags,event,status,reason,interface)` lines come from the CYW43439 itself — one per
+step of an association — and the `[nnn] word …` lines are the firmware saying which attempt
+they belong to. Read together they say where in the handshake a join died, which is the thing
+no other command in this channel can tell you.
+
+`js` is the driver's join-state bitmask: `0x0200` authenticated, `0x0400` linked, `0x0800`
+keyed, and the low nibble the outcome (`1` active, `2` failed, `3` no network, `4` bad auth).
+An association refused before authentication and one that died during the four-way handshake
+both report `last_error:"failed"` to `STATUS` and have nothing whatever to do with each other;
+here they are two different numbers.
+
+The device holds the last 32 entries and answers 12 at a time, so a host reads from `0` and
+asks again while `from + 12 < total`. Scan results are excluded — a single `SCAN` raises one
+event per beacon heard and would evict everything worth keeping. Entries shift as new events
+arrive, so a page read during an active retry loop may skip or repeat a line.
+
 ### `TEST_WAKE [mac]`
 
 Send a magic packet immediately, without going near the relay. With no argument, uses the

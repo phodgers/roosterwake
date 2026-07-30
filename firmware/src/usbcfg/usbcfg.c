@@ -6,6 +6,7 @@
 #include "usbcfg/usbcfg.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "pico/cyw43_arch.h"
@@ -13,6 +14,7 @@
 
 #include "brand.h"
 #include "config/config_flash.h"
+#include "diag/radio_trace.h"
 #include "net/net.h"
 #include "net/scan.h"
 #include "proto/json.h"
@@ -193,6 +195,63 @@ static void cmd_status(void) {
     rw_jw_key(&w, "uptime_s");
     rw_jw_int(&w, (long)rw_sys_uptime_s());
     rw_jw_raw(&w, "}");
+
+    if (rw_jw_finish(&w) == 0) {
+        respond_err(RW_UERR_INTERNAL);
+        return;
+    }
+    respond_ok_json(buf);
+}
+
+/* ── WIFI_TRACE ──────────────────────────────────────────────────────────────
+ *
+ * What the radio reported, verbatim, in order. See diag/radio_trace.h for why the driver's own
+ * event stream is the only thing that answers "why was the association refused" — STATUS reports
+ * the verdict, and this reports the evidence behind it.
+ *
+ * Paged, because the whole ring does not fit one response. `from` is an index from the oldest
+ * entry held; the response carries `total` so a host knows whether to ask again. Entries shift
+ * as new events arrive and evict old ones, so a page read during an active retry loop may skip
+ * or repeat a line — acceptable for a diagnostic, and the alternative is a snapshot buffer that
+ * costs more RAM than the ring itself.
+ */
+static void cmd_wifi_trace(const rw_cmdline_t *cl) {
+    size_t total = rw_radio_trace_count();
+    size_t from  = 0;
+
+    if (cl->argc == 2) {
+        char  *end = NULL;
+        long   n   = strtol(cl->argv[1], &end, 10);
+        if (end == cl->argv[1] || *end != '\0' || n < 0) {
+            respond_err(RW_UERR_BAD_ARG);
+            return;
+        }
+        from = (size_t)n;
+    }
+
+    char    buf[RESP_MAX];
+    rw_jw_t w;
+    rw_jw_init(&w, buf, sizeof(buf));
+    rw_jw_raw(&w, "{");
+    rw_jw_key(&w, "from");
+    rw_jw_int(&w, (long)from);
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "total");
+    rw_jw_int(&w, (long)total);
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "lines");
+    rw_jw_raw(&w, "[");
+    for (size_t i = 0; i < RW_RADIO_TRACE_PAGE; i++) {
+        const char *line = rw_radio_trace_at(from + i);
+        if (line == NULL) {
+            break;
+        }
+        if (i > 0) {
+            rw_jw_raw(&w, ",");
+        }
+        rw_jw_str(&w, line);
+    }
+    rw_jw_raw(&w, "]}");
 
     if (rw_jw_finish(&w) == 0) {
         respond_err(RW_UERR_INTERNAL);
@@ -452,6 +511,11 @@ static void dispatch(const rw_cmdline_t *cl) {
         case RW_CMD_STATUS:
             if (!arity(cl, 0, 0)) { respond_err(RW_UERR_BAD_ARGS); return; }
             cmd_status();
+            return;
+
+        case RW_CMD_WIFI_TRACE:
+            if (!arity(cl, 0, 1)) { respond_err(RW_UERR_BAD_ARGS); return; }
+            cmd_wifi_trace(cl);
             return;
 
         case RW_CMD_TEST_WAKE:

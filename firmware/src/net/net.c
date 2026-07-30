@@ -15,6 +15,7 @@
 #include "pico/rand.h"
 #include "pico/time.h"
 
+#include "diag/radio_trace.h"
 #include "rw_log.h"
 #include "sys/sys.h"
 #include "sys/wallclock.h"
@@ -88,6 +89,10 @@ static const uint32_t k_auto_auth[] = {
 /* Which of the above the next join uses. Advanced only by an association failure. */
 static size_t s_auth_attempt;
 
+/* Numbers the attempts in the radio trace, so the events belonging to one join can be told from
+ * the events belonging to the next. */
+static uint32_t s_join_seq;
+
 static uint32_t auth_to_cyw43(uint8_t wifi_auth, const char *psk) {
     if (psk[0] == '\0') {
         return CYW43_AUTH_OPEN;
@@ -129,6 +134,17 @@ static void schedule_retry(const char *why) {
     s_state      = RW_NET_FAILED;
     uint32_t delay = jittered(s_backoff_ms);
     s_retry_at     = make_timeout_time_ms(delay);
+
+    /*
+     * The driver's join-state word goes into the trace beside the verdict.
+     *
+     * It is a bitmask of how far the association actually got — 0x0200 authenticated, 0x0400
+     * linked, 0x0800 keyed, with the low nibble holding the outcome — and it separates failures
+     * that `why` cannot. Refused before authentication and refused during the four-way handshake
+     * both arrive here as "failed", and they have nothing to do with one another.
+     */
+    rw_radio_trace_note("result %s js=%04x", why,
+                        (unsigned)(cyw43_state.wifi_join_state & 0xffffu));
     RW_LOG_WARN("wifi: %s, retrying in %lu ms", why, (unsigned long)delay);
 
     s_backoff_ms = (s_backoff_ms > JOIN_BACKOFF_MAX_MS / 2) ? JOIN_BACKOFF_MAX_MS
@@ -144,6 +160,11 @@ bool rw_net_init(void) {
         return false;
     }
     cyw43_arch_enable_sta_mode();
+
+    /* Before the first join, so the very first attempt after a power-up is recorded. That is the
+     * attempt that matters: a dongle that never associates has already failed once by the time
+     * anybody thinks to plug a cable into it. */
+    rw_radio_trace_enable();
 
     /*
      * CYW43_PERFORMANCE_PM, never CYW43_AGGRESSIVE_PM.
@@ -171,16 +192,24 @@ void rw_net_start(const char *ssid, const char *psk, uint8_t wifi_auth) {
     s_backoff_ms   = JOIN_BACKOFF_MIN_MS;
     s_last_error   = NULL;
     s_auth_attempt = 0;
+    s_join_seq     = 0;
 
     if (s_ssid[0] == '\0') {
         s_state = RW_NET_IDLE;
         return;
     }
+
+    /* Named once. Each attempt below carries only its number and its handshake, because an SSID
+     * repeated on every line costs more of the ring than it explains. */
+    rw_radio_trace_note("target ssid=%s", s_ssid);
     s_state    = RW_NET_FAILED;
     s_retry_at = get_absolute_time(); /* attempt immediately */
 }
 
 static void begin_join(void) {
+    s_join_seq++;
+    rw_radio_trace_note("join #%lu auth=%s", (unsigned long)s_join_seq,
+                        auth_attempt_name(s_auth, s_psk));
     RW_LOG_INFO("wifi: joining %s (%s)", s_ssid, auth_attempt_name(s_auth, s_psk));
     int rc = cyw43_arch_wifi_connect_async(s_ssid, s_psk[0] ? s_psk : NULL,
                                            auth_to_cyw43(s_auth, s_psk));
@@ -268,6 +297,7 @@ void rw_net_task(void) {
             char ip[16], mask[16];
             rw_net_ip_str(ip, sizeof(ip));
             rw_net_netmask_str(mask, sizeof(mask));
+            rw_radio_trace_note("joined ip=%s", ip);
             RW_LOG_INFO("wifi: joined %s, ip %s mask %s", s_ssid, ip, mask);
             s_state      = RW_NET_JOINED;
             s_backoff_ms = JOIN_BACKOFF_MIN_MS;
