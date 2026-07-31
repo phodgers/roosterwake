@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "lwip/stats.h"
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
 
@@ -194,6 +195,23 @@ static void cmd_status(void) {
     rw_jw_raw(&w, ",");
     rw_jw_key(&w, "uptime_s");
     rw_jw_int(&w, (long)rw_sys_uptime_s());
+    rw_jw_raw(&w, ",");
+
+    /*
+     * The two memory figures, because RAM is this device's binding constraint and the way it
+     * fails is silent. A TLS session needs its record buffers out of lwIP's heap in one piece;
+     * when that heap was too small the relay simply stayed at "connecting" for ever with nothing
+     * anywhere to say why. `lwip_mem_max` is the high-water mark and `lwip_mem_err` counts
+     * refusals - a non-zero value there is the whole diagnosis.
+     */
+    rw_jw_key(&w, "heap_free");
+    rw_jw_int(&w, (long)rw_sys_heap_free());
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "lwip_mem_max");
+    rw_jw_int(&w, (long)lwip_stats.mem.max);
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "lwip_mem_err");
+    rw_jw_int(&w, (long)lwip_stats.mem.err);
     rw_jw_raw(&w, "}");
 
     if (rw_jw_finish(&w) == 0) {

@@ -51,6 +51,23 @@
  * failed", which is the difference between a fixable report and a shrug. */
 #define MBEDTLS_ERROR_C
 
+/*
+ * The handshake, step by step, in a build that asked for diagnostics.
+ *
+ * A rejected handshake reaches the application as one number — and if that number is
+ * MBEDTLS_ERR_SSL_FATAL_ALERT_MESSAGE it says only "the peer objected", never to what. The
+ * alert's description, the ciphersuite the server picked and the certificate it sent are all
+ * here and nowhere else. Compiled out of release builds because it is several kilobytes of
+ * strings and it prints secrets-adjacent handshake material.
+ */
+#ifdef RW_TLS_TRACE
+#define MBEDTLS_DEBUG_C
+/* Known-answer tests for the primitives, run at boot. A TLS session that fails on its first
+ * ENCRYPTED record while every plaintext step succeeded is either a key-derivation or a
+ * cipher fault, and these say which - on this silicon, not on a workstation. */
+#define MBEDTLS_SELF_TEST
+#endif
+
 /* ── Entropy and RNG ───────────────────────────────────────────────────────── */
 
 /* mbedtls_hardware_poll() is provided by pico_mbedtls and is fed by pico_rand, which on the
@@ -108,8 +125,14 @@
 
 /*
  * Curves. X25519 first because it is what Cloudflare and Google front ends prefer and it is
- * the cheapest of the three on a Cortex-M33. P-256 and P-384 cover the ECDSA roots in the
- * bundle (ISRG Root X2 and GTS Root R4 are P-384).
+ * the cheapest of the three. P-256 and P-384 cover the ECDSA roots in the bundle (ISRG Root X2
+ * and GTS Root R4 are P-384).
+ *
+ * X25519 was briefly removed from this list while a handshake failure was being chased, on the
+ * theory that mbedTLS's built-in Montgomery ECDH was computing a bad shared secret. It was not:
+ * the fault was a miscompiled AES-GCM (see the optimisation note in CMakeLists.txt), which broke
+ * every curve identically and merely looked curve-specific because x25519 was the one the server
+ * kept choosing. Removing it changed nothing and it is back.
  */
 #define MBEDTLS_ECP_DP_CURVE25519_ENABLED
 #define MBEDTLS_ECP_DP_SECP256R1_ENABLED

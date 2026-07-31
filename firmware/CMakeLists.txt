@@ -46,6 +46,12 @@ option(RW_TLS_INSECURE "Skip TLS certificate verification (INSECURE)" OFF)
 # logs are most needed, is the one state that cannot switch them on.
 option(RW_FORCE_DIAG_LOG "Enable diagnostic logging at boot, ignoring the config flag" OFF)
 
+# Trace every step of the TLS handshake, including the peer's alerts, over the USB serial
+# port. Separate from RW_FORCE_DIAG_LOG because it is several hundred lines per connection
+# and slow enough to change the timing of what it is observing - it answers "why was the
+# handshake refused", which is a question you ask once, not a log you leave on.
+option(RW_TLS_TRACE "Trace the TLS handshake over the serial port (very verbose)" OFF)
+
 include(pico_sdk_import.cmake)
 
 project(remotewake_firmware C CXX ASM)
@@ -53,6 +59,38 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
 pico_sdk_init()
+
+# ── Optimisation level ────────────────────────────────────────────────────────
+#
+# -O2. NOT -O3, and this is not a preference.
+#
+# At -O3, GCC 14.2 (arm-none-eabi) miscompiles mbedTLS's AES-GCM for this target. The failure is
+# silent and total: AES-ECB is correct, SHA-256 is correct, CTR-DRBG and the entropy source are
+# correct, and GCM produces the right answer for a zero-length message and the wrong one for
+# every message that actually contains data.
+#
+# What that costs, if it is ever re-raised, is the entire product. TLS is the only thing that
+# uses GCM, and a handshake fails on the FIRST encrypted record it sends: certificate verified,
+# key agreed, Finished sent, and a fatal `bad_record_mac` alert back. Every step before that
+# point is asymmetric or hashing and looks perfect in a trace, so the failure reads as a network
+# or server problem and points nowhere near the compiler. It cost most of a day.
+#
+# Reproduce it in two lines, on hardware:
+#
+#   cmake -S firmware -B b -DPICO_BOARD=pico_w -DRW_FORCE_DIAG_LOG=ON -DRW_TLS_TRACE=ON
+#   ... flash, then read the serial port: "AES-GCM-128 #1 (enc): failed" at -O3, passes at -O2
+#
+# rw_tls_init() additionally runs a single GCM known-answer test at every boot in every build and
+# refuses to bring TLS up if it fails, so a future toolchain that breaks this differently says so
+# in one line rather than being diagnosed again from first principles.
+#
+# Set as normal variables rather than cache entries so they take effect in existing build trees
+# without a reconfigure, and so a caller who genuinely wants something else can still pass
+# CMAKE_C_FLAGS on the command line.
+set(CMAKE_C_FLAGS_RELEASE          "-O2 -DNDEBUG")
+set(CMAKE_CXX_FLAGS_RELEASE        "-O2 -DNDEBUG")
+set(CMAKE_C_FLAGS_RELWITHDEBINFO   "-O2 -g -DNDEBUG")
+set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O2 -g -DNDEBUG")
 
 if (NOT TARGET pico_cyw43_arch)
     message(FATAL_ERROR
@@ -215,6 +253,11 @@ set_source_files_properties(${RW_PORTABLE_SOURCES} ${RW_DEVICE_SOURCES}
 if (RW_FORCE_DIAG_LOG)
     message(STATUS "Diagnostic logging forced ON - this build chatters on the USB serial port")
     target_compile_definitions(remotewake PRIVATE RW_FORCE_DIAG_LOG=1)
+endif()
+
+if (RW_TLS_TRACE)
+    message(STATUS "TLS handshake tracing is ON - this build prints the whole handshake")
+    target_compile_definitions(remotewake PRIVATE RW_TLS_TRACE=1)
 endif()
 
 if (RW_TLS_INSECURE)

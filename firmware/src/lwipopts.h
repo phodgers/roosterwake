@@ -21,11 +21,35 @@
 #define MEM_ALIGNMENT               4
 
 /*
- * lwIP's own heap. Holds pbufs allocated with PBUF_RAM (every outbound frame passes through
- * one) and altcp's TLS bookkeeping. mbedTLS's 4 KB record buffers come from the C heap, not
- * from here.
+ * lwIP's own heap.
+ *
+ * ── THIS IS WHERE mbedTLS ALLOCATES, AND IT IS NOT OBVIOUS ───────────────────
+ *
+ * The previous value here was 16000, chosen on the belief that mbedTLS took its record buffers
+ * from the C heap. It does not. lwIP installs its own allocator into mbedTLS
+ * (`tls_malloc` in altcp_tls_mbedtls_mem.c), which calls `mem_malloc` and additionally refuses
+ * outright any single allocation larger than MEM_SIZE. MBEDTLS_SSL_IN_CONTENT_LEN is 16384, so
+ * the inbound record buffer alone was larger than the entire heap it had to come from, and
+ * `altcp_tls_new()` could never succeed. Every dongle reached the internet, failed to allocate,
+ * and reported nothing more specific than a relay stuck at "connecting" — on both boards, since
+ * this constant does not vary by chip.
+ *
+ * What has to fit here, all at once:
+ *
+ *   the parsed root bundle   ~10 KB, permanent, allocated once at rw_tls_init()
+ *   inbound record buffer     16 KB, MBEDTLS_SSL_IN_CONTENT_LEN
+ *   outbound record buffer     4 KB, MBEDTLS_SSL_OUT_CONTENT_LEN
+ *   the peer's chain          ~4 KB during the handshake
+ *   PBUF_RAM pbufs             every outbound frame passes through one
+ *
+ * A live handshake against the production relay measured `lwip_mem_max` at 44028 bytes, so 48 KB
+ * was only 10% clear of the peak and 64 KB is the size that leaves real headroom — for a second
+ * concurrent connection during a reconnect, and for a server whose certificate chain is larger
+ * than Cloudflare's. tls.c carries a _Static_assert tying this constant to the mbedTLS ones so
+ * the two can never drift apart in silence again, and STATUS reports `lwip_mem_max` and
+ * `lwip_mem_err` so the headroom stays a measurement rather than a belief.
  */
-#define MEM_SIZE                    16000
+#define MEM_SIZE                    65536
 
 #define MEMP_NUM_TCP_SEG            32
 #define MEMP_NUM_ARP_QUEUE          10
@@ -58,7 +82,18 @@
 
 /* Enough for a WoL broadcast plus the relay connection's own retransmissions. */
 #define TCP_MSS                     1460
-#define TCP_WND                     (8 * TCP_MSS)
+
+/*
+ * The receive window has to be at least as large as the TLS record being decrypted into.
+ *
+ * altcp_tls checks this at start-up and says so — "TCP_WND is smaller than the RX decryption
+ * buffer, connection RX might stall" — because a record larger than the window can never be
+ * fully delivered: lwIP stops advertising space before the last fragment arrives, and the
+ * handshake hangs rather than failing. At 8 * MSS the window was 11680 against a 16384-byte
+ * inbound buffer, so any server sending a maximum-size record would have hung the connection.
+ * Twelve segments clears MBEDTLS_SSL_IN_CONTENT_LEN with a margin.
+ */
+#define TCP_WND                     (12 * TCP_MSS)
 #define TCP_SND_BUF                 (4 * TCP_MSS)
 #define TCP_SND_QUEUELEN            ((4 * (TCP_SND_BUF) + (TCP_MSS - 1)) / (TCP_MSS))
 
@@ -115,8 +150,50 @@ void rw_sntp_set_system_time(uint32_t sec);
 
 /* ── Diagnostics ───────────────────────────────────────────────────────────── */
 
-#define LWIP_STATS                  0
+/*
+ * Memory accounting only.
+ *
+ * `lwip_stats.mem.max` is the high-water mark of the heap above, and `.err` counts allocations
+ * that were refused. Those two numbers are the difference between sizing MEM_SIZE from evidence
+ * and sizing it from a hunch, and the whole reason the TLS failure above went undiagnosed for as
+ * long as it did is that nobody could see either of them. STATUS reports them.
+ *
+ * The protocol counters are left off: they cost code and RAM on a part that has little of
+ * either, and nothing in this product has ever needed to know how many ICMP echoes it sent.
+ */
+#define LWIP_STATS                  1
 #define LWIP_STATS_DISPLAY          0
+#define MEM_STATS                   1
+#define MEMP_STATS                  1
+#define SYS_STATS                   0
+#define LINK_STATS                  0
+#define ETHARP_STATS                0
+#define IP_STATS                    0
+#define IPFRAG_STATS                0
+#define ICMP_STATS                  0
+#define UDP_STATS                   0
+#define TCP_STATS                   0
+
+/*
+ * TLS handshake failures, in a build that asked for diagnostics.
+ *
+ * lwIP keeps `struct altcp_tls_config` private, so there is no way to install an mbedTLS debug
+ * callback from our side — altcp's own LWIP_DEBUGF at altcp_tls_mbedtls.c:300 is the only place
+ * the handshake's return code is ever visible. Without it a rejected handshake reaches us as
+ * ERR_CLSD on the error callback and nothing else, which is indistinguishable from the peer
+ * simply hanging up.
+ *
+ * Only the altcp_tls channel is switched on. LWIP_DEBUG gates the machinery; every other
+ * module's flag stays at its LWIP_DBG_OFF default, so this does not turn the cable into a
+ * firehose of packet traces.
+ */
+#ifdef RW_TLS_TRACE
+#define LWIP_DEBUG                  1
+#define LWIP_DBG_MIN_LEVEL          LWIP_DBG_LEVEL_ALL
+#define LWIP_DBG_TYPES_ON           LWIP_DBG_ON
+#define ALTCP_MBEDTLS_DEBUG         LWIP_DBG_ON
+#else
 #define LWIP_DEBUG                  0
+#endif
 
 #endif /* RW_LWIPOPTS_H */

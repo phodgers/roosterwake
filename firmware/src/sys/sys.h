@@ -40,6 +40,19 @@ void rw_sys_set_network_ready(bool ready);
 uint32_t rw_sys_uptime_s(void);
 
 /*
+ * Bytes of C heap not currently allocated.
+ *
+ * Reported because this device's hardest resource limit is RAM, not flash or CPU, and the way it
+ * bites is invisible: a TLS session needs its record buffers in one contiguous piece, so the
+ * connection simply never forms and every layer above reports something vaguer than "no memory".
+ * A number here turns that into a fact somebody can act on.
+ *
+ * This is free heap, not the largest free block, so it is an upper bound on what an allocation
+ * can get. Fragmentation makes the real figure smaller and nothing here can see it.
+ */
+uint32_t rw_sys_heap_free(void);
+
+/*
  * Why the device last restarted, as one of: "power_on", "brownout", "watchdog", "software",
  * "unknown". Reported in `status_result` (PROTOCOL.md §4) and `INFO` (usbcfg.md §4).
  *

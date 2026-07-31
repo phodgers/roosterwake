@@ -5,6 +5,8 @@
  */
 #include "sys/sys.h"
 
+#include <malloc.h>
+
 #include "hardware/gpio.h"
 #include "hardware/structs/io_qspi.h"
 #include "hardware/structs/sio.h"
@@ -92,6 +94,23 @@ void rw_sys_pump_ms(uint32_t ms) {
 
 uint32_t rw_sys_uptime_s(void) {
     return (uint32_t)(absolute_time_diff_us(s_boot_time, get_absolute_time()) / 1000000);
+}
+
+/*
+ * The heap runs from the end of .bss to the stack limit, and newlib does not report its size —
+ * only how much of it has been handed out. Both symbols are placed by the SDK's linker script,
+ * so the arithmetic is the same on RP2040 and RP2350 even though the totals are not.
+ */
+extern char __StackLimit;
+extern char end;
+
+uint32_t rw_sys_heap_free(void) {
+    struct mallinfo info = mallinfo();
+    uint32_t        total = (uint32_t)(&__StackLimit - &end);
+    /* uordblks is what malloc has given out. Anything the heap has not yet grown into is still
+     * available, which is why this is measured against the arena's ceiling rather than against
+     * mallinfo's `fordblks` — that counts only the free list inside the part already grown. */
+    return total - (uint32_t)info.uordblks;
 }
 
 const char *rw_sys_reset_reason(void) {
