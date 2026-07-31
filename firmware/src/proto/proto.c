@@ -958,16 +958,16 @@ static void handle_ota_offer(const char *js, const jsmntok_t *tok, int count) {
         return; /* nothing to answer to */
     }
 
-    char hex[OTA_HDR_HEX + 1] = {0};
-    int  hdr_idx              = rw_json_find(js, tok, count, "hdr");
-    if (hdr_idx < 0 || !rw_json_str(js, &tok[hdr_idx], hex, sizeof(hex)) ||
-        strlen(hex) != OTA_HDR_HEX) {
+    /* Decoded straight out of the frame rather than copied to a local first. 256 characters is
+     * an eighth of the stack this runs on, and the token already points at them. */
+    int hdr_idx = rw_json_find(js, tok, count, "hdr");
+    if (hdr_idx < 0 || tok[hdr_idx].end - tok[hdr_idx].start != OTA_HDR_HEX) {
         send_ota_reject(id, "bad_header");
         return;
     }
 
     uint8_t raw[RW_OTA_HEADER_LEN];
-    if (!rw_hex_decode(hex, OTA_HDR_HEX, raw, sizeof(raw))) {
+    if (!rw_hex_decode(js + tok[hdr_idx].start, OTA_HDR_HEX, raw, sizeof(raw))) {
         send_ota_reject(id, "bad_header");
         return;
     }

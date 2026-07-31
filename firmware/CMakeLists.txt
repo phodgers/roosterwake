@@ -114,6 +114,18 @@ math(EXPR RW_ABS_BLOCK_ADDR "${RW_SLOT_ORIGIN} + 704 * 1024 - 256" OUTPUT_FORMAT
 # Normal variables rather than cache entries, so they apply in existing build trees.
 set(CMAKE_C_FLAGS_RELEASE          "-O2 -DNDEBUG")
 set(CMAKE_CXX_FLAGS_RELEASE        "-O2 -DNDEBUG")
+
+# ── Stack ─────────────────────────────────────────────────────────────────────
+#
+# 4 KB, not the SDK's 2 KB.
+#
+# Every relay frame is parsed by jsmn into a 128-token array, which is 2048 bytes of locals on
+# its own — the whole default stack, before the handler it dispatches to has run at all. The
+# stack sits at the top of SCRATCH_Y, so what overflowed into was the unused remainder of that
+# bank rather than anything live, and the firmware worked. It worked by luck: SCRATCH_Y is 4 KB
+# on both chips and nothing else is in it, so taking all of it costs nothing and turns a silent
+# overrun into a link error the day something else wants the space.
+add_compile_definitions(PICO_STACK_SIZE=4096)
 set(CMAKE_C_FLAGS_RELWITHDEBINFO   "-O2 -g -DNDEBUG")
 set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O2 -g -DNDEBUG")
 
