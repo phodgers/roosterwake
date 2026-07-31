@@ -17,6 +17,7 @@
 #include "config/config_flash.h"
 #include "diag/radio_trace.h"
 #include "net/net.h"
+#include "ota/ota.h"
 #include "net/scan.h"
 #include "proto/json.h"
 #include "proto/proto.h"
@@ -267,6 +268,73 @@ static void cmd_wifi_trace(const rw_cmdline_t *cl) {
         return;
     }
     respond_ok_json(buf);
+}
+
+/* ── OTA_STATE / OTA_STAGE ───────────────────────────────────────────────────
+ *
+ * The slot the device is running from, and the ability to point the loader at the other one.
+ * Present on this channel because an update has to be installable without a relay: a
+ * bring-your-own board, a device on a network that cannot reach us, and every test of the
+ * rollback path all need it.
+ */
+static void cmd_ota_state(void) {
+    const rw_ota_state_t *st = rw_ota_state();
+
+    char    buf[RESP_MAX];
+    rw_jw_t w;
+    rw_jw_init(&w, buf, sizeof(buf));
+    rw_jw_raw(&w, "{");
+    rw_jw_key(&w, "running_slot");
+    rw_jw_int(&w, (long)rw_ota_running_slot());
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "spare_slot");
+    rw_jw_int(&w, (long)rw_ota_spare_slot());
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "recorded_active");
+    rw_jw_int(&w, (long)st->active);
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "fallback");
+    rw_jw_int(&w, (long)st->fallback);
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "on_trial");
+    rw_jw_raw(&w, rw_ota_on_trial() ? "true" : "false");
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "trials_left");
+    rw_jw_int(&w, (long)rw_ota_trials_left());
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "seq");
+    rw_jw_int(&w, (long)st->seq);
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "version");
+    rw_jw_str(&w, st->version);
+    rw_jw_raw(&w, "}");
+
+    if (rw_jw_finish(&w) == 0) {
+        respond_err(RW_UERR_INTERNAL);
+        return;
+    }
+    respond_ok_json(buf);
+}
+
+static void cmd_ota_stage(const rw_cmdline_t *cl) {
+    char  *end = NULL;
+    long   n   = strtol(cl->argv[1], &end, 10);
+    if (end == cl->argv[1] || *end != '\0' || n < 0 || n > (long)RW_OTA_SLOT_B) {
+        respond_err(RW_UERR_BAD_ARG);
+        return;
+    }
+    if (!rw_ota_stage_slot((uint8_t)n, cl->argc == 3 ? cl->argv[2] : "unknown")) {
+        respond_err(RW_UERR_BAD_ARG);
+        return;
+    }
+
+    char buf[96];
+    snprintf(buf, sizeof(buf), "{\"staged\":%ld,\"trials\":%u,\"reboot_in_ms\":%d}", n,
+             (unsigned)RW_OTA_TRIAL_BOOTS, REBOOT_DELAY_MS);
+    respond_ok_json(buf);
+
+    s_reboot_pending = true;
+    rw_sys_reboot(REBOOT_DELAY_MS);
 }
 
 /* ── TEST_WAKE ───────────────────────────────────────────────────────────── */
@@ -525,6 +593,16 @@ static void dispatch(const rw_cmdline_t *cl) {
         case RW_CMD_WIFI_TRACE:
             if (!arity(cl, 0, 1)) { respond_err(RW_UERR_BAD_ARGS); return; }
             cmd_wifi_trace(cl);
+            return;
+
+        case RW_CMD_OTA_STATE:
+            if (!arity(cl, 0, 0)) { respond_err(RW_UERR_BAD_ARGS); return; }
+            cmd_ota_state();
+            return;
+
+        case RW_CMD_OTA_STAGE:
+            if (!arity(cl, 1, 2)) { respond_err(RW_UERR_BAD_ARGS); return; }
+            cmd_ota_stage(cl);
             return;
 
         case RW_CMD_TEST_WAKE:

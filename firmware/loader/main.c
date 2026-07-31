@@ -24,6 +24,7 @@
 #include "pico/stdlib.h"
 
 #include "ota/layout.h"
+#include "ota/ota_flash.h"
 #include "ota/state.h"
 
 /*
@@ -33,10 +34,6 @@
  * the processor has to be given is the vector table after it.
  */
 #define SLOT_VECTOR_OFFSET 0x100u
-
-static const uint8_t *state_sector(uint32_t offset) {
-    return (const uint8_t *)(uintptr_t)(RW_FLASH_XIP_BASE + offset);
-}
 
 /*
  * Is there something at this address that could plausibly be entered?
@@ -59,30 +56,6 @@ static bool slot_bootable(uint8_t slot) {
         return false;
     }
     return (pc & 1u) != 0u;
-}
-
-static void persist(const rw_ota_state_t *s) {
-    uint8_t page[FLASH_PAGE_SIZE];
-    memset(page, 0, sizeof(page));
-    if (rw_ota_state_encode(s, page, sizeof(page)) == 0) {
-        return;
-    }
-
-    /*
-     * Written to both sectors, oldest first is not possible to know here, so both are refreshed.
-     * The sequence number in each copy is what makes a torn write survivable: whichever sector
-     * was mid-erase when the power went reads as invalid, and the other still carries a record.
-     */
-    const uint32_t offsets[2] = {
-        RW_OTA_STATE_A_OFFSET(PICO_FLASH_SIZE_BYTES),
-        RW_OTA_STATE_B_OFFSET(PICO_FLASH_SIZE_BYTES),
-    };
-    for (int i = 0; i < 2; i++) {
-        uint32_t ints = save_and_disable_interrupts();
-        flash_range_erase(offsets[i], RW_FLASH_SECTOR);
-        flash_range_program(offsets[i], page, FLASH_PAGE_SIZE);
-        restore_interrupts(ints);
-    }
 }
 
 static void __attribute__((noreturn)) enter_slot(uint8_t slot) {
@@ -157,10 +130,7 @@ static void report(const char *what, uint8_t slot) {
 int main(void) {
     rw_ota_state_t s;
 
-    bool have = rw_ota_state_pick(state_sector(RW_OTA_STATE_A_OFFSET(PICO_FLASH_SIZE_BYTES)),
-                                  RW_OTA_STATE_LEN,
-                                  state_sector(RW_OTA_STATE_B_OFFSET(PICO_FLASH_SIZE_BYTES)),
-                                  RW_OTA_STATE_LEN, &s);
+    bool have = rw_ota_flash_load(&s);
 
     if (!have) {
         /* Never updated, or the records were lost. Slot A is where a factory image goes, and
@@ -170,7 +140,7 @@ int main(void) {
         bool write_back = false;
         rw_ota_state_on_boot(&s, &write_back);
         if (write_back) {
-            persist(&s);
+            rw_ota_flash_save(&s);
         }
     }
 

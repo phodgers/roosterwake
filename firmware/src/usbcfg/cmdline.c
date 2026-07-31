@@ -74,6 +74,8 @@ static const cmd_entry_t k_commands[] = {
     {RW_CMD_COMMIT,        "COMMIT"},
     {RW_CMD_STATUS,        "STATUS"},
     {RW_CMD_WIFI_TRACE,    "WIFI_TRACE"},
+    {RW_CMD_OTA_STATE,     "OTA_STATE"},
+    {RW_CMD_OTA_STAGE,     "OTA_STAGE"},
     {RW_CMD_TEST_WAKE,     "TEST_WAKE"},
     {RW_CMD_FACTORY_RESET, "FACTORY_RESET"},
     {RW_CMD_REBOOT,        "REBOOT"},

@@ -16,6 +16,7 @@
 #include "proto/auth.h"
 #include "proto/json.h"
 #include "proto/probe.h"
+#include "ota/ota.h"
 #include "rw_log.h"
 #include "sys/sys.h"
 #include "sys/wallclock.h"
@@ -630,6 +631,10 @@ static void handle_hello_ack(const char *js, const jsmntok_t *tok, int count) {
 
     RW_LOG_INFO("proto: authenticated");
     set_state(RW_RELAY_READY);
+
+    /* The image has now done the one thing a broken update cannot: reached us. If it was on
+     * trial, that trial is over. */
+    rw_ota_confirm_running_image();
     /* PROTOCOL.md §8: the reset happens here and nowhere earlier. A relay that accepts TCP and
      * rejects at auth would otherwise be hammered at one-second intervals for ever. */
     s.backoff_ms = RW_RELAY_BACKOFF_MIN_MS;

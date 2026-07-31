@@ -42,6 +42,7 @@ set(RW_SRC ${CMAKE_CURRENT_LIST_DIR}/../src)
 add_executable(loader
     main.c
     ${RW_SRC}/ota/state.c
+    ${RW_SRC}/ota/ota_flash.c
     ${RW_SRC}/config/config.c   # rw_crc32, and nothing else survives --gc-sections
 )
 

@@ -19,6 +19,7 @@
 #include "led/led.h"
 #include "net/arplearn.h"
 #include "net/net.h"
+#include "ota/ota.h"
 #include "proto/auth.h"
 #include "proto/proto.h"
 #include "provisioning/provisioning.h"
@@ -232,6 +233,7 @@ int main(void) {
     }
 
     rw_relay_init(&s_config, &k_relay_hooks);
+    rw_ota_init();
     rw_usbcfg_init(&s_config);
 
     const bool provisioned = radio_ok && is_provisioned(&s_config);
