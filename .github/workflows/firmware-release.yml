@@ -1,12 +1,18 @@
 name: firmware release
 
-# Publishes a downloadable UF2.
+# Publishes a release: four files per board.
 #
-# This workflow is the reason nobody has to install a toolchain to own this device. The three
-# ways firmware gets onto a dongle - pre-flashed in a kit, flashed by setup.remotewake.com over
-# WebUSB, or dragged onto the BOOTSEL drive - all end up pulling the artefact this job attaches
-# to a GitHub release. `firmware build` produces an Actions artefact, which expires after 90
-# days and needs a GitHub login; that is fine for CI and useless as a download.
+# A device runs two programs. The loader owns the first 64 KB of flash and is never replaced over
+# the air; the firmware occupies one of two slots behind it and is linked at the address of the
+# slot it lives in, so it is built twice. That gives, per board:
+#
+#   loader.uf2      written once at 0x10000000, by a host
+#   -install.uf2    the slot A firmware, written by a host behind the loader
+#   -a.rwfw         the signed slot A image, streamed to a device running slot B
+#   -b.rwfw         the signed slot B image, streamed to a device running slot A
+#
+# The UF2s are attached to the GitHub release so nobody needs a toolchain to own this device. All
+# four go to the firmware registry, which is what setup.remotewake.com and the relay read.
 
 on:
   push:
@@ -59,6 +65,24 @@ jobs:
           fi
           echo "version $want confirmed"
 
+      # An unsigned image is one no device will install, so a release built without the key is a
+      # release that cannot be deployed. Caught here rather than after twenty minutes of building.
+      - name: Check the signing key is present
+        env:
+          FIRMWARE_SIGNING_KEY: ${{ secrets.FIRMWARE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${FIRMWARE_SIGNING_KEY:-}" ]; then
+            echo "::error::FIRMWARE_SIGNING_KEY is not set. Every device checks the signature"
+            echo "::error::against a key compiled into it, so unsigned images cannot be installed."
+            echo "::error::Set it with: gh secret set FIRMWARE_SIGNING_KEY < ~/.remotewake/firmware-signing-dev.pem"
+            exit 1
+          fi
+          umask 077
+          printf '%s\n' "$FIRMWARE_SIGNING_KEY" > signing-key.pem
+          openssl pkey -in signing-key.pem -noout
+          echo "signing key loaded"
+
       - name: Install cmake and ninja
         run: |
           sudo apt-get update
@@ -83,28 +107,43 @@ jobs:
           path: pico-sdk
           submodules: recursive
 
-      # Both boards, every release. This used to build one image with no board in its name, which
-      # was fine while the only consumer was a human reading the release page and wrong the moment
-      # anything automated existed: `firmware_releases.board` is part of that table's uniqueness
-      # constraint, and setup.remotewake.com asks for an image by board because RP2040 firmware on
-      # an RP2350 does not boot. An unnamed image is one somebody eventually flashes to the wrong
-      # chip.
-      - name: Build both boards and checksum them
+      # Both boards, every release. `firmware_releases` is keyed by board because RP2040 firmware
+      # on an RP2350 does not boot, and an image with no board in its name is one somebody
+      # eventually flashes to the wrong chip.
+      - name: Build the loader and both slots, for both boards
         id: art
         run: |
           set -euo pipefail
           v="${{ steps.ver.outputs.version }}"
           mkdir -p dist
+
           for board in pico2_w pico_w; do
-            cmake -S firmware -B "build-${board}" -G Ninja \
+            cmake -S firmware/loader -B "build-loader-${board}" -G Ninja \
               -DCMAKE_BUILD_TYPE=Release -DPICO_BOARD="${board}"
-            cmake --build "build-${board}"
-            cp "build-${board}/remotewake.uf2" "dist/remotewake-${v}-${board}.uf2"
-            cp "build-${board}/remotewake.elf" "dist/remotewake-${v}-${board}.elf"
-            echo "size_${board}=$(stat -c%s "build-${board}/remotewake.bin")" >> "$GITHUB_OUTPUT"
+            cmake --build "build-loader-${board}"
+            cp "build-loader-${board}/loader.uf2" "dist/loader-${v}-${board}.uf2"
+
+            for slot in a b; do
+              cmake -S firmware -B "build-${board}-${slot}" -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release -DPICO_BOARD="${board}" -DRW_SLOT="${slot}"
+              cmake --build "build-${board}-${slot}"
+
+              # The signed image wraps the raw flash image, not the UF2: a UF2 is a container for
+              # a host to write, and the device is writing to its own flash.
+              python3 firmware/tools/sign_image.py \
+                "build-${board}-${slot}/remotewake.bin" \
+                "dist/remotewake-${v}-${board}-${slot}.rwfw" \
+                --key signing-key.pem --version "$v" --board "$board"
+            done
+
+            # Slot A is what a fresh install writes. Slot B has no UF2 because nothing ever
+            # flashes it by cable - it exists to be the destination of the first update.
+            cp "build-${board}-a/remotewake.uf2" "dist/remotewake-${v}-${board}-install.uf2"
+            echo "size_${board}=$(stat -c%s "build-${board}-a/remotewake.bin")" >> "$GITHUB_OUTPUT"
           done
+
           cd dist
-          sha256sum remotewake-${v}-*.uf2 remotewake-${v}-*.elf > "remotewake-${v}.sha256"
+          sha256sum ./* > "remotewake-${v}.sha256"
           cat "remotewake-${v}.sha256"
 
       - name: Write the release notes
@@ -120,25 +159,42 @@ jobs:
             echo "**You do not need a toolchain.** Pick whichever suits you:"
             echo
             echo "1. **Browser** — open <https://setup.remotewake.com>, plug the dongle in, and"
-            echo "   follow the steps. Chromium-based browsers only (Web Serial and WebUSB)."
-            echo "2. **Drag and drop** — hold BOOTSEL while plugging the board in, then copy the"
-            echo "   image for your board onto the drive that appears. Works everywhere."
+            echo "   follow the steps. It writes both files for you. Chromium-based browsers only"
+            echo "   (Web Serial and WebUSB)."
+            echo "2. **Drag and drop** — hold BOOTSEL while plugging the board in, then copy"
+            echo "   **\`loader\`** onto the drive that appears. The board restarts, finds no"
+            echo "   firmware and comes back as a drive by itself; copy **\`-install\`** onto it."
             echo "3. **Already flashed** — kits ship ready to go; just plug it in."
             echo
-            echo "| Board | Image |"
-            echo "|---|---|"
-            echo "| Pico 2 W (RP2350) — the product | \`remotewake-${v}-pico2_w.uf2\` |"
-            echo "| Pico W (RP2040) | \`remotewake-${v}-pico_w.uf2\` |"
+            echo "**Copy them one at a time.** A single file spanning both regions loses whichever"
+            echo "region's blocks arrive last, in either order, and leaves one of them erased."
             echo
-            echo "**The two are not interchangeable.** RP2040 firmware on an RP2350 does not boot."
+            echo "| Board | Loader | Firmware |"
+            echo "|---|---|---|"
+            echo "| Pico 2 W (RP2350) — the product | \`loader-${v}-pico2_w.uf2\` | \`remotewake-${v}-pico2_w-install.uf2\` |"
+            echo "| Pico W (RP2040) | \`loader-${v}-pico_w.uf2\` | \`remotewake-${v}-pico_w-install.uf2\` |"
+            echo
+            echo "**The two boards are not interchangeable.** RP2040 firmware on an RP2350 does not boot."
             echo
             echo "Configuration in flash survives a firmware update, so a device reflashed this"
             echo "way comes back already provisioned."
             echo
-            echo "Verify the download against \`remotewake-${v}.sha256\`."
+            echo "## Updating over the air"
+            echo
+            echo "The \`.rwfw\` files are signed firmware images. They are **not** flashed by hand —"
+            echo "the relay streams one to a device over its existing connection, and the device"
+            echo "checks the signature against a key compiled into the image already running. Each"
+            echo "release carries one per slot because firmware executes in place and is linked at"
+            echo "the address of the slot it occupies; a device is offered the one built for the"
+            echo "slot it is *not* running from."
+            echo
+            echo "A device that updates gets three boots to reach the relay. If it cannot, the"
+            echo "loader returns to the previous image on its own."
+            echo
+            echo "Verify downloads against \`remotewake-${v}.sha256\`."
             echo
             echo "Flash used: ${{ steps.art.outputs.size_pico2_w }} bytes on the Pico 2 W of"
-            echo "4,186,112 available; ${{ steps.art.outputs.size_pico_w }} on the Pico W of 2,088,960."
+            echo "720,896 available per slot; ${{ steps.art.outputs.size_pico_w }} on the Pico W."
             echo
             echo "## Changes"
             echo
@@ -159,10 +215,10 @@ jobs:
           files: dist/*
           fail_on_unmatched_files: true
 
-      # Publishes each image to the firmware registry, so neither the dashboard nor
-      # setup.remotewake.com has a version number compiled into it. Without this step a release is
-      # a file on a web page: setup.remotewake.com reads `firmware_releases`, so an unpublished
-      # build is invisible to it and there is nothing for it to install.
+      # Publishes every artefact to the firmware registry, so nothing downstream has a version
+      # number compiled into it. Without this step a release is a file on a web page:
+      # setup.remotewake.com reads `firmware_releases` to know what to install, and the relay
+      # reads it to know what to offer.
       #
       # The BYTES are uploaded, not a download URL for the endpoint to fetch. This repository is
       # private until launch, so a release asset URL needs a credential the cloud would have to hold
@@ -183,17 +239,28 @@ jobs:
           fi
           v="${{ steps.ver.outputs.version }}"
           for board in pico2_w pico_w; do
-            file="dist/remotewake-${v}-${board}.uf2"
-            sha=$(sha256sum "$file" | cut -d' ' -f1)
-            echo "publishing ${board} (${sha})"
-            # --fail-with-body so a refusal prints the endpoint's explanation rather than just an
-            # exit code. A 409 means this version already exists with different contents, which is
-            # a real problem and should stop the workflow rather than be logged and ignored.
-            curl -sS --fail-with-body -X POST \
-              "https://admin.remotewake.com/api/firmware/releases?version=${v}&board=${board}&channel=stable" \
-              -H "authorization: Bearer ${ADMIN_API_KEY}" \
-              -H 'content-type: application/octet-stream' \
-              -H "x-firmware-sha256: ${sha}" \
-              --data-binary "@${file}"
-            echo
+            for kind in loader install ota-a ota-b; do
+              case "$kind" in
+                loader)  file="dist/loader-${v}-${board}.uf2" ;;
+                install) file="dist/remotewake-${v}-${board}-install.uf2" ;;
+                ota-a)   file="dist/remotewake-${v}-${board}-a.rwfw" ;;
+                ota-b)   file="dist/remotewake-${v}-${board}-b.rwfw" ;;
+              esac
+              sha=$(sha256sum "$file" | cut -d' ' -f1)
+              echo "publishing ${board} ${kind} (${sha})"
+              # --fail-with-body so a refusal prints the endpoint's explanation rather than just an
+              # exit code. A 409 means this version already exists with different contents, which is
+              # a real problem and should stop the workflow rather than be logged and ignored.
+              curl -sS --fail-with-body -X POST \
+                "https://admin.remotewake.com/api/firmware/releases?version=${v}&board=${board}&kind=${kind}&channel=stable" \
+                -H "authorization: Bearer ${ADMIN_API_KEY}" \
+                -H 'content-type: application/octet-stream' \
+                -H "x-firmware-sha256: ${sha}" \
+                --data-binary "@${file}"
+              echo
+            done
           done
+
+      - name: Shred the signing key
+        if: always()
+        run: rm -f signing-key.pem
