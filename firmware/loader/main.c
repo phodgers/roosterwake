@@ -1,7 +1,7 @@
 /*
  * The loader: decide which slot to boot, and enter it.
  *
- * Lives in the first 32 KB of flash and is the only thing an over-the-air update never replaces.
+ * Lives in the first 64 KB of flash and is the only thing an over-the-air update never replaces.
  * It has no USB, no radio and no diagnostics — the LED on both supported boards hangs off the
  * CYW43 chip, so lighting it would mean linking the whole Wi-Fi driver into the one component
  * that must stay small and must always work. What it decided is recoverable afterwards from the
@@ -17,6 +17,7 @@
 #include "hardware/flash.h"
 #include "hardware/irq.h"
 #include "hardware/resets.h"
+#include "hardware/structs/nvic.h"
 #include "hardware/structs/scb.h"
 #include "hardware/sync.h"
 #include "pico/bootrom.h"
@@ -90,22 +91,41 @@ static void __attribute__((noreturn)) enter_slot(uint8_t slot) {
     uint32_t        sp      = vt[0];
     uint32_t        pc      = vt[1];
 
-#ifdef RW_LOADER_DIAG
     /*
-     * The diagnostic build brought USB up to say what it found. It has to put it back: an
-     * enumerated device with a live interrupt would fire into the application's vector table
-     * carrying this program's TinyUSB state, and the application faults before it can service
-     * anything. Holding the peripheral in reset is the one teardown that cannot half-work.
+     * Put USB back in reset before handing over.
+     *
+     * The ROM bootloader has the device enumerated when it hands control here, and the
+     * diagnostic build brings it up again to report. Either way the application initialises USB
+     * from scratch and an interrupt left live would fire into its vector table carrying somebody
+     * else's state. Holding the peripheral in reset is the one teardown that cannot half-work.
      */
     irq_set_enabled(USBCTRL_IRQ, false);
     reset_block(RESETS_RESET_USBCTRL_BITS);
+
+    /*
+     * Hand over a machine in the state a reset would have left: no interrupt enabled, none
+     * pending, and PRIMASK clear.
+     *
+     * The last of those is not optional. The SDK's start-up code does not unmask interrupts —
+     * after a reset it has no reason to, because PRIMASK is already clear — so an application
+     * entered with them masked runs its initialisation, reaches its main loop, and sits there
+     * with no timer and no USB. It looks exactly like a dead board.
+     */
+    __asm volatile("cpsid i" ::: "memory");
+#if defined(PICO_RP2350) && PICO_RP2350
+    for (unsigned i = 0; i < 2; i++) {
+        nvic_hw->icer[i] = 0xFFFFFFFFu;
+        nvic_hw->icpr[i] = 0xFFFFFFFFu;
+    }
+#else
+    nvic_hw->icer = 0xFFFFFFFFu;
+    nvic_hw->icpr = 0xFFFFFFFFu;
 #endif
 
-    /* Nothing here started an interrupt source in the production build, but the ROM may have
-     * left some pending and the application is entitled to a quiet machine. */
-    __asm volatile("cpsid i" ::: "memory");
-
     scb_hw->vtor = vt_addr;
+
+    /* Nothing can fire now: every source is disabled and the pending bits are clear. */
+    __asm volatile("cpsie i" ::: "memory");
 
 #if defined(PICO_RP2350) && PICO_RP2350
     /* The stack limit register must be cleared before the stack pointer moves, or the first push
