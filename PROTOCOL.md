@@ -260,6 +260,7 @@ normal arrangement for a self-hosted deployment.
   "nonce_c": "9f86d081884c7d659a2feaa0c55ad015",
   "fw": "1.0.0",
   "board": "pico2_w",
+  "slot": 0,
   "caps": ["wake", "status", "probe"],
   "targets": [
     { "name": "Desktop", "mac": "AA:BB:CC:DD:EE:FF" }
@@ -269,6 +270,13 @@ normal arrangement for a self-hosted deployment.
 
 `caps` declares what this firmware can do, so relays feature-detect rather than sniff version
 numbers. A relay MUST NOT send a command whose capability the device did not advertise.
+
+`slot` is optional and only meaningful on a device that advertises `ota`: it says which of two
+firmware slots the running image occupies, `0` or `1`. An image is linked at the address of the
+slot it lives in, so a relay offering an update has to pick the variant built for the *other*
+slot; it cannot infer that from the version, and offering the wrong one wastes a transfer to be
+refused. A device with a single firmware region omits the field, and a relay that sees no `slot`
+MUST NOT offer an update.
 
 Defined capabilities, each naming the relay→device command it gates:
 

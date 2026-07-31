@@ -173,6 +173,15 @@ static bool send_hello(void) {
     rw_jw_key(&w, "board");
     rw_jw_str(&w, RW_BOARD_NAME);
     rw_jw_raw(&w, ",");
+    /*
+     * Which of the two slots this image is running from. An image is linked at the address of
+     * the slot it occupies, so a relay offering an update has to choose the variant built for
+     * the other one — it cannot work that out from the version, and offering the wrong one
+     * wastes half a megabyte to be refused.
+     */
+    rw_jw_key(&w, "slot");
+    rw_jw_int(&w, (long)rw_ota_running_slot());
+    rw_jw_raw(&w, ",");
     rw_jw_key(&w, "caps");
     rw_jw_raw(&w, RW_CAPS_JSON);
     rw_jw_raw(&w, ",");
