@@ -278,6 +278,7 @@ Defined capabilities, each naming the relay→device command it gates:
 | `status` | `status` |
 | `probe` | `probe` |
 | `config` | `config_push` |
+| `ota` | `ota_offer`, and the binary frames that follow it |
 | `sched` | reserved for device-side scheduling; no command yet |
 
 Unknown entries are ignored.
@@ -401,6 +402,41 @@ and `state` omitted — a `probe` naming an unparseable MAC otherwise has nowher
 { "t": "config_ack", "req_id": "…", "ok": true, "targets": 2 }
 ```
 
+### `ota_accept` / `ota_reject`
+
+```json
+{ "t": "ota_accept", "id": "6f1c…", "slot": 1 }
+{ "t": "ota_reject", "id": "6f1c…", "err": "board" }
+```
+
+The answer to `ota_offer`. `slot` is the inactive slot the image will be written into, reported
+so an operator can see which half of the device an update landed in; a relay has no decision to
+make with it.
+
+`err` on a rejection is one of the codes in §6, or one of the image-specific ones: `magic`,
+`format`, `flags`, `length`, `board`, `version`, `signature`. `same_version` means the offer
+names the version already running; `on_trial` means the running image has not yet confirmed
+itself and the slot holding the last known-good image must not be overwritten.
+
+### `ota_result`
+
+```json
+{ "t": "ota_result", "id": "6f1c…", "ok": true, "bytes": 503040, "ms": 9120 }
+{ "t": "ota_result", "id": "6f1c…", "ok": false, "err": "digest", "bytes": 262144, "ms": 4400 }
+```
+
+Sent once the last payload byte has been written, or as soon as the transfer fails.
+
+**On success the device stages the slot and restarts, closing with `1000` and reason
+`updating`.** A relay SHOULD expect the reconnection to carry the new `fw` in its `hello`, and
+SHOULD treat the same version coming back as the update having been rolled back — the device
+gets three boots to reach a relay before the loader returns to the previous image, so a failed
+update announces itself by the old version reappearing rather than by silence.
+
+A failure leaves a partly written inactive slot, which is harmless: nothing points the loader at
+it, and the next offer starts from the beginning. **There is no resume.** Resuming means trusting
+an offset supplied by the relay, and the saving is one transfer of half a megabyte.
+
 ### `pong`
 
 Only in response to a relay-initiated `ping`. See §9 — this is **not** the device's own
@@ -513,6 +549,56 @@ a device that was provisioned months ago.
 Relays MUST NOT push Wi-Fi credentials or a relay URL. Those are local-only by design
 (see §11) and a device MUST reject any attempt.
 
+### `ota_offer`
+
+```json
+{
+  "t": "ota_offer",
+  "id": "6f1c…",
+  "hdr": "5257465701000000…"
+}
+```
+
+Offers a firmware image. Gated by the `ota` capability.
+
+`hdr` is the image's 128-byte signed header, hex-encoded — 256 characters. **It is the only
+description of the image in this frame, and that is deliberate**: the board it was built for,
+its length, its version and the digest of its payload are all inside those bytes and all covered
+by the signature. A relay that repeated any of them alongside would be offering the device a
+second, unsigned copy of the same facts, and the unsigned copy is the one an attacker would lie
+in. The header layout is `firmware/src/ota/image.h`.
+
+`id` identifies the transfer. It is not a `req_id`: a transfer outlives the exchange that starts
+it, and the frames that follow are not answers to a request.
+
+The device replies `ota_accept` or `ota_reject`. It rejects an image built for another board, one
+signed by a key it does not trust, one larger than the slot it must occupy, one whose version
+equals the version already running, and any offer arriving while the running image is itself
+still on trial.
+
+### Update payload — the only binary frames in this protocol
+
+After `ota_accept`, the relay sends the payload as **binary** WebSocket frames, in order, until
+exactly `payload length` bytes have been sent. Constraints:
+
+- Each frame carries payload bytes and nothing else. There is no per-frame header; WebSocket
+  already guarantees order and delivery, and the device counts.
+- **No fragmentation.** Every binary frame has `FIN` set. Reassembly costs a second buffer on a
+  device that is going to write the bytes to flash the moment they arrive.
+- The 2048-byte cap of §1 applies unchanged.
+- A binary frame at any other time is a protocol violation. A device MUST close with `1008` — it
+  is not an unknown frame type to be tolerated, it is a peer streaming into a device that has not
+  agreed to receive anything.
+
+The device writes each frame straight to the inactive slot and hashes it on the way past. The
+digest committed to by the signed header is what proves the stream arrived whole; there is no
+per-frame checksum because a per-frame check that passes on every frame still cannot tell you the
+image is the one that was signed.
+
+A relay MUST NOT interleave other frames into the stream. A device that receives one MAY handle
+it, but a wake in the middle of a flash erase is answered late, so relays SHOULD hold commands
+until `ota_result`.
+
 ### `ping`
 
 ```json
@@ -526,7 +612,7 @@ is the less important direction.
 
 ## 6. Error codes
 
-Returned in `err` on `wake_result`, `hello_ack` and `config_ack`.
+Returned in `err` on `wake_result`, `hello_ack`, `config_ack`, `ota_reject` and `ota_result`.
 
 | Code | Meaning |
 |---|---|
@@ -540,6 +626,21 @@ Returned in `err` on `wake_result`, `hello_ack` and `config_ack`.
 | `unsupported` | Command names a capability this device did not advertise |
 | `too_many` | `config_push` exceeded the target limit |
 | `internal` | Anything else; the device or relay SHOULD log detail locally |
+
+Update-specific codes, on `ota_reject` and `ota_result` only:
+
+| Code | Meaning |
+|---|---|
+| `magic`, `format`, `flags` | The header is not one this device understands |
+| `length` | Empty, or larger than the slot it must occupy |
+| `board` | Built for the other chip |
+| `version` | Version string absent or not printable ASCII |
+| `signature` | Not signed by the key this build trusts |
+| `digest` | The payload does not hash to what the signed header claimed |
+| `same_version` | The offer names the version already running |
+| `on_trial` | The running image has not yet confirmed itself |
+| `too_long` | More payload arrived than the header declared |
+| `stage_failed` | Written and verified, but the state record could not be updated |
 
 Error codes are a closed set for v1. New codes require a minor version bump, and receivers
 MUST treat an unrecognised code as `internal` rather than failing.
@@ -727,7 +828,8 @@ A relay is v1-conformant if it:
 6. Never sends a frame larger than 2048 bytes.
 7. Enforces one live connection per `device_id`, closing the displaced one with `4001`.
 
-Everything else — `status`, `probe`, `config_push`, `log`, `enrol`, `adopt` — is optional.
+Everything else — `status`, `probe`, `config_push`, `log`, `enrol`, `adopt`, `ota_offer` — is
+optional.
 
 **`enrol` and `adopt` are optional on purpose.** A self-hosted relay whose operator adds tokens
 to a list by hand needs neither, and requiring them would mean every minimal implementation had
@@ -746,6 +848,7 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 
 | Version | Date | Change |
 |---|---|---|
+| 1 | 2026-07-31 | **Firmware updates over the relay connection.** Four new frames — `ota_offer`, `ota_accept`, `ota_reject`, `ota_result` — and the one exception to §1's "frames are text": the payload of an update the device has agreed to receive arrives as unfragmented binary frames. There is no second connection because there is no room for one; a TLS session costs 44 KB of a 64 KB heap on the reference device, so an image either shares this socket or does not arrive. The offer carries the image's signed header and **nothing else**, which is the whole of the security argument: board, length, version and payload digest are all inside the signature, so there is no unsigned restatement of them for a relay to lie in. A device with two slots writes the inactive one and restarts; the update proves itself by reconnecting, and a failure announces itself by the previous version reappearing rather than by silence. Binary frames outside a transfer close the connection with `1008`. |
 | 1 | 2026-07-29 | Initial specification. |
 | 1 | 2026-07-30 | **Enrolment and adoption.** Three new frames — `enrol`, `adopt`, `adopt_ack` — and the §3.4 rules a relay applies to the first. Until now a relay could only learn a token out of band, which meant a device nobody had registered in advance could never reach a hosted service at all: no path existed from a board somebody flashed themselves to a relay that would speak to it. `enrol` transmits the token exactly once, on first contact, and §3.1 now sets out why that exception is defensible and the two rules — a validated certificate, and the compiled-in relay URL — that fence it. §3.4's four-row table is the whole of the security argument: refuse only where the id is already owned, replace freely where it is not, so that the protection cannot itself become a way to lock people out of boards they hold. `adopt` carries an account address off a captive portal that has no route to the internet, which is the only moment in setup where the person's identity can be captured. §11 restates how a relay comes to hold a token, and records that possession of the hardware is treated as the ownership claim. |
 | 1 | 2026-07-30 | Two rules the specification relied on but never stated, both found by building a surface on top of it rather than by reading it. **§2 now defines a wakeable address** — the relay had been accepting multicast and broadcast MACs that the firmware refuses, so a target saved in the dashboard was one the device silently declined to wake; the §5 example was itself a multicast address and is corrected. **§11 now says how a relay comes to hold a token**: out of band at provisioning time, in all cases, and explains why there is deliberately no enrolment frame — a device presenting a weaker credential to be issued a token would make that credential the real secret and would put it on the wire this protocol keeps tokens off. Neither change alters a frame. |

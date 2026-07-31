@@ -16,7 +16,9 @@
 #include "proto/auth.h"
 #include "proto/json.h"
 #include "proto/probe.h"
+#include "ota/image.h"
 #include "ota/ota.h"
+#include "ota/ota_write.h"
 #include "rw_log.h"
 #include "sys/sys.h"
 #include "sys/wallclock.h"
@@ -78,6 +80,25 @@ static struct {
     bool enrolling;
     /* A configuration change made in a network callback, to be written on the main loop. */
     bool persist_pending;
+
+    /* An update the device accepted and is being streamed. See "Updates" below. */
+    struct {
+        bool            receiving;
+        /* The transfer has ended but the relay may not know yet. Frames already on the wire are
+         * accepted and dropped rather than treated as bytes nobody asked for — the relay learns
+         * from `ota_result`, and closing the connection over frames it sent before reading it
+         * would turn every failed update into a reconnection as well. */
+        bool            draining;
+        char            id[REQ_ID_MAX];
+        char            version[RW_OTA_VERSION_LEN];
+        uint8_t         slot;
+        uint32_t        total;
+        uint32_t        got;
+        absolute_time_t started;
+    } ota;
+    /* Set once a slot has been written, verified and staged. The reboot happens on the main
+     * loop so the result frame and the closing handshake go out first. */
+    bool reboot_pending;
 
     char out[OUT_MAX];
 } s;
@@ -847,6 +868,214 @@ static void handle_config_push(const char *js, const jsmntok_t *tok, int count,
     s.staged = staged;
 }
 
+/* ── Updates ───────────────────────────────────────────────────────────────── */
+/*
+ * An update arrives over this connection and no other. A second TLS session does not fit — one
+ * already costs 44 KB of the 64 KB lwIP heap — and the image is half a megabyte, so nothing is
+ * buffered: bytes go from the socket into flash as they arrive.
+ *
+ * The relay offers the signed 128-byte header on its own, hex-encoded in a text frame.
+ * Everything that decides whether the image is wanted is in those bytes and is covered by the
+ * signature: the board it was built for, its length, its version, and the digest of the payload.
+ * There is deliberately no second, unsigned copy of any of it in the offer, because the copy is
+ * what a relay would have to lie in for the device to start writing something it should not.
+ *
+ * If the device accepts, the payload follows as binary frames, in order, and the digest the
+ * header committed to is what proves the stream arrived whole.
+ */
+
+/* 128 header bytes as hex, plus the terminator. */
+#define OTA_HDR_HEX (RW_OTA_HEADER_LEN * 2)
+
+static void send_ota_reject(const char *id, const char *code) {
+    RW_LOG_WARN("ota: offer refused (%s)", code);
+    rw_jw_t w;
+    rw_jw_init(&w, s.out, sizeof(s.out));
+    rw_jw_raw(&w, "{");
+    rw_jw_key(&w, "t");
+    rw_jw_str(&w, "ota_reject");
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "id");
+    rw_jw_str(&w, id);
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "err");
+    rw_jw_str(&w, code);
+    rw_jw_raw(&w, "}");
+    rw_jw_finish(&w);
+    send_json(&w);
+}
+
+static void send_ota_result(bool ok, const char *code) {
+    long ms = (long)(absolute_time_diff_us(s.ota.started, get_absolute_time()) / 1000);
+
+    rw_jw_t w;
+    rw_jw_init(&w, s.out, sizeof(s.out));
+    rw_jw_raw(&w, "{");
+    rw_jw_key(&w, "t");
+    rw_jw_str(&w, "ota_result");
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "id");
+    rw_jw_str(&w, s.ota.id);
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "ok");
+    rw_jw_raw(&w, ok ? "true" : "false");
+    if (!ok) {
+        rw_jw_raw(&w, ",");
+        rw_jw_key(&w, "err");
+        rw_jw_str(&w, code);
+    }
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "bytes");
+    rw_jw_int(&w, (long)s.ota.got);
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "ms");
+    rw_jw_int(&w, ms);
+    rw_jw_raw(&w, "}");
+    rw_jw_finish(&w);
+    send_json(&w);
+}
+
+static void ota_abandon(const char *code) {
+    rw_ota_write_abort();
+    s.ota.receiving = false;
+    s.ota.draining  = true;
+    send_ota_result(false, code);
+}
+
+static void handle_ota_offer(const char *js, const jsmntok_t *tok, int count) {
+    char id[REQ_ID_MAX] = {0};
+    int  id_idx         = rw_json_find(js, tok, count, "id");
+    if (id_idx < 0 || !rw_json_str(js, &tok[id_idx], id, sizeof(id)) || id[0] == '\0') {
+        return; /* nothing to answer to */
+    }
+
+    char hex[OTA_HDR_HEX + 1] = {0};
+    int  hdr_idx              = rw_json_find(js, tok, count, "hdr");
+    if (hdr_idx < 0 || !rw_json_str(js, &tok[hdr_idx], hex, sizeof(hex)) ||
+        strlen(hex) != OTA_HDR_HEX) {
+        send_ota_reject(id, "bad_header");
+        return;
+    }
+
+    uint8_t raw[RW_OTA_HEADER_LEN];
+    if (!rw_hex_decode(hex, OTA_HDR_HEX, raw, sizeof(raw))) {
+        send_ota_reject(id, "bad_header");
+        return;
+    }
+
+    if (s.ota.receiving || rw_ota_write_active()) {
+        send_ota_reject(id, "busy");
+        return;
+    }
+    /*
+     * An image that has not yet confirmed itself must not be replaced. The slot it would be
+     * written into holds the last image known to work, and overwriting that while the running
+     * one is unproven leaves nothing to fall back to.
+     */
+    if (rw_ota_on_trial()) {
+        send_ota_reject(id, "on_trial");
+        return;
+    }
+
+    rw_ota_header_t header;
+    rw_ota_status_t status =
+        rw_ota_header_open(raw, sizeof(raw), RW_BOARD_NAME, RW_SLOT_PAYLOAD_MAX, &header);
+    if (status != RW_OTA_OK) {
+        send_ota_reject(id, rw_ota_status_str(status));
+        return;
+    }
+
+    /* The version the relay is offering is the one already running. Accepting it would install a
+     * copy of this firmware into the other slot and reboot into it, and the relay — offering on
+     * the same rule — would do it again on the next connection. */
+    if (strcmp(header.version, RW_FW_VERSION) == 0) {
+        send_ota_reject(id, "same_version");
+        return;
+    }
+
+    uint8_t slot = rw_ota_spare_slot();
+    status       = rw_ota_write_begin(&header, slot);
+    if (status != RW_OTA_OK) {
+        send_ota_reject(id, rw_ota_status_str(status));
+        return;
+    }
+
+    memset(&s.ota, 0, sizeof(s.ota));
+    s.ota.receiving = true;
+    s.ota.slot      = slot;
+    s.ota.total     = header.payload_len;
+    s.ota.started   = get_absolute_time();
+    snprintf(s.ota.id, sizeof(s.ota.id), "%s", id);
+    snprintf(s.ota.version, sizeof(s.ota.version), "%s", header.version);
+
+    RW_LOG_INFO("ota: accepted %s (%lu bytes) into slot %u", s.ota.version,
+                (unsigned long)s.ota.total, (unsigned)slot);
+
+    rw_jw_t w;
+    rw_jw_init(&w, s.out, sizeof(s.out));
+    rw_jw_raw(&w, "{");
+    rw_jw_key(&w, "t");
+    rw_jw_str(&w, "ota_accept");
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "id");
+    rw_jw_str(&w, s.ota.id);
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "slot");
+    rw_jw_int(&w, (long)slot);
+    rw_jw_raw(&w, "}");
+    rw_jw_finish(&w);
+    if (!send_json(&w)) {
+        ota_abandon("internal");
+    }
+}
+
+static bool on_binary(rw_ws_client_t *ws, void *ctx, const uint8_t *data, size_t len) {
+    (void)ws;
+    (void)ctx;
+
+    if (!s.ota.receiving) {
+        /* Bytes nobody asked for. Returning false closes the connection, which is the right
+         * answer: this is not an unknown frame type to be tolerated, it is a peer streaming into
+         * a device that has not agreed to receive anything. */
+        return s.ota.draining;
+    }
+
+    if (len > s.ota.total - s.ota.got) {
+        ota_abandon("too_long");
+        return true;
+    }
+
+    rw_ota_status_t status = rw_ota_write_chunk(data, len);
+    if (status != RW_OTA_OK) {
+        ota_abandon(rw_ota_status_str(status));
+        return true;
+    }
+    s.ota.got += (uint32_t)len;
+
+    if (s.ota.got < s.ota.total) {
+        return true;
+    }
+
+    status = rw_ota_write_end();
+    if (status != RW_OTA_OK) {
+        ota_abandon(rw_ota_status_str(status));
+        return true;
+    }
+
+    s.ota.receiving = false;
+    s.ota.draining  = true;
+    if (!rw_ota_stage_slot(s.ota.slot, s.ota.version)) {
+        send_ota_result(false, "stage_failed");
+        return true;
+    }
+
+    send_ota_result(true, NULL);
+    /* The reboot happens on the main loop: the result frame is still in the send buffer, and a
+     * relay that never learns the outcome would offer the same image again. */
+    s.reboot_pending = true;
+    return true;
+}
+
 static void on_text(rw_ws_client_t *ws, void *ctx, char *text, size_t len) {
     (void)ws;
     (void)ctx;
@@ -926,6 +1155,10 @@ static void on_text(rw_ws_client_t *ws, void *ctx, char *text, size_t len) {
             return;
         }
         handle_config_push(text, tokens, count, req_id);
+    } else if (rw_json_eq(text, &tokens[t_idx], "ota_offer")) {
+        /* Carries `id` rather than `req_id`: a transfer outlives the exchange that started it,
+         * and the frames that follow are not answers to a request. */
+        handle_ota_offer(text, tokens, count);
     }
     /* §2 and §10: any other `t` is ignored silently. Not logged as a failure, not answered
      * with an error — that is what makes additive protocol changes safe. */
@@ -951,6 +1184,15 @@ static void on_close(rw_ws_client_t *ws, void *ctx, rw_ws_fail_t why, uint16_t c
         rw_probe_cancel();
         s.probe_owned = false;
     }
+    if (s.ota.receiving) {
+        /* Half an image is in the spare slot. That is safe — it is not the slot running, and
+         * nothing points the loader at it — and the next offer starts again from the top rather
+         * than resuming, because resuming means trusting an offset the relay supplies. */
+        RW_LOG_WARN("ota: connection lost after %lu of %lu bytes", (unsigned long)s.ota.got,
+                    (unsigned long)s.ota.total);
+        rw_ota_write_abort();
+    }
+    memset(&s.ota, 0, sizeof(s.ota));
 
     if (why == RW_WS_FAIL_DEPROVISIONED || close_code == 4002) {
         /* §7: the only close code that means stop. Reconnecting for ever against a relay that
@@ -976,9 +1218,10 @@ static void on_close(rw_ws_client_t *ws, void *ctx, rw_ws_fail_t why, uint16_t c
 }
 
 static const rw_ws_callbacks_t k_ws_callbacks = {
-    .on_open  = on_open,
-    .on_text  = on_text,
-    .on_close = on_close,
+    .on_open   = on_open,
+    .on_text   = on_text,
+    .on_binary = on_binary,
+    .on_close  = on_close,
 };
 
 /* ── Public interface ──────────────────────────────────────────────────────── */
@@ -1034,6 +1277,22 @@ void rw_relay_task(void) {
         if (s.hooks.save_config == NULL || !s.hooks.save_config(s.cfg)) {
             RW_LOG_WARN("proto: could not persist enrolment state; will re-offer next connection");
         }
+    }
+
+    /*
+     * A slot has been written, verified and staged. Restart into it.
+     *
+     * The close is a courtesy the relay uses to distinguish an update taking effect from a device
+     * that fell off the network, and the delay is what gets the closing handshake onto the wire:
+     * rw_sys_reboot() arms the watchdog rather than resetting immediately, so the main loop keeps
+     * running and lwIP keeps sending until it fires.
+     */
+    if (s.reboot_pending) {
+        s.reboot_pending = false;
+        RW_LOG_INFO("proto: restarting into the staged image");
+        rw_ws_close(&s.ws, RW_WS_CLOSE_NORMAL, "updating");
+        rw_sys_reboot(1500);
+        return;
     }
 
     if (!s.enabled || s.state == RW_RELAY_STOPPED) {

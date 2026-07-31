@@ -64,6 +64,19 @@ typedef struct {
     void (*on_open)(struct rw_ws_client *ws, void *ctx);
     /* `text` is NUL-terminated for the convenience of the JSON parser; `len` excludes it. */
     void (*on_text)(struct rw_ws_client *ws, void *ctx, char *text, size_t len);
+    /*
+     * A binary frame. Optional: leave it NULL and a binary frame closes the connection as the
+     * protocol violation it is.
+     *
+     * `data` points into the receive buffer and is valid only for the duration of the call, so a
+     * handler that needs to keep the bytes must consume them now. Returning false says the frame
+     * was not expected, which closes the connection — the application decides what "expected"
+     * means, because a stream of bytes nobody asked for is exactly what this refuses to accept.
+     *
+     * Fragmented binary messages are refused before this is reached: an update stream is written
+     * to flash frame by frame and has nothing to gain from reassembly this side.
+     */
+    bool (*on_binary)(struct rw_ws_client *ws, void *ctx, const uint8_t *data, size_t len);
     void (*on_close)(struct rw_ws_client *ws, void *ctx, rw_ws_fail_t why, uint16_t close_code);
 } rw_ws_callbacks_t;
 

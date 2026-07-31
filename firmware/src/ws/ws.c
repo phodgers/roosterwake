@@ -332,10 +332,33 @@ static bool pump_frames(rw_ws_client_t *ws) {
                 break;
             }
 
-            case RW_WS_OP_BINARY:
+            case RW_WS_OP_BINARY: {
+                /* PROTOCOL.md §1: frames are text, with one exception — the payload of an update
+                 * the device asked for. Anything else is a peer speaking a different protocol,
+                 * and so is a fragmented one: nothing this firmware accepts as binary benefits
+                 * from reassembly, and allowing it would mean a second 2 KB buffer. */
+                if (ws->cb->on_binary == NULL || !h.fin || ws->msg_active) {
+                    RW_LOG_ERROR("ws: unexpected binary frame");
+                    rw_ws_close(ws, RW_WS_CLOSE_PROTOCOL_ERR, "unexpected binary frame");
+                    ws->fail = RW_WS_FAIL_PROTOCOL;
+                    return false;
+                }
+                /* Dispatched from the receive buffer rather than copied out of it. The handler
+                 * may send, so it must not itself consume `rx`; the frame is dropped below,
+                 * once it has returned. */
+                bool wanted = ws->cb->on_binary(ws, ws->ctx, payload, plen);
+                if (ws->state != RW_WS_OPEN) {
+                    return false;
+                }
+                if (!wanted) {
+                    rw_ws_close(ws, RW_WS_CLOSE_POLICY, "binary frame not expected");
+                    ws->fail = RW_WS_FAIL_PROTOCOL;
+                    return false;
+                }
+                break;
+            }
+
             default:
-                /* PROTOCOL.md §1: frames are text. A binary frame is not an unknown `t` to be
-                 * ignored, it is a peer speaking a different protocol. */
                 RW_LOG_ERROR("ws: unexpected opcode 0x%x", h.opcode);
                 rw_ws_close(ws, RW_WS_CLOSE_PROTOCOL_ERR, "unexpected opcode");
                 ws->fail = RW_WS_FAIL_PROTOCOL;
