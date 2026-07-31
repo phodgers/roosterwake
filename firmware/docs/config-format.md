@@ -242,8 +242,8 @@ record with every defined flag set.
 
 ## 8. Factory reset
 
-Holding BOOTSEL for five seconds at power-on, or `FACTORY_RESET CONFIRM` over usbcfg, clears
-everything a person configured and keeps the device's identity:
+`FACTORY_RESET CONFIRM` over usbcfg clears everything a person configured and keeps the device's
+identity:
 
 | Cleared | Kept |
 |---|---|
@@ -295,4 +295,12 @@ What this means practically:
   them. That is the boundary this design does defend.
 
 **Factory reset erases both slots**, so wiping before disposal or resale genuinely clears the
-credentials. Hold BOOTSEL for five seconds at power-on; the LED confirms.
+credentials. Use `FACTORY_RESET CONFIRM` over the USB command channel, or "Start this dongle from
+scratch" on the setup page, which sends it for you.
+
+> **The BOOTSEL hold does not work.** `check_factory_reset()` in main.c reads the button once at
+> start-up, and holding BOOTSEL through a power-on is exactly what makes the ROM bootloader take
+> over instead — so the firmware never runs to see it. The button is the only physical input the
+> enclosure has and it should be the reset, but making that true means polling it from the main
+> loop, which has not been done. Until it is, do not document it as a route: someone will try it,
+> nothing will happen, and they will conclude the reset does not work at all.
