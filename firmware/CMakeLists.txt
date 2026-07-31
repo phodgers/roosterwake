@@ -96,6 +96,7 @@ set(RW_PORTABLE_SOURCES
     src/config/config.c
     src/net/url.c
     src/ota/image.c
+    src/ota/state.c
     src/proto/auth.c
     src/proto/json.c
     src/provisioning/dhcp_msg.c

@@ -85,6 +85,7 @@ set(RW_PORTABLE_SOURCES
     ${RW_SRC}/config/config.c
     ${RW_SRC}/net/url.c
     ${RW_SRC}/ota/image.c
+    ${RW_SRC}/ota/state.c
     ${RW_SRC}/proto/auth.c
     ${RW_SRC}/proto/json.c
     ${RW_SRC}/provisioning/dhcp_msg.c
@@ -106,6 +107,7 @@ set(TEST_SOURCES
     test_ws_handshake.c
     test_auth.c
     test_ota_image.c
+    test_ota_state.c
     test_json.c
     test_url.c
     test_usbcfg.c

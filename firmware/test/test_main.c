@@ -71,6 +71,7 @@ int main(int argc, char **argv) {
         {"usbcfg", test_usbcfg},
         {"provisioning", test_provisioning},
         {"ota_image", test_ota_image},
+        {"ota_state", test_ota_state},
     };
 
     for (size_t i = 0; i < sizeof(suites) / sizeof(suites[0]); i++) {

@@ -82,6 +82,7 @@ void test_url(void);
 void test_usbcfg(void);
 void test_provisioning(void);
 void test_ota_image(void);
+void test_ota_state(void);
 
 /* Path to firmware/test, passed in by CMake so the vectors are found wherever the build runs. */
 extern const char *rw_test_data_dir;
