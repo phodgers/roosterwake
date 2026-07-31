@@ -311,6 +311,21 @@ static void cmd_ota_state(void) {
     rw_jw_raw(&w, ",");
     rw_jw_key(&w, "version");
     rw_jw_str(&w, st->version);
+
+    /* An update in flight. Zero unless one is actually arriving, so a stalled transfer is
+     * distinguishable from an idle device without a diagnostic build. */
+    bool     receiving = false;
+    uint32_t got = 0, total = 0;
+    rw_relay_ota_progress(&receiving, &got, &total);
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "receiving");
+    rw_jw_raw(&w, receiving ? "true" : "false");
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "received");
+    rw_jw_int(&w, (long)got);
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "expected");
+    rw_jw_int(&w, (long)total);
     rw_jw_raw(&w, "}");
 
     if (rw_jw_finish(&w) == 0) {

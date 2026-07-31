@@ -63,6 +63,18 @@ void rw_relay_task(void);
 
 rw_relay_state_t rw_relay_state(void);
 
+/*
+ * How far an update in flight has got, for usbcfg's OTA_STATE.
+ *
+ * A transfer that stalls is otherwise invisible from outside: the device answers INFO, holds its
+ * Wi-Fi link and reports the relay as connected, and nothing says whether it is part-way through
+ * writing a slot or idle. Only a build with diagnostics forced on could tell the difference, and
+ * that is not the build in anyone's hands.
+ *
+ * `total` is what the signed header promised. Both are zero when no transfer is in progress.
+ */
+void rw_relay_ota_progress(bool *receiving, uint32_t *got, uint32_t *total);
+
 /* String for usbcfg STATUS: "idle", "connecting", "connected", "auth_failed", "backoff". */
 const char *rw_relay_state_name(void);
 

@@ -1357,6 +1357,18 @@ rw_relay_state_t rw_relay_state(void) {
     return s.state;
 }
 
+void rw_relay_ota_progress(bool *receiving, uint32_t *got, uint32_t *total) {
+    if (receiving != NULL) {
+        *receiving = s.ota.receiving;
+    }
+    if (got != NULL) {
+        *got = s.ota.receiving ? s.ota.got : 0;
+    }
+    if (total != NULL) {
+        *total = s.ota.receiving ? s.ota.total : 0;
+    }
+}
+
 const char *rw_relay_state_name(void) {
     switch (s.state) {
         case RW_RELAY_OFFLINE:         return "idle";
