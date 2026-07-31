@@ -78,12 +78,17 @@ typedef struct {
  * Check everything that can be checked before a byte of payload has arrived: the magic, the
  * format, the declared length against the space available, the board, and the signature.
  *
- * `raw` must hold at least RW_OTA_HEADER_LEN bytes. `board` is this build's RW_BOARD_NAME and
- * `max_payload` the usable size of the slot the image is destined for; both are refused here
- * rather than after half a megabyte has been written to flash.
+ * `raw` must hold at least RW_OTA_HEADER_LEN bytes and `max_payload` is the usable size of the
+ * slot the image is destined for.
+ *
+ * The board is not a parameter. It is this build's own tag, from rw_ota_board_tag(), because
+ * there is no caller for which any other answer is correct — and when it was a parameter the one
+ * caller passed RW_BOARD_NAME ("pico_w") where the header carries a tag ("PW"), so every image
+ * was refused as built for the wrong board. Tests cover the mismatch with a fixture signed for
+ * the other board, which is what a mismatch actually looks like.
  */
-rw_ota_status_t rw_ota_header_open(const uint8_t *raw, size_t len, const char *board,
-                                   uint32_t max_payload, rw_ota_header_t *out);
+rw_ota_status_t rw_ota_header_open(const uint8_t *raw, size_t len, uint32_t max_payload,
+                                   rw_ota_header_t *out);
 
 /* Payload digest, computed as the payload streams past on its way into flash. */
 typedef struct {

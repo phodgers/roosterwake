@@ -101,9 +101,9 @@ static rw_ota_status_t verify_signature(const uint8_t *raw) {
     return status;
 }
 
-rw_ota_status_t rw_ota_header_open(const uint8_t *raw, size_t len, const char *board,
-                                   uint32_t max_payload, rw_ota_header_t *out) {
-    if (raw == NULL || out == NULL || board == NULL) {
+rw_ota_status_t rw_ota_header_open(const uint8_t *raw, size_t len, uint32_t max_payload,
+                                   rw_ota_header_t *out) {
+    if (raw == NULL || out == NULL) {
         return RW_OTA_ERR_SHORT;
     }
     if (len < RW_OTA_HEADER_LEN) {
@@ -135,7 +135,7 @@ rw_ota_status_t rw_ota_header_open(const uint8_t *raw, size_t len, const char *b
     if (!field_str(raw + OFF_BOARD, 4, out->board, sizeof(out->board))) {
         return RW_OTA_ERR_BOARD;
     }
-    if (strcmp(out->board, board) != 0) {
+    if (strcmp(out->board, rw_ota_board_tag()) != 0) {
         return RW_OTA_ERR_BOARD;
     }
 

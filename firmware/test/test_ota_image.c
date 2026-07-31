@@ -23,7 +23,7 @@ static void reset(void) {
 }
 
 static rw_ota_status_t open_header(rw_ota_header_t *out) {
-    return rw_ota_header_open(g_img, sizeof(g_img), "PW", SLOT_MAX, out);
+    return rw_ota_header_open(g_img, sizeof(g_img), SLOT_MAX, out);
 }
 
 static void test_accepts_a_signed_image(void) {
@@ -107,19 +107,31 @@ static void test_rejects_a_tampered_signature(void) {
 static void test_rejects_the_wrong_board(void) {
     rw_ota_header_t h;
     RW_CHECK_EQ_INT(rw_ota_header_open(k_ota_image_other_board,
-                                       sizeof(k_ota_image_other_board), "PW", SLOT_MAX, &h),
+                                       sizeof(k_ota_image_other_board), SLOT_MAX, &h),
                     RW_OTA_ERR_BOARD);
-    /* ...and the same bytes are accepted by the board they were built for. */
-    RW_CHECK_EQ_INT(rw_ota_header_open(k_ota_image_other_board,
-                                       sizeof(k_ota_image_other_board), "P2W", SLOT_MAX, &h),
-                    RW_OTA_OK);
+    /* The matching direction is test_accepts_a_signed_image: the fixture is built for this one. */
+}
+
+/*
+ * What the header carries and what this build compares it against are the same string.
+ *
+ * These were once two different things — the parser took the board as an argument and its one
+ * caller passed RW_BOARD_NAME, "pico_w", where the header carries the four-byte tag "PW". Every
+ * image was refused as built for the wrong board, and no test saw it because the tests passed the
+ * tag directly. The parameter is gone; this is what stops the two drifting apart again.
+ */
+static void test_the_tag_is_what_images_are_signed_with(void) {
+    reset();
+    rw_ota_header_t h;
+    RW_CHECK_EQ_INT(open_header(&h), RW_OTA_OK);
+    RW_CHECK_EQ_STR(h.board, rw_ota_board_tag());
 }
 
 static void test_rejects_an_image_larger_than_the_slot(void) {
     reset();
     rw_ota_header_t h;
     RW_CHECK_EQ_INT(
-        rw_ota_header_open(g_img, sizeof(g_img), "PW", RW_FIXTURE_PAYLOAD_LEN - 1, &h),
+        rw_ota_header_open(g_img, sizeof(g_img), RW_FIXTURE_PAYLOAD_LEN - 1, &h),
         RW_OTA_ERR_LENGTH);
 }
 
@@ -127,11 +139,11 @@ static void test_rejects_rubbish(void) {
     rw_ota_header_t h;
     unsigned char   junk[RW_OTA_HEADER_LEN] = {0};
 
-    RW_CHECK_EQ_INT(rw_ota_header_open(junk, sizeof(junk), "PW", SLOT_MAX, &h),
+    RW_CHECK_EQ_INT(rw_ota_header_open(junk, sizeof(junk), SLOT_MAX, &h),
                     RW_OTA_ERR_MAGIC);
 
     reset();
-    RW_CHECK_EQ_INT(rw_ota_header_open(g_img, RW_OTA_HEADER_LEN - 1, "PW", SLOT_MAX, &h), RW_OTA_ERR_SHORT);
+    RW_CHECK_EQ_INT(rw_ota_header_open(g_img, RW_OTA_HEADER_LEN - 1, SLOT_MAX, &h), RW_OTA_ERR_SHORT);
 }
 
 void test_ota_image(void) {
@@ -149,6 +161,8 @@ void test_ota_image(void) {
     test_rejects_a_tampered_signature();
     rw_test_begin("rejects the wrong board");
     test_rejects_the_wrong_board();
+    rw_test_begin("the tag is what images are signed with");
+    test_the_tag_is_what_images_are_signed_with();
     rw_test_begin("rejects an image larger than the slot");
     test_rejects_an_image_larger_than_the_slot();
     rw_test_begin("rejects rubbish");

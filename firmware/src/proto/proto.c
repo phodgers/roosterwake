@@ -987,8 +987,7 @@ static void handle_ota_offer(const char *js, const jsmntok_t *tok, int count) {
     }
 
     rw_ota_header_t header;
-    rw_ota_status_t status =
-        rw_ota_header_open(raw, sizeof(raw), RW_BOARD_NAME, RW_SLOT_PAYLOAD_MAX, &header);
+    rw_ota_status_t status = rw_ota_header_open(raw, sizeof(raw), RW_SLOT_PAYLOAD_MAX, &header);
     if (status != RW_OTA_OK) {
         send_ota_reject(id, rw_ota_status_str(status));
         return;
