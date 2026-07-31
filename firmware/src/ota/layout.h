@@ -50,9 +50,28 @@
 #define RW_SLOT_A_OFFSET (RW_LOADER_OFFSET + RW_LOADER_SIZE)
 #define RW_SLOT_B_OFFSET (RW_SLOT_A_OFFSET + RW_SLOT_SIZE)
 
-/* The usable payload of a slot. The image starts with its vector table at the slot's first byte,
- * so the whole slot is available; the signed header is stripped before anything is written. */
+/* The usable payload of a slot. The whole slot is available; the signed header is stripped
+ * before anything is written. */
 #define RW_SLOT_PAYLOAD_MAX RW_SLOT_SIZE
+
+/*
+ * Where an image's vector table sits within it, which is not the same on the two chips.
+ *
+ * An RP2040 image begins with the 256-byte second stage the ROM copies into RAM and runs to set
+ * up XIP, and the vector table follows it. An RP2350 image has no such prologue — the ROM
+ * configures XIP itself from the metadata block it finds in the image — so the table is the
+ * first thing in the image.
+ *
+ * This is the address the loader hands the processor, and getting it wrong on one chip looks
+ * exactly like a slot that was never written: the stack pointer read out of the middle of the
+ * table is not in SRAM, the slot is judged unbootable, and the device falls back to the ROM
+ * bootloader.
+ */
+#if defined(PICO_RP2350) && PICO_RP2350
+#define RW_SLOT_VECTOR_OFFSET 0u
+#else
+#define RW_SLOT_VECTOR_OFFSET 0x100u
+#endif
 
 /* Two sectors immediately below the config pair (config_flash.h takes the top two). */
 #define RW_OTA_STATE_B_OFFSET(flash_size) ((uint32_t)(flash_size) - 3u * RW_FLASH_SECTOR)

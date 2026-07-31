@@ -28,14 +28,6 @@
 #include "ota/state.h"
 
 /*
- * An image begins with 256 bytes the ROM bootloader would use as its second stage, and the
- * vector table follows. Only the copy at the very start of flash — this loader's — is ever
- * executed as a second stage; the one at the head of each slot is inert padding, and the address
- * the processor has to be given is the vector table after it.
- */
-#define SLOT_VECTOR_OFFSET 0x100u
-
-/*
  * Is there something at this address that could plausibly be entered?
  *
  * The stack pointer must land in SRAM and the reset vector inside the slot itself, with the
@@ -45,7 +37,7 @@
  */
 static bool slot_bootable(uint8_t slot) {
     uint32_t        base = RW_SLOT_XIP(slot);
-    const uint32_t *vt   = (const uint32_t *)(uintptr_t)(base + SLOT_VECTOR_OFFSET);
+    const uint32_t *vt   = (const uint32_t *)(uintptr_t)(base + RW_SLOT_VECTOR_OFFSET);
     uint32_t        sp   = vt[0];
     uint32_t        pc   = vt[1];
 
@@ -59,7 +51,7 @@ static bool slot_bootable(uint8_t slot) {
 }
 
 static void __attribute__((noreturn)) enter_slot(uint8_t slot) {
-    uint32_t        vt_addr = RW_SLOT_XIP(slot) + SLOT_VECTOR_OFFSET;
+    uint32_t        vt_addr = RW_SLOT_XIP(slot) + RW_SLOT_VECTOR_OFFSET;
     const uint32_t *vt      = (const uint32_t *)(uintptr_t)vt_addr;
     uint32_t        sp      = vt[0];
     uint32_t        pc      = vt[1];
@@ -120,7 +112,7 @@ static void __attribute__((noreturn)) enter_slot(uint8_t slot) {
 
 static void report(const char *what, uint8_t slot) {
     uint32_t        base = RW_SLOT_XIP(slot);
-    const uint32_t *vt   = (const uint32_t *)(uintptr_t)(base + SLOT_VECTOR_OFFSET);
+    const uint32_t *vt   = (const uint32_t *)(uintptr_t)(base + RW_SLOT_VECTOR_OFFSET);
     printf("# loader %s slot %u base=%08lx sp=%08lx pc=%08lx bootable=%d\n", what,
            (unsigned)slot, (unsigned long)base, (unsigned long)vt[0], (unsigned long)vt[1],
            (int)slot_bootable(slot));
