@@ -60,33 +60,23 @@ set(CMAKE_CXX_STANDARD 17)
 
 pico_sdk_init()
 
-# ── Optimisation level ────────────────────────────────────────────────────────
+# ── Optimisation level ────────────────────────────────────────────
 #
-# -O2. NOT -O3, and this is not a preference.
+# -O2, not -O3.
 #
-# At -O3, GCC 14.2 (arm-none-eabi) miscompiles mbedTLS's AES-GCM for this target. The failure is
-# silent and total: AES-ECB is correct, SHA-256 is correct, CTR-DRBG and the entropy source are
-# correct, and GCM produces the right answer for a zero-length message and the wrong one for
-# every message that actually contains data.
+# GCC 14.2 (arm-none-eabi) at -O3 miscompiles mbedTLS's AES-GCM for this target: correct for
+# a zero-length message, wrong for anything carrying data. TLS is the only user of GCM, so the
+# handshake fails on its first encrypted record with `bad_record_mac` - every step before that
+# is asymmetric or hashing and looks correct in a trace.
 #
-# What that costs, if it is ever re-raised, is the entire product. TLS is the only thing that
-# uses GCM, and a handshake fails on the FIRST encrypted record it sends: certificate verified,
-# key agreed, Finished sent, and a fatal `bad_record_mac` alert back. Every step before that
-# point is asymmetric or hashing and looks perfect in a trace, so the failure reads as a network
-# or server problem and points nowhere near the compiler. It cost most of a day.
-#
-# Reproduce it in two lines, on hardware:
-#
+# Check it on hardware:
 #   cmake -S firmware -B b -DPICO_BOARD=pico_w -DRW_FORCE_DIAG_LOG=ON -DRW_TLS_TRACE=ON
-#   ... flash, then read the serial port: "AES-GCM-128 #1 (enc): failed" at -O3, passes at -O2
+# then read the serial port - "AES-GCM-128 #1 (enc): failed" at -O3, passes at -O2.
 #
-# rw_tls_init() additionally runs a single GCM known-answer test at every boot in every build and
-# refuses to bring TLS up if it fails, so a future toolchain that breaks this differently says so
-# in one line rather than being diagnosed again from first principles.
+# rw_tls_init() also runs a GCM known-answer test at boot in every build and refuses to start
+# TLS if it fails.
 #
-# Set as normal variables rather than cache entries so they take effect in existing build trees
-# without a reconfigure, and so a caller who genuinely wants something else can still pass
-# CMAKE_C_FLAGS on the command line.
+# Normal variables rather than cache entries, so they apply in existing build trees.
 set(CMAKE_C_FLAGS_RELEASE          "-O2 -DNDEBUG")
 set(CMAKE_CXX_FLAGS_RELEASE        "-O2 -DNDEBUG")
 set(CMAKE_C_FLAGS_RELWITHDEBINFO   "-O2 -g -DNDEBUG")

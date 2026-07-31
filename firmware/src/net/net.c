@@ -68,17 +68,12 @@ void rw_sntp_set_system_time(uint32_t sec) {
 }
 
 /*
- * Auth modes tried, in order, when the configuration says "auto".
+ * Handshakes tried, in order, when the configuration says "auto".
  *
- * The transitional mode first, because it associates with both WPA2 and WPA3 and covers most
- * access points. But it is NOT universal, and the way it fails is silent: some WPA2-only routers
- * refuse the association outright rather than negotiating down, because the transitional mode
- * advertises SAE and management-frame protection they do not implement. The radio reports
- * CYW43_LINK_FAIL - not `badauth`, not `nonet` - so a device that only ever offers one mode sits
- * in a retry loop for ever against a network it is perfectly capable of joining.
- *
- * So "auto" means what it says: try the next one. Found on hardware against an access point that
- * scans as `wpa2` and refuses the transitional handshake.
+ * The transitional mode covers both WPA2 and WPA3 and suits most access points, but it is not
+ * universal: some WPA2-only routers refuse it outright because it advertises SAE and management
+ * frame protection they do not implement, and the refusal arrives as CYW43_LINK_FAIL rather than
+ * anything more specific. s_auth_attempt advances on that failure alone.
  */
 static const uint32_t k_auto_auth[] = {
     CYW43_AUTH_WPA3_WPA2_AES_PSK,
@@ -136,12 +131,9 @@ static void schedule_retry(const char *why) {
     s_retry_at     = make_timeout_time_ms(delay);
 
     /*
-     * The driver's join-state word goes into the trace beside the verdict.
-     *
-     * It is a bitmask of how far the association actually got — 0x0200 authenticated, 0x0400
-     * linked, 0x0800 keyed, with the low nibble holding the outcome — and it separates failures
-     * that `why` cannot. Refused before authentication and refused during the four-way handshake
-     * both arrive here as "failed", and they have nothing to do with one another.
+     * js is the driver's join-state bitmask: 0x0200 authenticated, 0x0400 linked, 0x0800 keyed,
+     * low nibble the outcome. It separates a refusal before authentication from one during the
+     * four-way handshake, which both arrive here as "failed".
      */
     rw_radio_trace_note("result %s js=%04x", why,
                         (unsigned)(cyw43_state.wifi_join_state & 0xffffu));

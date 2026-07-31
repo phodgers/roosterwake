@@ -28,17 +28,11 @@
 #include "tls/ca_bundle.h"
 
 /*
- * The two constants that have to agree, asserted in the one file that can see both.
- *
- * lwIP hands mbedTLS its own allocator, and that allocator refuses any single request larger
- * than MEM_SIZE before it even reaches the heap. So MBEDTLS_SSL_IN_CONTENT_LEN is not merely a
- * buffer size, it is a claim about lwipopts.h — and the two live in different files, are read by
- * different libraries, and produced no diagnostic at all when they disagreed: TLS simply never
- * started, and the failure surfaced as a relay that stayed at "connecting" for ever.
- *
- * The headroom is the rest of what has to be resident at the same moment: the parsed root
- * bundle, the peer's certificate chain during the handshake, and the PBUF_RAM pbufs carrying
- * the traffic. See the MEM_SIZE comment in lwipopts.h for the full budget.
+ * MBEDTLS_SSL_IN_CONTENT_LEN is not merely a buffer size: lwIP hands mbedTLS its own
+ * allocator, which rejects any single request larger than MEM_SIZE before it reaches the
+ * heap. The two constants live in different files and read by different libraries, and a
+ * disagreement produces no diagnostic at all - TLS simply never starts. The headroom covers
+ * what else must be resident: the root bundle, the peer's chain, and the pbufs.
  */
 #define RW_TLS_HEAP_HEADROOM 16384
 _Static_assert(MEM_SIZE >= MBEDTLS_SSL_IN_CONTENT_LEN + MBEDTLS_SSL_OUT_CONTENT_LEN +
@@ -74,24 +68,15 @@ mbedtls_ms_time_t mbedtls_ms_time(void) {
 }
 
 /*
- * One AES-128-GCM known-answer test, run before TLS is offered at all.
+ * AES-128-GCM known-answer test, run before TLS is offered.
  *
- * ── WHY A LIBRARY'S OWN CIPHER IS TESTED AT EVERY BOOT ───────────────────────
+ * GCM is the only cipher this device negotiates, and a miscompiled one fails in a way no
+ * layer above can attribute: the handshake completes certificate verification and key
+ * agreement, then the peer rejects the first encrypted record with `bad_record_mac`. GCC at
+ * -O3 does exactly that on this target, which is why CMakeLists.txt pins -O2. This check is
+ * what turns a recurrence into one line on the cable.
  *
- * Because it has already been wrong once, and the way it was wrong was undetectable from
- * anywhere above it. GCC 14.2 at -O3 miscompiles mbedTLS's GCM for this target (see the
- * optimisation note in CMakeLists.txt): correct for a zero-length message, wrong for anything
- * carrying data. GCM is the only cipher this device negotiates, so the effect was that every
- * TLS handshake ran flawlessly through certificate verification and key agreement and then had
- * its first encrypted record rejected by the peer. Nothing in the resulting trace pointed at
- * the compiler; the visible symptom was a relay that would not connect.
- *
- * This is the check that would have found it in one line. It costs a few hundred microseconds
- * once per boot and stays in release builds precisely because the fault it catches is one a
- * release build is no less likely to have.
- *
- * NIST GCM test case 2: 128-bit zero key, 96-bit zero IV, one block of zero plaintext, no
- * additional data. Chosen because it is the exact vector the broken build failed.
+ * NIST GCM test case 2: zero key, zero IV, one block of zero plaintext, no additional data.
  */
 static bool gcm_known_answer_ok(void) {
     static const unsigned char key[16] = {0};
@@ -243,13 +228,8 @@ struct altcp_pcb *rw_tls_new(const char *host) {
         RW_LOG_ERROR("tls: connecting to %s with verification DISABLED", host);
     }
 
-    /*
-     * altcp_tls_new() calls mbedtls_ssl_setup() inside itself, so this one call allocates both
-     * record buffers - MBEDTLS_SSL_IN_CONTENT_LEN plus MBEDTLS_SSL_OUT_CONTENT_LEN plus headers,
-     * in single contiguous pieces. It is by a wide margin the largest allocation the firmware
-     * makes, and on the 264 KB RP2040 it is the one that fails. The free figure goes into the
-     * message because "out of memory" without a number is the start of a guessing game.
-     */
+        /* altcp_tls_new() calls mbedtls_ssl_setup() internally, so this one call allocates both
+     * record buffers in single contiguous pieces - by far the largest allocation made. */
     uint32_t heap_before = rw_sys_heap_free();
 
     struct altcp_pcb *pcb = altcp_tls_new(s_config, IPADDR_TYPE_V4);
@@ -267,23 +247,15 @@ struct altcp_pcb *rw_tls_new(const char *host) {
         return NULL;
     }
 
-    /*
-     * The server name, logged because getting it wrong is invisible from this end and fatal at
-     * the other. A host that reaches mbedTLS empty, truncated or carrying a port produces no
-     * local error at all — the extension simply goes out wrong, and the peer answers with a
-     * fatal handshake_failure alert that arrives here as one opaque number.
-     */
+        /* The server name. A host that arrives empty, truncated or carrying a port produces no
+     * local error - the extension goes out wrong and the peer answers with a fatal alert. */
     RW_LOG_INFO("tls: sni \"%s\"", host);
 
 #ifdef RW_TLS_TRACE
     /*
-     * Attach mbedTLS's own tracing to this connection.
-     *
-     * lwIP keeps `struct altcp_tls_config` private, so the mbedtls_ssl_config inside it cannot
-     * be configured through any lwIP API — but the context altcp just handed us points at it,
-     * and MBEDTLS_ALLOW_PRIVATE_ACCESS makes that pointer reachable. Casting away const to
-     * install a debug callback is a diagnostic build's privilege and nothing else's, which is
-     * why it is compiled out otherwise rather than gated at runtime.
+     * lwIP keeps `struct altcp_tls_config` private, so the mbedtls_ssl_config inside it
+     * cannot be reached through any lwIP API - but the context altcp just returned points at
+     * it, and MBEDTLS_ALLOW_PRIVATE_ACCESS makes that reachable. Diagnostic builds only.
      */
     mbedtls_debug_set_threshold(3);
     mbedtls_ssl_conf_dbg((mbedtls_ssl_config *)ssl->conf, rw_tls_debug, NULL);

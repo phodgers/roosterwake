@@ -1,34 +1,18 @@
 /*
- * What the radio actually said.
+ * A ring of the radio's own WLC events, readable over usbcfg with WIFI_TRACE.
  *
- * ── WHY THIS EXISTS ──────────────────────────────────────────────────────────
+ * `cyw43_tcpip_link_status()` collapses every association failure into BADAUTH, NONET and
+ * FAIL. FAIL means only "refused" - a MAC filter, a full client table, a cipher mismatch and
+ * a forbidden channel are one value. The radio raises a WLC event per step of a join
+ * (SET_SSID, AUTH, ASSOC, LINK, PSK_SUP, PRUNE), each with a status and reason code, and the
+ * driver already knows how to print them - but only to printf, and only while
+ * `cyw43_state.trace_flags` asks. This captures them so they survive to whenever a cable is
+ * attached.
  *
- * `cyw43_tcpip_link_status()` collapses every association failure into three numbers: BADAUTH,
- * NONET and FAIL. FAIL is the interesting one and it is nearly contentless — it means "the
- * association was refused" and nothing about by whom or for what. A router refusing on a MAC
- * filter, a router with no free client slot, a cipher mismatch and a channel the regulatory
- * domain forbids are one value. Diagnosing from that value alone means guessing, and guessing
- * costs a firmware build and a trip to the desk per hypothesis.
- *
- * The radio does say why. The CYW43439 raises a WLC event for each step of a join — SET_SSID,
- * AUTH, ASSOC, LINK, PSK_SUP, PRUNE — each carrying a status and a reason code, and the driver
- * already knows how to print them. It just prints them into `printf` and only when
- * `cyw43_state.trace_flags` asks. Two things stand between that and a support conversation: the
- * output is gone by the time anybody plugs a cable in, and it is unframed text in the middle of
- * a line-oriented command channel.
- *
- * So this claims CYW43_PRINTF, reassembles the driver's piecewise writes into whole lines, and
- * keeps the last few in a ring the host can read back with `WIFI_TRACE`. Nothing is sampled and
- * nothing is inferred: the ring holds what the radio reported, in order, with timestamps.
- *
- * ── WHY A FORCE-INCLUDED HEADER ──────────────────────────────────────────────
- *
- * `cyw43_cb_process_async_event()` — the function that would be the natural hook — is compiled
- * into the driver's own translation unit alongside symbols the link needs, so defining our own
- * is a duplicate-symbol error rather than an override. CYW43_PRINTF is the only seam the driver
- * offers, and it is claimed by whoever defines it before `cyw43_config.h` is reached. A header
- * passed to every C translation unit with `-include` is the one way to be first. See the
- * `-include` block in CMakeLists.txt.
+ * CYW43_PRINTF is the only seam available: cyw43_cb_process_async_event() is compiled into
+ * the driver's own object beside symbols the link needs, so replacing it is a duplicate
+ * symbol rather than an override. Claiming the macro requires being first, hence the
+ * force-include in CMakeLists.txt.
  *
  * SPDX-License-Identifier: MIT
  */

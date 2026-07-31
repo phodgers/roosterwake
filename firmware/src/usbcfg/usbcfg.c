@@ -198,11 +198,8 @@ static void cmd_status(void) {
     rw_jw_raw(&w, ",");
 
     /*
-     * The two memory figures, because RAM is this device's binding constraint and the way it
-     * fails is silent. A TLS session needs its record buffers out of lwIP's heap in one piece;
-     * when that heap was too small the relay simply stayed at "connecting" for ever with nothing
-     * anywhere to say why. `lwip_mem_max` is the high-water mark and `lwip_mem_err` counts
-     * refusals - a non-zero value there is the whole diagnosis.
+     * lwip_mem_max is the high-water mark of the heap mbedTLS allocates from and lwip_mem_err
+     * counts refusals; a non-zero err means TLS could not get its record buffers.
      */
     rw_jw_key(&w, "heap_free");
     rw_jw_int(&w, (long)rw_sys_heap_free());
@@ -223,15 +220,9 @@ static void cmd_status(void) {
 
 /* ── WIFI_TRACE ──────────────────────────────────────────────────────────────
  *
- * What the radio reported, verbatim, in order. See diag/radio_trace.h for why the driver's own
- * event stream is the only thing that answers "why was the association refused" — STATUS reports
- * the verdict, and this reports the evidence behind it.
- *
- * Paged, because the whole ring does not fit one response. `from` is an index from the oldest
- * entry held; the response carries `total` so a host knows whether to ask again. Entries shift
- * as new events arrive and evict old ones, so a page read during an active retry loop may skip
- * or repeat a line — acceptable for a diagnostic, and the alternative is a snapshot buffer that
- * costs more RAM than the ring itself.
+ * The radio's own event stream (diag/radio_trace.h). Paged: `from` indexes from the oldest entry
+ * held, and the response carries `total` so a host knows whether to ask again. Entries shift as
+ * new events evict old ones, so a page read during an active retry loop may skip or repeat.
  */
 static void cmd_wifi_trace(const rw_cmdline_t *cl) {
     size_t total = rw_radio_trace_count();
