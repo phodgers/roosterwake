@@ -23,8 +23,10 @@ set(PICO_BOARD pico2_w CACHE STRING "Target board: pico2_w or pico_w")
 
 if (PICO_BOARD STREQUAL "pico2_w")
     set(PICO_PLATFORM rp2350-arm-s CACHE STRING "Target platform" FORCE)
+    set(RW_PICOTOOL_PLATFORM rp2350)
 elseif (PICO_BOARD STREQUAL "pico_w")
     set(PICO_PLATFORM rp2040 CACHE STRING "Target platform" FORCE)
+    set(RW_PICOTOOL_PLATFORM rp2040)
 else()
     message(FATAL_ERROR
         "PICO_BOARD is '${PICO_BOARD}'. This firmware supports pico2_w and pico_w - both have "
@@ -88,6 +90,10 @@ set(RW_SLOT_LENGTH "704 * 1024")
 file(WRITE ${CMAKE_BINARY_DIR}/pico_flash_region.ld
      "FLASH(rx) : ORIGIN = ${RW_SLOT_ORIGIN}, LENGTH = ${RW_SLOT_LENGTH}\n")
 message(STATUS "Linking for slot ${RW_SLOT} at ${RW_SLOT_ORIGIN}, ${RW_SLOT_LENGTH} bytes")
+
+# The last page of this slot, which is where the RP2350 absolute block goes; see the UF2
+# arguments further down.
+math(EXPR RW_ABS_BLOCK_ADDR "${RW_SLOT_ORIGIN} + 704 * 1024 - 256" OUTPUT_FORMAT HEXADECIMAL)
 
 # ── Optimisation level ────────────────────────────────────────────
 #
@@ -336,6 +342,28 @@ pico_enable_stdio_uart(remotewake 0)
 pico_set_program_name(remotewake "Remote Wake")
 pico_set_program_description(remotewake "Wake-on-LAN dongle")
 pico_set_program_url(remotewake "https://github.com/remotewake/remotewake")
+
+# ── Packaging the UF2 ─────────────────────────────────────────────────────────
+#
+# --platform states the chip rather than leaving picotool to infer it. picotool works the chip
+# out from the image's own metadata block, and looks for that block at the start of flash — so an
+# image linked into a slot, which has nothing at 0x10000000, is taken for an RP2040 and its
+# RP2350 SRAM banks then read as out of range:
+#
+#   ERROR: Memory segment 20081000->20081800 is outside of valid address range for device
+#
+# --abs-block places the RP2350-E10 block in the last page of this slot. The block is a page of
+# filler whose write is itself the workaround, and picotool addresses it at 0x10ffff00 by default
+# — the top of the 16 MB XIP window, which only exists on a 16 MB part. QSPI addressing drops the
+# upper bits, so on the 4 MB part fitted it wraps into the second configuration sector, and an
+# update that promises to leave configuration alone would erase it. Only the address matters, and
+# picotool takes it as an argument; inside the slot the page lands in space the image never
+# reaches.
+set(RW_UF2_ARGS "--platform;${RW_PICOTOOL_PLATFORM}")
+if (PICO_PLATFORM STREQUAL "rp2350-arm-s")
+    list(APPEND RW_UF2_ARGS "--abs-block" "${RW_ABS_BLOCK_ADDR}")
+endif()
+set_target_properties(remotewake PROPERTIES PICOTOOL_EXTRA_UF2_ARGS "${RW_UF2_ARGS}")
 
 pico_add_extra_outputs(remotewake)
 

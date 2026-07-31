@@ -20,14 +20,30 @@ mode, the TLS buffer sizes, why the probe works the way it does — and is not b
 
 ## Building
 
+A device runs two programs. The **loader** occupies the first 64 KB of flash and never changes;
+the **firmware** occupies one of two 704 KB slots behind it, and an update writes whichever slot
+is not running. `src/ota/layout.h` is the single statement of where everything lives.
+
 ```sh
 export PICO_SDK_PATH=/path/to/pico-sdk
-cmake -S . -B ../build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build ../build
+
+cmake -S loader -B ../build-loader -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build ../build-loader                       # build-loader/loader.uf2
+
+cmake -S . -B ../build-a -G Ninja -DCMAKE_BUILD_TYPE=Release -DRW_SLOT=a
+cmake --build ../build-a                            # build-a/remotewake.uf2
 ```
 
-The result is `remotewake.uf2`. Hold BOOTSEL while plugging the board in, or send `BOOTSEL`
-over the USB command channel, and copy the file to the drive that appears.
+Install them as **two separate files**, loader first. Hold BOOTSEL while plugging the board in,
+copy `loader.uf2`, and let the board restart: with both slots empty the loader returns to the ROM
+bootloader by itself, so the drive reappears and `remotewake.uf2` can be copied straight after.
+
+Do not merge the two into one UF2. A file spanning both regions loses whichever region's blocks
+arrive last — in either order — leaving one of them erased.
+
+An image is linked at the address of the slot it occupies, because XIP executes in place. Nothing
+is ever copied between slots; a release builds each board twice and a device asks for the variant
+matching its spare slot.
 
 The SDK needs its `lib/lwip`, `lib/cyw43-driver`, `lib/mbedtls` and `lib/tinyusb` submodules:
 
@@ -59,10 +75,11 @@ takes seconds rather than minutes.
 
 | Option | Default | Effect |
 |---|---|---|
+| `RW_SLOT=a\|b` | `a` | Which slot this image is linked to run in |
 | `RW_TLS_CUSTOM_CA=<file>` | unset | Replaces the built-in root bundle with a PEM of your own, for a relay behind a private CA |
 | `RW_TLS_INSECURE=ON` | `OFF` | Skips certificate verification entirely. Warns at configure time, logs on every connection, and flashes the error LED continuously |
 
-Neither is needed to talk to a relay behind any public CA.
+None of these is needed to talk to a relay behind any public CA.
 
 ## Tests
 

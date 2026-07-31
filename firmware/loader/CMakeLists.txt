@@ -1,4 +1,4 @@
-# The loader — the first 32 KB of flash, and the only part an update never replaces.
+# The loader — the first 64 KB of flash, and the only part an update never replaces.
 #
 # A separate CMake project from the firmware because the two are linked into different regions
 # and one build tree gets one FLASH region:
@@ -11,13 +11,19 @@
 cmake_minimum_required(VERSION 3.13)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "Minimum policy version for vendored deps")
 
-set(PICO_BOARD pico2_w CACHE STRING "Target board: pico2_w or pico_w")
-if (PICO_BOARD STREQUAL "pico2_w")
+# Wider board support than the firmware, which needs the CYW43439. Nothing here touches the
+# radio, so the loader and the boot chain it is half of can be exercised on a plain Pico 2 or
+# Pico — the same silicon and the same flash size as the boards sold, without the part that is
+# hardest to get hold of.
+set(PICO_BOARD pico2_w CACHE STRING "Target board: pico2_w, pico2, pico_w or pico")
+if (PICO_BOARD STREQUAL "pico2_w" OR PICO_BOARD STREQUAL "pico2")
     set(PICO_PLATFORM rp2350-arm-s CACHE STRING "Target platform" FORCE)
-elseif (PICO_BOARD STREQUAL "pico_w")
+    set(RW_PICOTOOL_PLATFORM rp2350)
+elseif (PICO_BOARD STREQUAL "pico_w" OR PICO_BOARD STREQUAL "pico")
     set(PICO_PLATFORM rp2040 CACHE STRING "Target platform" FORCE)
+    set(RW_PICOTOOL_PLATFORM rp2040)
 else()
-    message(FATAL_ERROR "PICO_BOARD is '${PICO_BOARD}'; expected pico2_w or pico_w.")
+    message(FATAL_ERROR "PICO_BOARD is '${PICO_BOARD}'; expected pico2_w, pico2, pico_w or pico.")
 endif()
 
 include(${CMAKE_CURRENT_LIST_DIR}/../pico_sdk_import.cmake)
@@ -71,11 +77,14 @@ set_source_files_properties(main.c PROPERTIES
     COMPILE_OPTIONS "-Wall;-Wextra;-Wshadow;-Wundef;-Werror")
 
 pico_set_program_name(loader "Remote Wake loader")
-pico_add_extra_outputs(loader)
 
-# The whole point of the region cap, stated where a person reading the build output will see it.
-add_custom_command(TARGET loader POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E echo "loader must stay under 32768 bytes:"
-    COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:loader> ${CMAKE_BINARY_DIR}/loader.size.bin
-    COMMAND ${CMAKE_COMMAND} -E echo "  see loader.bin"
-    VERBATIM)
+# --platform states the chip instead of leaving picotool to infer it, and --abs-block moves the
+# RP2350-E10 block out of the top of the XIP window and into the last page of the loader's own
+# region. Both for the reasons set out against the same arguments in firmware/CMakeLists.txt.
+set(RW_UF2_ARGS "--platform;${RW_PICOTOOL_PLATFORM}")
+if (PICO_PLATFORM STREQUAL "rp2350-arm-s")
+    list(APPEND RW_UF2_ARGS "--abs-block" "0x1000ff00")
+endif()
+set_target_properties(loader PROPERTIES PICOTOOL_EXTRA_UF2_ARGS "${RW_UF2_ARGS}")
+
+pico_add_extra_outputs(loader)
