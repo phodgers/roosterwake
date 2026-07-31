@@ -39,11 +39,12 @@
 
 #include "mbedtls/sha256.h"
 
+#include "ota/layout.h"
+
 #define RW_OTA_MAGIC          "RWFW"
 #define RW_OTA_FORMAT_VERSION 1
 #define RW_OTA_HEADER_LEN     128
 
-#define RW_OTA_VERSION_LEN 17 /* 16 on the wire plus a terminator this side */
 #define RW_OTA_BOARD_LEN   5  /* 4 on the wire plus a terminator this side */
 #define RW_OTA_SHA_LEN     32
 #define RW_OTA_SIG_LEN     64

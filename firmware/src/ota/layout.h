@@ -5,9 +5,9 @@
  * statement of the layout and a disagreement is a compile error rather than a device that boots
  * into the middle of an image.
  *
- *   0x000000  loader            32 KB   never replaced over the air
- *   0x008000  slot A           704 KB
- *   0x0B8000  slot B           704 KB
+ *   0x000000  loader            64 KB   never replaced over the air
+ *   0x010000  slot A           704 KB
+ *   0x0C0000  slot B           704 KB
  *             (spare)                   room for both slots to grow
  *   top-16 KB ota state A        4 KB   two copies, higher sequence wins
  *   top-12 KB ota state B        4 KB
@@ -28,11 +28,23 @@
 #ifndef RW_OTA_LAYOUT_H
 #define RW_OTA_LAYOUT_H
 
+/* Firmware version strings are 16 bytes on the wire wherever they appear - in an image
+ * header and in the state record - so the width lives here rather than in either. */
+#define RW_OTA_VERSION_LEN 17 /* 16 plus a terminator */
+
 #define RW_FLASH_XIP_BASE 0x10000000u
 #define RW_FLASH_SECTOR   4096u
 
 #define RW_LOADER_OFFSET (0u)
-#define RW_LOADER_SIZE   (32u * 1024u)
+/*
+ * 64 KB, which is more than the loader needs.
+ *
+ * The size is an alignment decision, not a capacity one: slot A has to begin on a 64 KB boundary
+ * so that writing the loader cannot erase into it. Flashing a UF2 spanning both regions when
+ * slot A began at 0x008000 left slot A erased, because the bootloader's erase granularity is
+ * larger than the 4 KB sector it writes.
+ */
+#define RW_LOADER_SIZE   (64u * 1024u)
 
 #define RW_SLOT_SIZE     (704u * 1024u)
 #define RW_SLOT_A_OFFSET (RW_LOADER_OFFSET + RW_LOADER_SIZE)

@@ -60,6 +60,35 @@ set(CMAKE_CXX_STANDARD 17)
 
 pico_sdk_init()
 
+# ── Which slot this image is linked for ───────────────────────────────────────
+#
+# XIP executes in place, so an image has to be linked at the address of the slot it will occupy.
+# A release therefore builds each board twice and the device asks for the variant matching its
+# inactive slot. See src/ota/layout.h for why that beats copying images between slots.
+#
+#   cmake -S firmware -B build-a -DPICO_BOARD=pico_w -DRW_SLOT=a
+#   cmake -S firmware -B build-b -DPICO_BOARD=pico_w -DRW_SLOT=b
+#
+# The SDK puts the FLASH region in a generated pico_flash_region.ld that its memmap INCLUDEs,
+# and pico_sdk_init() has already written it by this point — so overwriting it here is the
+# supported seam and needs no vendored copy of the linker script. Confining the region to one
+# slot also means an image that outgrows its slot is a link error rather than something that
+# silently overwrites the other one.
+set(RW_SLOT "a" CACHE STRING "Slot this image is linked to run in: a or b")
+
+if (RW_SLOT STREQUAL "a")
+    set(RW_SLOT_ORIGIN 0x10010000)
+elseif (RW_SLOT STREQUAL "b")
+    set(RW_SLOT_ORIGIN 0x100C0000)
+else()
+    message(FATAL_ERROR "RW_SLOT is '${RW_SLOT}'; it must be a or b.")
+endif()
+set(RW_SLOT_LENGTH "704 * 1024")
+
+file(WRITE ${CMAKE_BINARY_DIR}/pico_flash_region.ld
+     "FLASH(rx) : ORIGIN = ${RW_SLOT_ORIGIN}, LENGTH = ${RW_SLOT_LENGTH}\n")
+message(STATUS "Linking for slot ${RW_SLOT} at ${RW_SLOT_ORIGIN}, ${RW_SLOT_LENGTH} bytes")
+
 # ── Optimisation level ────────────────────────────────────────────
 #
 # -O2, not -O3.

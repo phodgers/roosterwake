@@ -26,7 +26,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "ota/image.h"
+#include "ota/layout.h"
 
 #define RW_OTA_STATE_MAGIC   "RWST"
 #define RW_OTA_STATE_VERSION 1
