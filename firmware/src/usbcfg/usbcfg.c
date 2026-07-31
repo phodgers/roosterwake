@@ -17,7 +17,11 @@
 #include "config/config_flash.h"
 #include "diag/radio_trace.h"
 #include "net/net.h"
+#include "mbedtls/sha256.h"
+
+#include "ota/layout.h"
 #include "ota/ota.h"
+#include "ota/ota_write.h"
 #include "net/scan.h"
 #include "proto/json.h"
 #include "proto/proto.h"
@@ -316,6 +320,63 @@ static void cmd_ota_state(void) {
     respond_ok_json(buf);
 }
 
+/*
+ * Copy the running slot into the spare one through the update writer.
+ *
+ * Everything an update does to flash, without a relay: sector erase, page program, read-back and
+ * the digest check, at the sizes and offsets the real thing uses. The length is deliberately not
+ * a multiple of the page or sector size, so the partial final page is exercised too, and the
+ * chunks are fed in an awkward size because that is what a socket delivers.
+ *
+ * The result is never staged. An image linked to run in one slot cannot run from the other, and
+ * the loader rejects it on exactly that basis.
+ */
+#define SELFTEST_LEN 200000u
+#define SELFTEST_CHUNK 997u
+
+static void cmd_ota_selftest(void) {
+    if (rw_ota_write_active()) {
+        respond_err(RW_UERR_BUSY);
+        return;
+    }
+
+    const uint8_t *src = (const uint8_t *)(uintptr_t)RW_SLOT_XIP(rw_ota_running_slot());
+
+    rw_ota_header_t header;
+    memset(&header, 0, sizeof(header));
+    header.payload_len = SELFTEST_LEN;
+    if (mbedtls_sha256(src, SELFTEST_LEN, header.payload_sha256, 0) != 0) {
+        respond_err(RW_UERR_INTERNAL);
+        return;
+    }
+
+    absolute_time_t started = get_absolute_time();
+    rw_ota_status_t status  = rw_ota_write_begin(&header, rw_ota_spare_slot());
+    for (uint32_t off = 0; status == RW_OTA_OK && off < SELFTEST_LEN; off += SELFTEST_CHUNK) {
+        uint32_t n = SELFTEST_LEN - off;
+        if (n > SELFTEST_CHUNK) {
+            n = SELFTEST_CHUNK;
+        }
+        status = rw_ota_write_chunk(src + off, n);
+    }
+    if (status == RW_OTA_OK) {
+        status = rw_ota_write_end();
+    } else {
+        rw_ota_write_abort();
+    }
+    int32_t ms = (int32_t)(absolute_time_diff_us(started, get_absolute_time()) / 1000);
+
+    char buf[160];
+    snprintf(buf, sizeof(buf), "{\"bytes\":%u,\"slot\":%u,\"ms\":%ld,\"status\":\"%s\"}",
+             (unsigned)SELFTEST_LEN, (unsigned)rw_ota_spare_slot(), (long)ms,
+             rw_ota_status_str(status));
+    if (status != RW_OTA_OK) {
+        printf("ERR internal %s\n", buf);
+        return;
+    }
+    respond_ok_json(buf);
+}
+
 static void cmd_ota_stage(const rw_cmdline_t *cl) {
     char  *end = NULL;
     long   n   = strtol(cl->argv[1], &end, 10);
@@ -603,6 +664,11 @@ static void dispatch(const rw_cmdline_t *cl) {
         case RW_CMD_OTA_STAGE:
             if (!arity(cl, 1, 2)) { respond_err(RW_UERR_BAD_ARGS); return; }
             cmd_ota_stage(cl);
+            return;
+
+        case RW_CMD_OTA_SELFTEST:
+            if (!arity(cl, 0, 0)) { respond_err(RW_UERR_BAD_ARGS); return; }
+            cmd_ota_selftest();
             return;
 
         case RW_CMD_TEST_WAKE:

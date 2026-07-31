@@ -148,6 +148,7 @@ set(RW_DEVICE_SOURCES
     src/net/net.c
     src/net/scan.c
     src/ota/ota.c
+    src/ota/ota_write.c
     src/ota/ota_flash.c
     src/ota/signing_key.c
     src/proto/probe.c
