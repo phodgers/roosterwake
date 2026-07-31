@@ -39,3 +39,7 @@ desktop.ini
 # Screenshots from MCP-driven verification (never committed)
 tmp-screenshots/
 .playwright-mcp/
+
+# Signing keys never live in the repo. The public half is committed as
+# firmware/src/ota/signing_key.c; private keys belong in ~/.remotewake/.
+*.pem

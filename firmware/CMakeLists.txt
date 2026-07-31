@@ -95,6 +95,7 @@ endif()
 set(RW_PORTABLE_SOURCES
     src/config/config.c
     src/net/url.c
+    src/ota/image.c
     src/proto/auth.c
     src/proto/json.c
     src/provisioning/dhcp_msg.c
@@ -116,6 +117,7 @@ set(RW_DEVICE_SOURCES
     src/net/arplearn.c
     src/net/net.c
     src/net/scan.c
+    src/ota/signing_key.c
     src/proto/probe.c
     src/proto/proto.c
     src/provisioning/dhcpserver.c

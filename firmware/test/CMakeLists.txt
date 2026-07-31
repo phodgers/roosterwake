@@ -48,7 +48,34 @@ set(MBEDTLS_SOURCES
     ${MBEDTLS_DIR}/library/platform_util.c
     ${MBEDTLS_DIR}/library/sha1.c
     ${MBEDTLS_DIR}/library/sha256.c
+    # ota/image.c verifies an ECDSA P-256 signature.
+    ${MBEDTLS_DIR}/library/asn1parse.c
+    ${MBEDTLS_DIR}/library/asn1write.c
+    ${MBEDTLS_DIR}/library/bignum.c
+    ${MBEDTLS_DIR}/library/bignum_core.c
+    ${MBEDTLS_DIR}/library/ecdsa.c
+    ${MBEDTLS_DIR}/library/ecp.c
+    ${MBEDTLS_DIR}/library/ecp_curves.c
+    ${MBEDTLS_DIR}/library/md.c
 )
+
+# ── Signed-image fixtures ─────────────────────────────────────────────────────
+#
+# A throwaway key is generated here and used to sign a fixture with the real tools/sign_image.py,
+# so the tests fail if the writer and src/ota/image.c ever disagree about the format. The build
+# never needs the real signing key: only releases do.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(RW_FIXTURE_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
+execute_process(
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_LIST_DIR}/tools/make_fixture.py ${RW_FIXTURE_DIR}
+    RESULT_VARIABLE RW_FIXTURE_RC
+    OUTPUT_VARIABLE RW_FIXTURE_OUT
+    ERROR_VARIABLE RW_FIXTURE_ERR
+)
+if (NOT RW_FIXTURE_RC EQUAL 0)
+    message(FATAL_ERROR "could not build the signed-image fixtures (needs openssl on PATH):
+${RW_FIXTURE_ERR}")
+endif()
 
 # ── The firmware sources under test ───────────────────────────────────────────
 #
@@ -57,6 +84,7 @@ set(MBEDTLS_SOURCES
 set(RW_PORTABLE_SOURCES
     ${RW_SRC}/config/config.c
     ${RW_SRC}/net/url.c
+    ${RW_SRC}/ota/image.c
     ${RW_SRC}/proto/auth.c
     ${RW_SRC}/proto/json.c
     ${RW_SRC}/provisioning/dhcp_msg.c
@@ -77,18 +105,21 @@ set(TEST_SOURCES
     test_ws_frame.c
     test_ws_handshake.c
     test_auth.c
+    test_ota_image.c
     test_json.c
     test_url.c
     test_usbcfg.c
     test_provisioning.c
 )
 
-add_executable(rw_tests ${TEST_SOURCES} ${RW_PORTABLE_SOURCES} ${MBEDTLS_SOURCES})
+add_executable(rw_tests ${TEST_SOURCES} ${RW_PORTABLE_SOURCES} ${MBEDTLS_SOURCES}
+               ${RW_FIXTURE_DIR}/signing_key.c)
 
 target_include_directories(rw_tests PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${RW_SRC}
     ${CMAKE_CURRENT_LIST_DIR}/host
+    ${RW_FIXTURE_DIR}
     ${MBEDTLS_DIR}/include
     ${MBEDTLS_DIR}/library
 )

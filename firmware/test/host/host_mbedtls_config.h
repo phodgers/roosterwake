@@ -22,4 +22,14 @@
 #define MBEDTLS_SHA256_C /* HMAC in proto/auth.c */
 #define MBEDTLS_BASE64_C /* the accept value and the key */
 
+/* ota/image.c verifies an ECDSA P-256 signature over the image header. */
+#define MBEDTLS_BIGNUM_C
+#define MBEDTLS_ECP_C
+#define MBEDTLS_ECDSA_C
+#define MBEDTLS_ECP_DP_SECP256R1_ENABLED
+#define MBEDTLS_ASN1_PARSE_C
+#define MBEDTLS_ASN1_WRITE_C
+#define MBEDTLS_MD_C
+
+
 #endif /* RW_HOST_MBEDTLS_CONFIG_H */
