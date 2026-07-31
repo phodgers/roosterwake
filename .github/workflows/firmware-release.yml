@@ -122,13 +122,14 @@ jobs:
           curl -fsSL --retry 3 --retry-delay 5 -o "$tarball" \
             "https://github.com/raspberrypi/pico-sdk-tools/releases/download/${PICOTOOL_RELEASE}/${tarball}"
           echo "${PICOTOOL_SHA256}  ${tarball}" | sha256sum -c -
-          mkdir -p "${{ github.workspace }}/picotool"
-          tar -xf "$tarball" -C "${{ github.workspace }}/picotool" --strip-components=1
+          # The archive already has a top-level picotool/ holding the binary and the cmake config
+          # together, so it extracts into the workspace as it is.
+          tar -xf "$tarball" -C "${{ github.workspace }}"
           rm -f "$tarball"
           # The directory holding picotoolConfig.cmake; find_package(picotool) then skips the
           # source build entirely.
-          echo "picotool_DIR=${{ github.workspace }}/picotool/picotool" >> "$GITHUB_ENV"
-          "${{ github.workspace }}/picotool/picotool/picotool" version
+          echo "picotool_DIR=${{ github.workspace }}/picotool" >> "$GITHUB_ENV"
+          "${{ github.workspace }}/picotool/picotool" version
 
       - name: Check out the pico-sdk
         uses: actions/checkout@v4
