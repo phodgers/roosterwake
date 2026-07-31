@@ -99,6 +99,37 @@ jobs:
           sudo tar -xf "$tarball" -C /opt/arm-none-eabi --strip-components=1
           echo "/opt/arm-none-eabi/bin" >> "$GITHUB_PATH"
 
+      - name: Install picotool
+        # The official prebuilt, not the source build the SDK falls back to.
+        #
+        # `pico_init_picotool()` clones picotool at the SDK's own version tag and builds it. That
+        # tag is older than the tooling everything here was developed and proven against: plain
+        # 2.2.0 has no `--platform`, which the slot-linked builds need because picotool otherwise
+        # infers the chip from metadata it looks for at the start of flash and finds nothing there.
+        # A release built by a different picotool from the one that produced the images tested on
+        # hardware is not the same release.
+        #
+        # It is also the step firmware/README.md tells humans to take, and for a second reason: a
+        # from-source build with a very new host GCC produces a picotool that segfaults while
+        # disassembling the SDK's own boot_stage2.
+        env:
+          PICOTOOL_RELEASE: v2.2.0-4
+          PICOTOOL_BUILD: 2.2.0-a4
+          PICOTOOL_SHA256: 163e1b5fd66b8ab27c44a4c5104e0243fc06ea46e2ce0e6614f42d6f144a1afa
+        run: |
+          set -euo pipefail
+          tarball="picotool-${PICOTOOL_BUILD}-x86_64-lin.tar.gz"
+          curl -fsSL --retry 3 --retry-delay 5 -o "$tarball" \
+            "https://github.com/raspberrypi/pico-sdk-tools/releases/download/${PICOTOOL_RELEASE}/${tarball}"
+          echo "${PICOTOOL_SHA256}  ${tarball}" | sha256sum -c -
+          mkdir -p "${{ github.workspace }}/picotool"
+          tar -xf "$tarball" -C "${{ github.workspace }}/picotool" --strip-components=1
+          rm -f "$tarball"
+          # The directory holding picotoolConfig.cmake; find_package(picotool) then skips the
+          # source build entirely.
+          echo "picotool_DIR=${{ github.workspace }}/picotool/picotool" >> "$GITHUB_ENV"
+          "${{ github.workspace }}/picotool/picotool/picotool" version
+
       - name: Check out the pico-sdk
         uses: actions/checkout@v4
         with:

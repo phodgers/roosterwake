@@ -70,6 +70,37 @@ jobs:
           rm -f "$tarball"
           echo "/opt/arm-none-eabi/bin" >> "$GITHUB_PATH"
 
+      - name: Install picotool
+        # The official prebuilt, not the source build the SDK falls back to.
+        #
+        # `pico_init_picotool()` clones picotool at the SDK's own version tag and builds it. That
+        # tag is older than the tooling everything here was developed and proven against: plain
+        # 2.2.0 has no `--platform`, which the slot-linked builds need because picotool otherwise
+        # infers the chip from metadata it looks for at the start of flash and finds nothing there.
+        # A release built by a different picotool from the one that produced the images tested on
+        # hardware is not the same release.
+        #
+        # It is also the step firmware/README.md tells humans to take, and for a second reason: a
+        # from-source build with a very new host GCC produces a picotool that segfaults while
+        # disassembling the SDK's own boot_stage2.
+        env:
+          PICOTOOL_RELEASE: v2.2.0-4
+          PICOTOOL_BUILD: 2.2.0-a4
+          PICOTOOL_SHA256: 163e1b5fd66b8ab27c44a4c5104e0243fc06ea46e2ce0e6614f42d6f144a1afa
+        run: |
+          set -euo pipefail
+          tarball="picotool-${PICOTOOL_BUILD}-x86_64-lin.tar.gz"
+          curl -fsSL --retry 3 --retry-delay 5 -o "$tarball" \
+            "https://github.com/raspberrypi/pico-sdk-tools/releases/download/${PICOTOOL_RELEASE}/${tarball}"
+          echo "${PICOTOOL_SHA256}  ${tarball}" | sha256sum -c -
+          mkdir -p "${{ github.workspace }}/picotool"
+          tar -xf "$tarball" -C "${{ github.workspace }}/picotool" --strip-components=1
+          rm -f "$tarball"
+          # The directory holding picotoolConfig.cmake; find_package(picotool) then skips the
+          # source build entirely.
+          echo "picotool_DIR=${{ github.workspace }}/picotool/picotool" >> "$GITHUB_ENV"
+          "${{ github.workspace }}/picotool/picotool/picotool" version
+
       - name: Report the toolchain versions
         run: |
           arm-none-eabi-gcc --version
@@ -86,37 +117,55 @@ jobs:
           # not exist, which surfaces much later as a confusing link error.
           submodules: recursive
 
-      - name: Configure
-        run: >
-          cmake -S firmware -B build -G Ninja
-          -DCMAKE_BUILD_TYPE=Release
-          -DPICO_BOARD=${{ matrix.board }}
-
-      - name: Build
-        run: cmake --build build
-
-      - name: Report the image size
+      # Both slots. They are separate links at different addresses, and a change that fits one and
+      # not the other is a release that half exists — so both are built on every push rather than
+      # discovered at tag time.
+      - name: Configure and build both slots
         run: |
           set -euo pipefail
-          arm-none-eabi-size build/remotewake.elf
-          ls -l build/remotewake.uf2 build/remotewake.bin
-          # The config sectors sit in the top 8 KB of flash, so the budget follows the board.
-          case "${{ matrix.board }}" in
-            pico2_w) flash=$((4 * 1024 * 1024)) ;;
-            pico_w)  flash=$((2 * 1024 * 1024)) ;;
-          esac
-          budget=$((flash - 2 * 4096))
-          used=$(stat -c%s build/remotewake.bin)
-          echo "flash used: ${used} bytes of ${budget} available (${{ matrix.board }})"
-          if [ "$used" -gt "$budget" ]; then
-            echo "::error::image overlaps the configuration sectors"; exit 1
-          fi
+          for slot in a b; do
+            cmake -S firmware -B "build-${slot}" -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release -DPICO_BOARD=${{ matrix.board }} -DRW_SLOT="${slot}"
+            cmake --build "build-${slot}"
+          done
 
-      - name: Upload the UF2
+      # The loader is the one component that must always work: it is never replaced over the air,
+      # so a device that boots a broken one is recoverable only with a cable. Building it here
+      # means a change that breaks it fails on the push that made it.
+      - name: Build the loader
+        run: |
+          set -euo pipefail
+          cmake -S firmware/loader -B build-loader -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DPICO_BOARD=${{ matrix.board }}
+          cmake --build build-loader
+
+      - name: Report the image sizes
+        run: |
+          set -euo pipefail
+          arm-none-eabi-size build-a/remotewake.elf
+          ls -l build-a/remotewake.uf2 build-a/remotewake.bin build-loader/loader.uf2
+
+          # The linker already caps each region — the FLASH region is written per slot, so an
+          # image that outgrows its slot fails to link. This reports the headroom, which is the
+          # number that tells you how close the next feature is to not fitting.
+          slot=$((704 * 1024))
+          loader=$((64 * 1024))
+          for s in a b; do
+            used=$(stat -c%s "build-${s}/remotewake.bin")
+            echo "slot ${s}: ${used} bytes of ${slot} (${{ matrix.board }})"
+          done
+          used=$(stat -c%s build-loader/loader.bin)
+          echo "loader: ${used} bytes of ${loader}"
+
+      # Enough to install a device by hand from a branch build: the loader and the slot A image
+      # are the two files a fresh install writes. Slot B is not attached — nothing ever flashes it
+      # by cable, and offering it invites somebody to try.
+      - name: Upload the images
         uses: actions/upload-artifact@v4
         with:
           name: remotewake-uf2-${{ matrix.board }}
           path: |
-            build/remotewake.uf2
-            build/remotewake.elf
+            build-loader/loader.uf2
+            build-a/remotewake.uf2
+            build-a/remotewake.elf
           if-no-files-found: error
