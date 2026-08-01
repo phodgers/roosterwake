@@ -298,6 +298,13 @@ What this means practically:
 credentials. Use `FACTORY_RESET CONFIRM` over the USB command channel, or "Start this dongle from
 scratch" on the setup page, which sends it for you.
 
+That leaves the firmware in place, which is what you want for a device staying in service. To put
+a board back to the state a new one arrives in — no loader, no firmware, no configuration —
+build `firmware/tools/wipe` and drop its UF2 on the board in BOOTSEL. It erases every byte and
+returns to the bootloader. The `device_id` survives either way: it is derived from the board's
+unique flash ID rather than stored, so a wiped board reports the same identity and the account it
+belongs to still recognises it.
+
 > **The BOOTSEL hold does not work.** `check_factory_reset()` in main.c reads the button once at
 > start-up, and holding BOOTSEL through a power-on is exactly what makes the ROM bootloader take
 > over instead — so the firmware never runs to see it. The button is the only physical input the
