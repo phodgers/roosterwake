@@ -231,17 +231,33 @@ staged with `SET_EMAIL`, and turns itself off once the relay has acknowledged th
 
 ### `COMMIT`
 
-Validate everything staged, write it to flash, respond, then reboot after roughly one second.
+Validate everything staged, write it to flash, respond, and then either reboot or apply the
+change to the running device.
 
 ```
 > COMMIT
-< OK {"saved":true,"seq":7,"reboot_in_ms":1000}
+< OK {"saved":true,"seq":7,"reboot_in_ms":1000}   # Wi-Fi or flags changed: restarting
+> COMMIT
+< OK {"saved":true,"seq":8,"reboot_in_ms":0}      # applied in place, the port stays up
 ```
 
-Validation failures return `ERR` and change nothing. The response is sent *before* the reboot
-so the host sees the outcome rather than a disconnect. A host should expect the serial port to
-disappear shortly after, and should wait for re-enumeration rather than treating it as an
-error.
+**`reboot_in_ms` is the contract.** Non-zero means the serial port is about to disappear and the
+host should wait for re-enumeration rather than treating it as an error. Zero means nothing
+restarted: the port stays open, the Wi-Fi association is untouched, and the session may carry
+straight on to `STATUS`.
+
+A restart is needed only for what the running system cannot absorb — `ssid`, `psk`, `wifi_auth`
+and `flags`, because the radio is associated with the credentials it booted on and TLS is
+configured from the flags at startup. A change to the relay URL, the token, the owner email or
+the target list is applied by reopening the relay session, which also clears a session left
+`auth_failed` by a token the relay had refused.
+
+This is what lets a host prove the Wi-Fi before it has anything else to write: commit the network
+on its own and wait for `STATUS` to report `joined`, then commit the token and targets without
+dropping the association that was just proved.
+
+Validation failures return `ERR` and change nothing. The response is sent *before* any reboot so
+the host sees the outcome rather than a disconnect.
 
 If nothing was staged, `COMMIT` returns `ERR nothing_staged`.
 

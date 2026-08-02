@@ -473,12 +473,31 @@ static void cmd_test_wake(const rw_cmdline_t *cl) {
 
 /* ── COMMIT / FACTORY_RESET / REBOOT / BOOTSEL ───────────────────────────── */
 
+/*
+ * Whether a committed change can be absorbed by the running system.
+ *
+ * The radio is associated with the credentials it booted on and TLS is configured from `flags` at
+ * startup, so a change to either has to restart. Everything else — relay URL, token, owner email,
+ * the target list — is read from the live configuration at the point of use, so reopening the
+ * relay session is enough to pick it up.
+ *
+ * `device_id` is derived from the board and cannot be staged, but a mismatch would invalidate
+ * every proof the session computes, so it is treated as needing a restart rather than trusted.
+ */
+static bool commit_needs_restart(const rw_config_t *before, const rw_config_t *after) {
+    return strcmp(before->ssid, after->ssid) != 0 || strcmp(before->psk, after->psk) != 0 ||
+           before->wifi_auth != after->wifi_auth || before->flags != after->flags ||
+           strcmp(before->device_id, after->device_id) != 0;
+}
+
 static void cmd_commit(void) {
     rw_uerr_t err = rw_stage_validate(&s_stage);
     if (err != RW_UERR_NONE) {
         respond_err(err);
         return;
     }
+
+    const rw_config_t before = *s_live;
 
     rw_config_t to_save = s_stage.cfg;
     /* Same as the portal: a device with no token cannot authenticate to any relay. `ensure` is
@@ -501,6 +520,8 @@ static void cmd_commit(void) {
     s_stage.cfg  = to_save;
     s_stage.dirty = false;
 
+    const bool restart = commit_needs_restart(&before, &to_save);
+
     char    buf[128];
     rw_jw_t w;
     rw_jw_init(&w, buf, sizeof(buf));
@@ -511,8 +532,11 @@ static void cmd_commit(void) {
     rw_jw_key(&w, "seq");
     rw_jw_int(&w, (long)to_save.seq);
     rw_jw_raw(&w, ",");
+    /* Zero when nothing was applied that needs one. usbcfg.md §4: a host reads this to decide
+     * whether to wait for the port to disappear, and waiting for a reboot that is not coming is
+     * a setup flow that stalls on its last step. */
     rw_jw_key(&w, "reboot_in_ms");
-    rw_jw_int(&w, REBOOT_DELAY_MS);
+    rw_jw_int(&w, restart ? REBOOT_DELAY_MS : 0);
     rw_jw_raw(&w, "}");
     if (rw_jw_finish(&w) == 0) {
         respond_err(RW_UERR_INTERNAL);
@@ -520,8 +544,23 @@ static void cmd_commit(void) {
     }
     respond_ok_json(buf);
 
-    s_reboot_pending = true;
-    rw_sys_reboot(REBOOT_DELAY_MS);
+    if (restart) {
+        s_reboot_pending = true;
+        rw_sys_reboot(REBOOT_DELAY_MS);
+        return;
+    }
+
+    /*
+     * Reopen the session rather than leave it on the old credentials. The relay borrows the
+     * configuration by pointer, so the new URL, token and targets are already visible to it, but
+     * the live connection authenticated with what it had at the handshake.
+     *
+     * `rw_relay_stop` is what makes this work after a refusal: a token the relay rejected leaves
+     * the session STOPPED, which `rw_relay_start` alone will not clear.
+     */
+    rw_relay_stop();
+    rw_relay_start();
+    RW_LOG_INFO("usbcfg: seq %lu applied without a restart", (unsigned long)to_save.seq);
 }
 
 static void cmd_factory_reset(const rw_cmdline_t *cl) {
