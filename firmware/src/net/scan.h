@@ -31,11 +31,16 @@ typedef struct {
     uint8_t  auth_mode;
 } rw_scan_entry_t;
 
+/* The radio would not start a scan. Not a "try again in a moment": a scan already running is
+ * impossible here, and is recovered from rather than reported. */
+#define RW_SCAN_ERR_FAILED (-1)
+
 /*
  * Run a blocking scan, filling `out` with at most `max` entries sorted by signal strength.
  *
  * Blocks for up to RW_SCAN_TIMEOUT_MS while pumping the network stack and feeding the watchdog.
- * Returns the number of networks found, or -1 if a scan is already running.
+ * Returns the number of networks found, or RW_SCAN_ERR_FAILED. A scan that times out returns what
+ * it heard rather than failing.
  */
 int rw_scan_run(rw_scan_entry_t *out, int max);
 

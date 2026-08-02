@@ -32,6 +32,7 @@ static const uerr_entry_t k_errors[] = {
     {RW_UERR_NOT_JOINED,     "not_joined",     "wi-fi is not connected"},
     {RW_UERR_BUSY,           "busy",           "a conflicting operation is already running"},
     {RW_UERR_FLASH_ERROR,    "flash_error",    "flash write failed; configuration unchanged"},
+    {RW_UERR_SCAN_FAILED,    "scan_failed",    "the radio would not start a scan; try again"},
     {RW_UERR_INTERNAL,       "internal",       "internal error"},
 };
 

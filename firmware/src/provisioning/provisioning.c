@@ -323,7 +323,7 @@ size_t rw_portal_api_scan(char *buf, size_t cap) {
     rw_scan_entry_t nets[RW_SCAN_MAX];
     int             count = rw_scan_run(nets, RW_SCAN_MAX);
     if (count < 0) {
-        return json_err(buf, cap, "busy");
+        return json_err(buf, cap, "scan_failed");
     }
 
     rw_jw_t w;

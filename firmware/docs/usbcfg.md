@@ -122,6 +122,13 @@ This is the device's view, not the host computer's, and the difference matters c
 laptop on 5 GHz across the house sees a completely different world from a dongle behind the
 router. Any setup UI should show *these* results.
 
+Scanning works while the device is associated, and a scan that reaches the 10 second limit
+returns what it heard rather than failing. `SCAN` never answers `busy`: the command is
+synchronous, so no second scan can be in flight, and a driver left believing one is — which the
+CYW43 does whenever a scan is started and never reports completion — is recovered from here
+rather than reported. `ERR scan_failed` means the radio refused to start a scan at all, and is
+worth retrying.
+
 ### `SET_WIFI <ssid> [psk]`
 
 Stage Wi-Fi credentials. Omit `psk` for an open network.
@@ -426,7 +433,8 @@ device through some other channel, or because it maintains the relay's device li
 | `nothing_staged` | `COMMIT` with no pending changes |
 | `needs_confirm` | `FACTORY_RESET` without the `CONFIRM` argument |
 | `not_joined` | Command requires Wi-Fi, which is not connected |
-| `busy` | A conflicting operation (a scan, a join) is already running |
+| `busy` | A conflicting operation is already running. Not used by `SCAN`; see §4 |
+| `scan_failed` | The radio would not start a scan. Retryable |
 | `flash_error` | Flash write or verification failed. Configuration is unchanged |
 | `internal` | Anything else |
 
