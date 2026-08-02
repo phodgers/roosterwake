@@ -79,6 +79,21 @@
  */
 #define RW_CFG_FLAG_ENROLLED     (1u << 3)
 
+/*
+ * Bits the running system owns rather than the host.
+ *
+ * A staging buffer is seeded from the configuration at boot and is not told about anything the
+ * device decides afterwards, so it holds a stale copy of these for the life of the session. A
+ * commit must carry the live values through instead of writing its own back.
+ */
+#define RW_CFG_FLAGS_RUNTIME_OWNED (RW_CFG_FLAG_ENROLLED)
+
+/*
+ * Bits that are read once during startup, so changing one takes a restart to have any effect.
+ * The rest are read from the live configuration each time they are used.
+ */
+#define RW_CFG_FLAGS_BOOT_TIME (RW_CFG_FLAG_TLS_INSECURE)
+
 /* Sequence number a generated (mkconfig / dashboard) image carries; see config-format.md §5. */
 #define RW_CFG_GENERATED_SEQ 0x40000000u
 
@@ -116,6 +131,27 @@ uint32_t rw_crc32(const void *data, size_t len);
  * undebuggable in the field (config-format.md §3).
  */
 bool rw_seq_newer(uint32_t a, uint32_t b);
+
+/*
+ * Whether moving from `before` to `after` needs the device to restart.
+ *
+ * The radio is associated with the credentials it booted on and TLS is configured from the
+ * boot-time flags at startup, so a change to either only takes effect after a restart. Everything
+ * else — relay URL, token, owner email, the target list — is read from the live configuration at
+ * the point of use, so reopening the relay session is enough to pick it up.
+ *
+ * `device_id` is derived from the board and cannot be staged, but a mismatch would invalidate
+ * every proof a session computes, so it counts rather than being trusted.
+ */
+bool rw_config_needs_restart(const rw_config_t *before, const rw_config_t *after);
+
+/*
+ * Copy the runtime-owned flag bits from `live` into `next`, which is about to be saved.
+ *
+ * Without this, a configuration staged before the relay enrolled the device would clear
+ * `RW_CFG_FLAG_ENROLLED` on the way back to flash.
+ */
+void rw_config_carry_runtime_flags(rw_config_t *next, const rw_config_t *live);
 
 /* Zero a config to the unprovisioned state: no Wi-Fi, no targets, auth auto, seq 0. */
 void rw_config_init(rw_config_t *cfg);

@@ -376,6 +376,68 @@ static void test_mac_helpers(void) {
     RW_CHECK(!rw_mac_parse(NULL, mac));
 }
 
+/*
+ * What a COMMIT does to the running device.
+ *
+ * The enrolled bit is the case that matters: the relay sets it on the live configuration after
+ * the staging buffer was seeded at boot, which setup does between its two commits every time. If
+ * that difference counts as a restart, a device drops a Wi-Fi association it has just proved; if
+ * the staged copy is written back unaltered, the bit is lost and the device re-enrols needlessly.
+ */
+static void test_restart_decision(void) {
+    rw_test_begin("commit restart decision");
+
+    rw_config_t before;
+    rw_config_init(&before);
+    snprintf(before.ssid, sizeof(before.ssid), "HomeNet");
+    snprintf(before.psk, sizeof(before.psk), "correct horse");
+    snprintf(before.device_id, sizeof(before.device_id), "e661640843244626");
+
+    rw_config_t after = before;
+    RW_CHECK(!rw_config_needs_restart(&before, &after));
+
+    /* The things setup writes at step 4. None of them touches the radio. */
+    snprintf(after.relay_url, sizeof(after.relay_url), "wss://relay.remotewake.com/ws");
+    snprintf(after.token, sizeof(after.token), "%064d", 7);
+    after.target_count = 1;
+    RW_CHECK(!rw_config_needs_restart(&before, &after));
+
+    /* Enrolled after boot, so the staged copy is behind the live one. Not a restart. */
+    after       = before;
+    before.flags |= RW_CFG_FLAG_ENROLLED;
+    RW_CHECK(!rw_config_needs_restart(&before, &after));
+
+    /* ...and the bit survives the commit rather than being written away. */
+    rw_config_carry_runtime_flags(&after, &before);
+    RW_CHECK((after.flags & RW_CFG_FLAG_ENROLLED) != 0);
+
+    /* Everything the running system cannot absorb. */
+    after = before;
+    snprintf(after.ssid, sizeof(after.ssid), "OtherNet");
+    RW_CHECK(rw_config_needs_restart(&before, &after));
+
+    after = before;
+    snprintf(after.psk, sizeof(after.psk), "different");
+    RW_CHECK(rw_config_needs_restart(&before, &after));
+
+    after           = before;
+    after.wifi_auth = RW_WIFI_AUTH_WPA2;
+    RW_CHECK(rw_config_needs_restart(&before, &after));
+
+    after = before;
+    after.flags ^= RW_CFG_FLAG_TLS_INSECURE;
+    RW_CHECK(rw_config_needs_restart(&before, &after));
+
+    after = before;
+    snprintf(after.device_id, sizeof(after.device_id), "0000000000000000");
+    RW_CHECK(rw_config_needs_restart(&before, &after));
+
+    /* A blank device being given a network for the first time. */
+    rw_config_t blank;
+    rw_config_init(&blank);
+    RW_CHECK(rw_config_needs_restart(&blank, &before));
+}
+
 void test_config(void) {
     char path[1024];
     snprintf(path, sizeof(path), "%s/vectors/config-v1.json", rw_test_data_dir);
@@ -396,4 +458,5 @@ void test_config(void) {
     test_slot_selection();
     test_encode_limits();
     test_mac_helpers();
+    test_restart_decision();
 }

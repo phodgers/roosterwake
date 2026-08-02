@@ -473,23 +473,6 @@ static void cmd_test_wake(const rw_cmdline_t *cl) {
 
 /* ── COMMIT / FACTORY_RESET / REBOOT / BOOTSEL ───────────────────────────── */
 
-/*
- * Whether a committed change can be absorbed by the running system.
- *
- * The radio is associated with the credentials it booted on and TLS is configured from `flags` at
- * startup, so a change to either has to restart. Everything else — relay URL, token, owner email,
- * the target list — is read from the live configuration at the point of use, so reopening the
- * relay session is enough to pick it up.
- *
- * `device_id` is derived from the board and cannot be staged, but a mismatch would invalidate
- * every proof the session computes, so it is treated as needing a restart rather than trusted.
- */
-static bool commit_needs_restart(const rw_config_t *before, const rw_config_t *after) {
-    return strcmp(before->ssid, after->ssid) != 0 || strcmp(before->psk, after->psk) != 0 ||
-           before->wifi_auth != after->wifi_auth || before->flags != after->flags ||
-           strcmp(before->device_id, after->device_id) != 0;
-}
-
 static void cmd_commit(void) {
     rw_uerr_t err = rw_stage_validate(&s_stage);
     if (err != RW_UERR_NONE) {
@@ -507,6 +490,8 @@ static void cmd_commit(void) {
      * its relay's records or use tools/mkconfig, which prints it. */
     rw_config_ensure_token(&to_save);
 
+    rw_config_carry_runtime_flags(&to_save, &before);
+
     rw_flash_status_t st = rw_config_flash_save(&to_save);
     if (st != RW_FLASH_OK) {
         /* Nothing changed: rw_config_flash_save leaves the live slot alone on failure, so the
@@ -520,7 +505,7 @@ static void cmd_commit(void) {
     s_stage.cfg  = to_save;
     s_stage.dirty = false;
 
-    const bool restart = commit_needs_restart(&before, &to_save);
+    const bool restart = rw_config_needs_restart(&before, &to_save);
 
     char    buf[128];
     rw_jw_t w;

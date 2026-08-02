@@ -58,6 +58,18 @@ bool rw_seq_newer(uint32_t a, uint32_t b) {
     return (int32_t)(a - b) > 0;
 }
 
+bool rw_config_needs_restart(const rw_config_t *before, const rw_config_t *after) {
+    return strcmp(before->ssid, after->ssid) != 0 || strcmp(before->psk, after->psk) != 0 ||
+           before->wifi_auth != after->wifi_auth ||
+           ((before->flags ^ after->flags) & RW_CFG_FLAGS_BOOT_TIME) != 0 ||
+           strcmp(before->device_id, after->device_id) != 0;
+}
+
+void rw_config_carry_runtime_flags(rw_config_t *next, const rw_config_t *live) {
+    next->flags =
+        (next->flags & ~RW_CFG_FLAGS_RUNTIME_OWNED) | (live->flags & RW_CFG_FLAGS_RUNTIME_OWNED);
+}
+
 void rw_config_init(rw_config_t *cfg) {
     memset(cfg, 0, sizeof(*cfg));
     cfg->version   = RW_CFG_VERSION;
