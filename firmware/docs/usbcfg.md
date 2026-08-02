@@ -144,7 +144,7 @@ Who else is on the network the device has joined. Takes up to 9 seconds.
 ```
 > LAN_SCAN
 < OK {"gateway":"192.168.4.1","hosts":[{"ip":"192.168.4.1","mac":"C4:F1:74:4D:D9:F2"},
-                                       {"ip":"192.168.4.29","mac":"88:AE:DD:83:DB:62"}]}
+                                       {"ip":"192.168.4.29","mac":"88:AE:DD:83:DB:62","name":"PHIL"}]}
 ```
 
 An ARP request to every address in the device's own subnet; whoever answers is listed, lowest
@@ -154,10 +154,16 @@ response would not fit one line, so extras are dropped rather than the JSON trun
 `gateway` is the device's default route, so a caller can label the one host in the list that is
 certainly not a PC.
 
-**This does not say which host is yours.** It returns addresses, because addresses are what is on
-the wire. A friendly name lives only on the machine itself, as does whether wake-on-LAN is armed
-on that adapter at all — so this narrows "work out your MAC address" to "pick from this list", and
-`getmac` remains the answer when the list is ambiguous.
+`name` is present only for hosts that answered a NetBIOS node status query, which Windows and
+Samba do and nothing else does. That is a good filter rather than a limitation: the machines that
+answer are the machines wake-on-LAN is for, and a phone staying silent is a phone correctly not
+being offered as something to wake. The name is the first unique entry with suffix `0x00`, trimmed
+of its padding, and is rejected outright unless every remaining byte is printable ASCII — it comes
+from an unauthenticated device on the same network and ends up rendered in a browser.
+
+**A name is what the host calls itself, not proof of anything.** Whether wake-on-LAN is armed on
+that adapter lives only on the machine, so `getmac` remains the answer when the list is ambiguous
+or when a wake does not work.
 
 `ERR not_joined` when the device has no address of its own, since then there is no subnet to
 sweep. The setup hotspot is not a network to scan: during portal setup the device is running its

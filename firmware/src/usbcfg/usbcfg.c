@@ -150,6 +150,14 @@ static void cmd_lan_scan(void) {
     rw_jw_key(&w, "hosts");
     rw_jw_raw(&w, "[");
     for (int i = 0; i < count; i++) {
+        /*
+         * Stop while the closing brackets still fit rather than let the writer overflow and turn
+         * a good answer into an error. A named host is about seventy bytes and the response is
+         * capped, so a crowded network is reported as far as it fits.
+         */
+        if (w.cap - w.len < 96) {
+            break;
+        }
         if (i > 0) {
             rw_jw_raw(&w, ",");
         }
@@ -161,6 +169,11 @@ static void cmd_lan_scan(void) {
         rw_jw_raw(&w, ",");
         rw_jw_key(&w, "mac");
         rw_jw_str(&w, mac);
+        if (hosts[i].name[0] != '\0') {
+            rw_jw_raw(&w, ",");
+            rw_jw_key(&w, "name");
+            rw_jw_str(&w, hosts[i].name);
+        }
         rw_jw_raw(&w, "}");
     }
     rw_jw_raw(&w, "]}");

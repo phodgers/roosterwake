@@ -9,8 +9,10 @@
 
 #include "lwip/etharp.h"
 #include "lwip/netif.h"
+#include "lwip/udp.h"
 #include "pico/time.h"
 
+#include "net/nbns.h"
 #include "rw_log.h"
 #include "sys/sys.h"
 
@@ -60,6 +62,7 @@ static void insert(collector_t *c, const ip4_addr_t *ip, const uint8_t mac[6]) {
     }
     c->out[at].ip = *ip;
     memcpy(c->out[at].mac, mac, 6);
+    c->out[at].name[0] = '\0';
     c->count++;
 }
 
@@ -78,6 +81,93 @@ static void drain(collector_t *c) {
         }
         insert(c, ip, mac->addr);
     }
+}
+
+/* ── Names ───────────────────────────────────────────────────────────────────
+ *
+ * The sweep produces addresses, which nobody can pick their own machine out of. A node status
+ * query to each host that answered turns most of the list into names, because the hosts that
+ * answer one are Windows and Samba — which is what anybody setting up wake-on-LAN is pointing at.
+ */
+
+/* Long enough for a reply to cross a home network and back, short enough that a list of silent
+ * devices does not double the time the sweep takes. */
+#define NAME_WAIT_MS 1200
+#define NBNS_PORT 137
+
+static void on_nbns(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *addr,
+                    u16_t port) {
+    (void)pcb;
+    (void)port;
+    collector_t *c = (collector_t *)arg;
+    if (p == NULL) {
+        return;
+    }
+
+    /* Flattened before parsing: a datagram can arrive as a chain, and the parser reads it as one
+     * buffer. Anything longer than this is not a node status response worth reading. */
+    uint8_t buf[320];
+    const uint16_t n = pbuf_copy_partial(p, buf, sizeof(buf), 0);
+    pbuf_free(p);
+
+    char name[RW_NBNS_NAME_LEN];
+    if (c == NULL || addr == NULL || !rw_nbns_parse_name(buf, n, name, sizeof(name))) {
+        return;
+    }
+
+    /* Matched by address, not by arrival order: replies come back in whatever order the network
+     * delivers them. */
+    for (int i = 0; i < c->count; i++) {
+        if (ip4_addr_get_u32(&c->out[i].ip) == ip_addr_get_ip4_u32(addr)) {
+            memcpy(c->out[i].name, name, sizeof(name));
+            return;
+        }
+    }
+}
+
+static void resolve_names(collector_t *c) {
+    if (c->count == 0) {
+        return;
+    }
+    struct udp_pcb *pcb = udp_new();
+    if (pcb == NULL) {
+        return;
+    }
+    /* Any local port: the reply comes back to whatever this was bound to. */
+    if (udp_bind(pcb, IP_ADDR_ANY, 0) != ERR_OK) {
+        udp_remove(pcb);
+        return;
+    }
+    udp_recv(pcb, on_nbns, c);
+
+    uint8_t      query[64];
+    const size_t qlen = rw_nbns_build_query(query, sizeof(query), 0x5257);
+    if (qlen == 0) {
+        udp_remove(pcb);
+        return;
+    }
+
+    for (int i = 0; i < c->count; i++) {
+        struct pbuf *p = pbuf_alloc(PBUF_TRANSPORT, (u16_t)qlen, PBUF_RAM);
+        if (p == NULL) {
+            continue;
+        }
+        memcpy(p->payload, query, qlen);
+        ip_addr_t dst;
+        ip_addr_copy_from_ip4(dst, c->out[i].ip);
+        udp_sendto(pcb, p, &dst, NBNS_PORT);
+        pbuf_free(p);
+        rw_sys_pump_ms(5);
+    }
+
+    const absolute_time_t until = make_timeout_time_ms(NAME_WAIT_MS);
+    while (!time_reached(until)) {
+        rw_sys_pump_ms(50);
+    }
+
+    /* Removed before returning: the callback holds a pointer to a collector that lives on the
+     * caller's stack, and a late datagram after this returns would write through it. */
+    udp_remove(pcb);
 }
 
 int rw_lan_scan(rw_lan_host_t *out, int max) {
@@ -128,6 +218,8 @@ int rw_lan_scan(rw_lan_host_t *out, int max) {
         rw_sys_pump_ms(50);
         drain(&c);
     }
+
+    resolve_names(&c);
 
     RW_LOG_INFO("lanscan: probed %lu address(es), %d answered", (unsigned long)probes, c.count);
     return c.count;

@@ -72,6 +72,7 @@ int main(int argc, char **argv) {
         {"provisioning", test_provisioning},
         {"ota_image", test_ota_image},
         {"ota_state", test_ota_state},
+        {"nbns", test_nbns},
     };
 
     for (size_t i = 0; i < sizeof(suites) / sizeof(suites[0]); i++) {

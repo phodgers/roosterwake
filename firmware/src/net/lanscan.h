@@ -21,6 +21,8 @@
 
 #include "lwip/ip_addr.h"
 
+#include "net/nbns.h"
+
 /*
  * Enough to cover a home network, few enough that the JSON fits one usbcfg response alongside
  * everything else the channel emits. Extras are dropped rather than the response truncated.
@@ -41,6 +43,9 @@
 typedef struct {
     ip4_addr_t ip;
     uint8_t    mac[6];
+    /* The host's own name, empty when it did not answer a node status query. Windows and Samba
+     * answer; everything else stays silent, which is most of what is not a PC. */
+    char       name[RW_NBNS_NAME_LEN];
 } rw_lan_host_t;
 
 /*
