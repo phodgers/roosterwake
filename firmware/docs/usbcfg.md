@@ -122,12 +122,20 @@ This is the device's view, not the host computer's, and the difference matters c
 laptop on 5 GHz across the house sees a completely different world from a dongle behind the
 router. Any setup UI should show *these* results.
 
-Scanning works while the device is associated, and a scan that reaches the 10 second limit
-returns what it heard rather than failing. `SCAN` never answers `busy`: the command is
-synchronous, so no second scan can be in flight, and a driver left believing one is — which the
-CYW43 does whenever a scan is started and never reports completion — is recovered from here
-rather than reported. `ERR scan_failed` means the radio refused to start a scan at all, and is
-worth retrying.
+Scanning works while the device is associated. It does **not** work while the radio is joining:
+the scan cannot complete until the join settles, so it runs to the 10 second limit and hears
+nothing. That answers `ERR scan_incomplete` rather than an empty list, because an empty list says
+the networks are not there and the caller would pass that on. Wait and ask again — a scan on an
+associated device takes well under a second.
+
+A scan that reaches the limit having heard something returns that rather than failing.
+
+`SCAN` never answers `busy`. The command is synchronous, so no second scan can be in flight, and
+a driver left believing one is — which the CYW43 does whenever a scan is started and never
+reports completion — is recovered from here rather than reported. Before that recovery existed, a
+single scan issued during a join left the device unable to scan again until it was rebooted.
+
+`ERR scan_failed` means the radio refused to start a scan at all. Also worth retrying.
 
 ### `SET_WIFI <ssid> [psk]`
 
@@ -435,6 +443,7 @@ device through some other channel, or because it maintains the relay's device li
 | `not_joined` | Command requires Wi-Fi, which is not connected |
 | `busy` | A conflicting operation is already running. Not used by `SCAN`; see §4 |
 | `scan_failed` | The radio would not start a scan. Retryable |
+| `scan_incomplete` | The scan ran out of time having heard nothing, usually because the radio was joining. Retryable |
 | `flash_error` | Flash write or verification failed. Configuration is unchanged |
 | `internal` | Anything else |
 

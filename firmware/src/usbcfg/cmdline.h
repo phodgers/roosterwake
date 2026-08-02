@@ -50,6 +50,7 @@ typedef enum {
     RW_UERR_BUSY,
     RW_UERR_FLASH_ERROR,
     RW_UERR_SCAN_FAILED,
+    RW_UERR_SCAN_INCOMPLETE,
     RW_UERR_INTERNAL,
 } rw_uerr_t;
 

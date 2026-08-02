@@ -133,10 +133,20 @@ int rw_scan_run(rw_scan_entry_t *out, int max) {
         rw_sys_pump_ms(50);
     }
 
-    /* Timed out with the scan still running. Whatever was found is still worth returning, but the
-     * flag has to be cleared or this is the last scan the device will ever do. */
+    /*
+     * Timed out with the scan still running, which is what a scan issued while the radio is
+     * joining does — it cannot finish until the join settles. The flag has to be cleared or this
+     * is the last scan the device will ever do.
+     *
+     * Anything heard before the deadline is still worth returning. Hearing nothing is not the same
+     * as there being nothing, though, and reporting an empty list would have the caller tell
+     * somebody their networks are out of range when the radio was simply busy.
+     */
     if (cyw43_wifi_scan_active(&cyw43_state)) {
         force_scan_finished();
+        if (s_count == 0) {
+            return RW_SCAN_ERR_INCOMPLETE;
+        }
     }
 
     /* Insertion sort, strongest first. Twenty entries at most, and it keeps equal-strength

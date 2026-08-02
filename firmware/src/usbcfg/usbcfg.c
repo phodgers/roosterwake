@@ -79,8 +79,11 @@ static void cmd_scan(void) {
     int             count = rw_scan_run(nets, RW_SCAN_MAX);
     if (count < 0) {
         /* Not `busy`: nothing is competing for the radio, and saying so sent people looking for a
-         * conflicting operation that was never there. */
-        respond_err(RW_UERR_SCAN_FAILED);
+         * conflicting operation that was never there. Both codes are worth retrying, and
+         * `scan_incomplete` says so specifically enough that a caller can retry rather than
+         * report the network missing. */
+        respond_err(count == RW_SCAN_ERR_INCOMPLETE ? RW_UERR_SCAN_INCOMPLETE
+                                                    : RW_UERR_SCAN_FAILED);
         return;
     }
 
