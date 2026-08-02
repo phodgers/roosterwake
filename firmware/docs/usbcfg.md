@@ -137,6 +137,32 @@ single scan issued during a join left the device unable to scan again until it w
 
 `ERR scan_failed` means the radio refused to start a scan at all. Also worth retrying.
 
+### `LAN_SCAN`
+
+Who else is on the network the device has joined. Takes up to 9 seconds.
+
+```
+> LAN_SCAN
+< OK {"gateway":"192.168.4.1","hosts":[{"ip":"192.168.4.1","mac":"C4:F1:74:4D:D9:F2"},
+                                       {"ip":"192.168.4.29","mac":"88:AE:DD:83:DB:62"}]}
+```
+
+An ARP request to every address in the device's own subnet; whoever answers is listed, lowest
+address first. Up to 1024 addresses are probed and at most 24 hosts returned — beyond that the
+response would not fit one line, so extras are dropped rather than the JSON truncated.
+
+`gateway` is the device's default route, so a caller can label the one host in the list that is
+certainly not a PC.
+
+**This does not say which host is yours.** It returns addresses, because addresses are what is on
+the wire. A friendly name lives only on the machine itself, as does whether wake-on-LAN is armed
+on that adapter at all — so this narrows "work out your MAC address" to "pick from this list", and
+`getmac` remains the answer when the list is ambiguous.
+
+`ERR not_joined` when the device has no address of its own, since then there is no subnet to
+sweep. The setup hotspot is not a network to scan: during portal setup the device is running its
+own access point and is not on the user's LAN at all.
+
 ### `SET_WIFI <ssid> [psk]`
 
 Stage Wi-Fi credentials. Omit `psk` for an open network.

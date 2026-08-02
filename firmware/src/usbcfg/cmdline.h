@@ -68,6 +68,7 @@ typedef enum {
     RW_CMD_UNKNOWN,
     RW_CMD_INFO,
     RW_CMD_SCAN,
+    RW_CMD_LAN_SCAN,
     RW_CMD_SET_WIFI,
     RW_CMD_SET_RELAY,
     RW_CMD_ADD_TARGET,

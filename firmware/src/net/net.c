@@ -372,6 +372,14 @@ void rw_net_netmask_str(char *out, size_t len) {
     snprintf(out, len, "%s", ip4addr_ntoa(netif_ip4_netmask(netif_default)));
 }
 
+void rw_net_gateway_str(char *out, size_t len) {
+    if (netif_default == NULL) {
+        snprintf(out, len, "0.0.0.0");
+        return;
+    }
+    snprintf(out, len, "%s", ip4addr_ntoa(netif_ip4_gw(netif_default)));
+}
+
 void rw_net_mac_str(char *out, size_t len) {
     uint8_t mac[6] = {0};
     if (cyw43_wifi_get_mac(&cyw43_state, CYW43_ITF_STA, mac) != 0) {

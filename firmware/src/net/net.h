@@ -52,6 +52,10 @@ int32_t rw_net_rssi(void);
 void rw_net_ip_str(char *out, size_t len);
 void rw_net_netmask_str(char *out, size_t len);
 
+/* The default gateway, so a LAN sweep can name the one host in its list that is certainly not a
+ * PC. "0.0.0.0" when there is no address. */
+void rw_net_gateway_str(char *out, size_t len);
+
 /* The dongle's own station MAC, canonical form (usbcfg INFO). `out` needs 18 bytes. */
 void rw_net_mac_str(char *out, size_t len);
 

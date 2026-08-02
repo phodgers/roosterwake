@@ -163,6 +163,7 @@ set(RW_DEVICE_SOURCES
     src/diag/radio_trace.c
     src/led/led.c
     src/net/arplearn.c
+    src/net/lanscan.c
     src/net/net.c
     src/net/scan.c
     src/ota/ota.c

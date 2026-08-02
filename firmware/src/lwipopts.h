@@ -45,6 +45,15 @@
 /* ── Protocols ─────────────────────────────────────────────────────────────── */
 
 #define LWIP_ARP                    1
+/*
+ * Bigger than lwIP's default of 10, for LAN_SCAN.
+ *
+ * A sweep collects hosts by draining this table as replies arrive, and every reply past the end
+ * displaces the oldest entry. At the default, a batch of eight probes answered at once could push
+ * out entries from the batch before they were read. Thirty-two costs a few hundred bytes and makes
+ * the drain interval a comfort rather than a race.
+ */
+#define ARP_TABLE_SIZE              32
 #define LWIP_ETHERNET               1
 #define LWIP_ICMP                   1
 #define LWIP_RAW                    1

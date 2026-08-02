@@ -67,6 +67,7 @@ typedef struct {
 static const cmd_entry_t k_commands[] = {
     {RW_CMD_INFO,          "INFO"},
     {RW_CMD_SCAN,          "SCAN"},
+    {RW_CMD_LAN_SCAN,      "LAN_SCAN"},
     {RW_CMD_SET_WIFI,      "SET_WIFI"},
     {RW_CMD_SET_RELAY,     "SET_RELAY"},
     {RW_CMD_ADD_TARGET,    "ADD_TARGET"},

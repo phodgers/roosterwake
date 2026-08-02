@@ -22,6 +22,7 @@
 #include "ota/layout.h"
 #include "ota/ota.h"
 #include "ota/ota_write.h"
+#include "net/lanscan.h"
 #include "net/scan.h"
 #include "proto/json.h"
 #include "proto/proto.h"
@@ -109,6 +110,57 @@ static void cmd_scan(void) {
         rw_jw_raw(&w, ",");
         rw_jw_key(&w, "channel");
         rw_jw_int(&w, nets[i].channel);
+        rw_jw_raw(&w, "}");
+    }
+    rw_jw_raw(&w, "]}");
+
+    if (rw_jw_finish(&w) == 0) {
+        respond_err(RW_UERR_INTERNAL);
+        return;
+    }
+    respond_ok_json(buf);
+}
+
+/* ── LAN_SCAN ────────────────────────────────────────────────────────────── */
+
+static void cmd_lan_scan(void) {
+    rw_lan_host_t hosts[RW_LAN_SCAN_MAX];
+    int           count = rw_lan_scan(hosts, RW_LAN_SCAN_MAX);
+    if (count < 0) {
+        /* No address of our own means no subnet to sweep, which is the same condition every other
+         * network command reports as not_joined. */
+        respond_err(RW_UERR_NOT_JOINED);
+        return;
+    }
+
+    char    buf[RESP_MAX];
+    rw_jw_t w;
+    rw_jw_init(&w, buf, sizeof(buf));
+    rw_jw_raw(&w, "{");
+    /*
+     * The gateway, so a caller can label the one row in the list it can be certain about. Nothing
+     * here identifies a PC — that needs a name, and a name is not on the wire — but ruling out the
+     * router is one fewer address to think about.
+     */
+    char gateway[16];
+    rw_net_gateway_str(gateway, sizeof(gateway));
+    rw_jw_key(&w, "gateway");
+    rw_jw_str(&w, gateway);
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "hosts");
+    rw_jw_raw(&w, "[");
+    for (int i = 0; i < count; i++) {
+        if (i > 0) {
+            rw_jw_raw(&w, ",");
+        }
+        char mac[18];
+        rw_mac_format(hosts[i].mac, mac);
+        rw_jw_raw(&w, "{");
+        rw_jw_key(&w, "ip");
+        rw_jw_str(&w, ip4addr_ntoa(&hosts[i].ip));
+        rw_jw_raw(&w, ",");
+        rw_jw_key(&w, "mac");
+        rw_jw_str(&w, mac);
         rw_jw_raw(&w, "}");
     }
     rw_jw_raw(&w, "]}");
@@ -628,6 +680,11 @@ static void dispatch(const rw_cmdline_t *cl) {
         case RW_CMD_SCAN:
             if (!arity(cl, 0, 0)) { respond_err(RW_UERR_BAD_ARGS); return; }
             cmd_scan();
+            return;
+
+        case RW_CMD_LAN_SCAN:
+            if (!arity(cl, 0, 0)) { respond_err(RW_UERR_BAD_ARGS); return; }
+            cmd_lan_scan();
             return;
 
         case RW_CMD_SET_WIFI: {
