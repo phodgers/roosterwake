@@ -90,7 +90,7 @@ Identity and state. Safe to call at any time; the natural first command.
 ```
 > INFO
 < OK {"proto":1,"fw":"1.0.0","board":"pico2_w","device_id":"a1b2c3d4e5f60718",
-     "mac":"28:CD:C1:0A:1B:2C","configured":true,"uptime_s":142,"reset_reason":"power_on"}
+     "mac":"00:00:5E:00:53:01","configured":true,"uptime_s":142,"reset_reason":"power_on"}
 ```
 
 `configured` reports whether a valid config record exists. `mac` is the dongle's own Wi-Fi
@@ -143,8 +143,9 @@ Who else is on the network the device has joined. Takes up to 9 seconds.
 
 ```
 > LAN_SCAN
-< OK {"gateway":"192.168.4.1","hosts":[{"ip":"192.168.4.1","mac":"C4:F1:74:4D:D9:F2"},
-                                       {"ip":"192.168.4.29","mac":"88:AE:DD:83:DB:62","name":"PHIL"}]}
+< OK {"gateway":"192.168.1.1","hosts":[{"ip":"192.168.1.1","mac":"00:00:5E:00:53:10"},
+                                       {"ip":"192.168.1.24","mac":"00:00:5E:00:53:11","name":"MARIO"},
+                                       {"ip":"192.168.1.37","mac":"00:00:5E:00:53:12","name":"LUIGI"}]}
 ```
 
 An ARP request to every address in the device's own subnet; whoever answers is listed, lowest
