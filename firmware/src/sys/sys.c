@@ -134,9 +134,32 @@ void rw_sys_reboot(uint32_t delay_ms) {
  * the driver. For the duration, the flash cannot be addressed — so this function must execute
  * from RAM and must not be interrupted by anything that would fetch from XIP. Both are
  * enforced here rather than left to the caller.
+ *
+ * ── THE SAMPLED BIT IS NOT THE SAME ON BOTH CHIPS ────────────────────────────
+ *
+ * `io_qspi_hw->io[]` is indexed by QSPI pin on either part, so the control writes below are
+ * common. `sio_hw->gpio_hi_in` is not:
+ *
+ *   RP2040   bits [5:0] are the QSPI pins in order, so chip-select is bit 1.
+ *   RP2350   bits [15:0] are GPIO 32-47, and the QSPI pins sit above them —
+ *            chip-select is bit 27 (SIO_GPIO_HI_IN_QSPI_CSN_BITS).
+ *
+ * Reading bit 1 on an RP2350 samples GPIO33, which nothing drives, so it reads low and this
+ * function returns true for ever. The device then factory-resets on every boot, erases its
+ * configuration, reboots, and does it again — about every seven seconds, with USB enumerating
+ * just long enough to look alive. A Pico 2 W could not be set up at all, and a configured one
+ * would lose its credentials at every power cut.
  */
 bool __no_inline_not_in_flash_func(rw_sys_bootsel_pressed)(void) {
-    const uint cs_pin = 1; /* QSPI_SS */
+    const uint cs_pin = 1; /* QSPI_SS, for the control register */
+
+    /* `defined` rather than a bare test: this build treats an undefined macro in a preprocessor
+     * condition as an error, and PICO_RP2040 is simply absent on an RP2350 build. */
+#if defined(PICO_RP2040) && PICO_RP2040
+    const uint32_t cs_in_mask = 1u << cs_pin;
+#else
+    const uint32_t cs_in_mask = SIO_GPIO_HI_IN_QSPI_CSN_BITS;
+#endif
 
     uint32_t irq = save_and_disable_interrupts();
 
@@ -150,7 +173,7 @@ bool __no_inline_not_in_flash_func(rw_sys_bootsel_pressed)(void) {
         (void)i;
     }
 
-    bool pressed = (sio_hw->gpio_hi_in & (1u << cs_pin)) == 0;
+    bool pressed = (sio_hw->gpio_hi_in & cs_in_mask) == 0;
 
     hw_write_masked(&io_qspi_hw->io[cs_pin].ctrl,
                     GPIO_OVERRIDE_NORMAL << IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_LSB,
