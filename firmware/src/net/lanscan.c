@@ -23,7 +23,7 @@
  * results have to be collected as they arrive rather than read once at the end. Small batches also
  * keep the pbuf pool from being emptied faster than the driver can send.
  */
-#define PROBES_PER_BATCH 8
+#define PROBES_PER_BATCH 4
 
 /* Pumped after each batch. Long enough for the driver to send what was queued and for replies from
  * the previous batch to land. */
@@ -191,6 +191,7 @@ int rw_lan_scan(rw_lan_host_t *out, int max) {
     const absolute_time_t deadline = make_timeout_time_ms(RW_LAN_SCAN_BUDGET_MS);
     uint32_t              probes   = 0;
     uint32_t              batch    = 0;
+    uint32_t              refused  = 0;
 
     for (uint32_t addr = network + 1; addr < broadcast; addr++) {
         if (probes >= RW_LAN_SCAN_MAX_PROBES || time_reached(deadline)) {
@@ -202,7 +203,23 @@ int rw_lan_scan(rw_lan_host_t *out, int max) {
 
         ip4_addr_t target;
         ip4_addr_set_u32(&target, lwip_htonl(addr));
-        etharp_request(nif, &target);
+
+        /*
+         * A request that could not be allocated was never sent, and a host that was never asked
+         * is indistinguishable in the result from one that stayed silent. Every address gets one
+         * retry after the stack has been given time to return the pbufs it is holding; what is
+         * still refused after that is counted, because a sweep that quietly skipped a third of
+         * the subnet otherwise looks exactly like a quiet network.
+         */
+        if (etharp_request(nif, &target) != ERR_OK) {
+            rw_sys_pump_ms(BATCH_PUMP_MS);
+            drain(&c);
+            batch = 0;
+            if (etharp_request(nif, &target) != ERR_OK) {
+                refused++;
+                continue;
+            }
+        }
         probes++;
 
         if (++batch >= PROBES_PER_BATCH) {
@@ -221,6 +238,11 @@ int rw_lan_scan(rw_lan_host_t *out, int max) {
 
     resolve_names(&c);
 
+    if (refused > 0) {
+        /* Out of pbufs twice over for these, so they were never asked. Warned rather than logged
+         * at info: the count is the difference between "nothing is there" and "we did not look". */
+        RW_LOG_WARN("lanscan: %lu address(es) could not be probed", (unsigned long)refused);
+    }
     RW_LOG_INFO("lanscan: probed %lu address(es), %d answered", (unsigned long)probes, c.count);
     return c.count;
 }
