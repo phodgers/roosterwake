@@ -49,6 +49,7 @@ typedef enum {
     PENDING_STATUS,
     PENDING_PROBE,
     PENDING_SCAN,
+    PENDING_OTA_BEGIN,
     PENDING_CONFIG,
 } pending_kind_t;
 
@@ -83,6 +84,17 @@ static struct {
     bool enrolling;
     /* A configuration change made in a network callback, to be written on the main loop. */
     bool persist_pending;
+
+    /*
+     * An offer that has been checked but not yet answered. Clearing the slot takes a couple of
+     * seconds, which cannot happen in the frame handler, so the header is held here until
+     * run_pending() can do it and send the accept afterwards.
+     */
+    struct {
+        rw_ota_header_t header;
+        uint8_t         slot;
+        char            id[REQ_ID_MAX];
+    } offer;
 
     /* An update the device accepted and is being streamed. See "Updates" below. */
     struct {
@@ -561,6 +573,56 @@ static void run_scan(const char *req_id) {
     send_json(&w);
 }
 
+/* Defined with the rest of the update frames, below; needed here because clearing the slot runs
+ * from the main loop and both outcomes are answered from there. */
+static void send_ota_reject(const char *id, const char *code);
+static void ota_abandon(const char *code);
+
+/*
+ * Clear the slot the offer named, then accept it.
+ *
+ * Runs on the main loop: clearing half a megabyte holds interrupts off in 64 KB steps for a
+ * couple of seconds in total, which is why it is not done in the frame handler that read the
+ * offer. Nothing is streaming yet — the relay is waiting for this accept and arms no timeout for
+ * it — so the silence costs nothing, which is the whole reason the erase belongs here rather
+ * than in the middle of the transfer.
+ */
+static void run_ota_begin(void) {
+    const rw_ota_status_t status = rw_ota_write_begin(&s.offer.header, s.offer.slot);
+    if (status != RW_OTA_OK) {
+        send_ota_reject(s.offer.id, rw_ota_status_str(status));
+        return;
+    }
+
+    memset(&s.ota, 0, sizeof(s.ota));
+    s.ota.receiving = true;
+    s.ota.slot      = s.offer.slot;
+    s.ota.total     = s.offer.header.payload_len;
+    s.ota.started   = get_absolute_time();
+    snprintf(s.ota.id, sizeof(s.ota.id), "%s", s.offer.id);
+    snprintf(s.ota.version, sizeof(s.ota.version), "%s", s.offer.header.version);
+
+    RW_LOG_INFO("ota: accepted %s (%lu bytes) into slot %u", s.ota.version,
+                (unsigned long)s.ota.total, (unsigned)s.ota.slot);
+
+    rw_jw_t w;
+    rw_jw_init(&w, s.out, sizeof(s.out));
+    rw_jw_raw(&w, "{");
+    rw_jw_key(&w, "t");
+    rw_jw_str(&w, "ota_accept");
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "id");
+    rw_jw_str(&w, s.ota.id);
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "slot");
+    rw_jw_int(&w, (long)s.ota.slot);
+    rw_jw_raw(&w, "}");
+    rw_jw_finish(&w);
+    if (!send_json(&w)) {
+        ota_abandon("internal");
+    }
+}
+
 /* ── Deferred command execution ────────────────────────────────────────────── */
 
 static void probe_report(void *ctx, rw_probe_state_t state, uint32_t elapsed_s) {
@@ -613,6 +675,10 @@ static void run_pending(void) {
 
         case PENDING_SCAN:
             run_scan(s.req_id);
+            break;
+
+        case PENDING_OTA_BEGIN:
+            run_ota_begin();
             break;
 
         case PENDING_CONFIG: {
@@ -1094,40 +1160,19 @@ static void handle_ota_offer(const char *js, const jsmntok_t *tok, int count) {
         return;
     }
 
-    uint8_t slot = rw_ota_spare_slot();
-    status       = rw_ota_write_begin(&header, slot);
-    if (status != RW_OTA_OK) {
-        send_ota_reject(id, rw_ota_status_str(status));
+    /*
+     * Everything that can be judged from the header has been. What is left -- clearing the slot --
+     * takes a couple of seconds of held interrupts and cannot run here: this is a network
+     * callback, and the rule this file is built on is that nothing blocking runs inside one.
+     * So it is queued, and `ota_accept` goes out after the slot is clear.
+     */
+    if (!queue(PENDING_OTA_BEGIN, id)) {
+        send_ota_reject(id, "busy");
         return;
     }
-
-    memset(&s.ota, 0, sizeof(s.ota));
-    s.ota.receiving = true;
-    s.ota.slot      = slot;
-    s.ota.total     = header.payload_len;
-    s.ota.started   = get_absolute_time();
-    snprintf(s.ota.id, sizeof(s.ota.id), "%s", id);
-    snprintf(s.ota.version, sizeof(s.ota.version), "%s", header.version);
-
-    RW_LOG_INFO("ota: accepted %s (%lu bytes) into slot %u", s.ota.version,
-                (unsigned long)s.ota.total, (unsigned)slot);
-
-    rw_jw_t w;
-    rw_jw_init(&w, s.out, sizeof(s.out));
-    rw_jw_raw(&w, "{");
-    rw_jw_key(&w, "t");
-    rw_jw_str(&w, "ota_accept");
-    rw_jw_raw(&w, ",");
-    rw_jw_key(&w, "id");
-    rw_jw_str(&w, s.ota.id);
-    rw_jw_raw(&w, ",");
-    rw_jw_key(&w, "slot");
-    rw_jw_int(&w, (long)slot);
-    rw_jw_raw(&w, "}");
-    rw_jw_finish(&w);
-    if (!send_json(&w)) {
-        ota_abandon("internal");
-    }
+    s.offer.header = header;
+    s.offer.slot   = rw_ota_spare_slot();
+    snprintf(s.offer.id, sizeof(s.offer.id), "%s", id);
 }
 
 static bool on_binary(rw_ws_client_t *ws, void *ctx, const uint8_t *data, size_t len) {

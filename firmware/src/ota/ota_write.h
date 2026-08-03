@@ -7,12 +7,27 @@
  * the payload by hash, so a stream that finishes with the right digest is the image that was
  * signed.
  *
- * ── WHY THE ERASE IS INCREMENTAL ─────────────────────────────────────────────
+ * ── WHY THE ERASE HAPPENS UP FRONT ───────────────────────────────────────────
  *
- * Erasing 704 KB up front would take several seconds with interrupts disabled, which drops the
- * TLS connection the image is arriving over and starves the watchdog. Instead each 4 KB sector is
- * erased immediately before the first page written into it — around 40 ms, once per sector,
- * spread across the transfer.
+ * `rw_ota_write_begin()` clears the whole region before any payload is asked for, and nothing is
+ * erased once bytes are arriving.
+ *
+ * It was the other way round until 1.10.3 — a 4 KB sector erased immediately before the first
+ * page landing in it — on the reasoning that erasing up front would hold interrupts off for
+ * seconds and drop the connection. That reasoning was wrong in both halves. Measured on hardware:
+ *
+ *   - A sector erase is 37.6 ms, and a half-megabyte image needs 129 of them. The device stops
+ *     reading for each. Its receive window is 17.5 KB, a sender at line rate overruns that in
+ *     40 ms, and the window hits zero; reopening it costs a persist probe that backs off. Same
+ *     image, 13 seconds when it went well and 180 when it did not.
+ *   - Up front is not seconds of held interrupts either, because it is done in 64 KB steps with
+ *     the watchdog fed between: one block erase is 260 ms against an 8 s timer.
+ *   - And it is 2.3x faster in total. The bootrom is given a block size and a block-erase
+ *     command, so 64 KB in one call is one block erase where sixteen 4 KB calls are sixteen
+ *     sector erases: 2.86 s against 6.60 s for 704 KB (`FLASH_BENCH`).
+ *
+ * Nothing is streaming while it runs: the caller has not sent `ota_accept` yet, and a relay arms
+ * no timeout waiting for one.
  *
  * SPDX-License-Identifier: MIT
  */
