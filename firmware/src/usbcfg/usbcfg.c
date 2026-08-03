@@ -19,6 +19,9 @@
 #include "net/net.h"
 #include "mbedtls/sha256.h"
 
+#include "hardware/flash.h"
+#include "hardware/sync.h"
+
 #include "ota/layout.h"
 #include "ota/ota.h"
 #include "ota/ota_write.h"
@@ -419,6 +422,63 @@ static void cmd_ota_state(void) {
 #define SELFTEST_LEN 200000u
 #define SELFTEST_CHUNK 997u
 
+/*
+ * How long clearing a slot costs, done the two ways available.
+ *
+ * The OTA path erases 4 KB immediately before the first page written into it. The SDK's
+ * flash_range_erase hands the bootrom a block size and a block-erase command, and the bootrom
+ * uses 64 KB block erases for whole blocks and 4 KB sectors only at the edges — so erasing 4 KB
+ * at a time asks for the slowest form there is, once per sector, and there are 176 of them in a
+ * slot.
+ *
+ * Both numbers are wanted rather than one: the question is not what an erase costs but what the
+ * difference is worth, and the difference decides whether restructuring the accept path is
+ * justified at all.
+ *
+ * Destroys the spare slot, which is the fallback image, so it is refused while the running image
+ * is still on trial — the same rule an incoming update follows.
+ */
+static void cmd_flash_bench(void) {
+    if (rw_ota_write_active()) {
+        respond_err(RW_UERR_BUSY);
+        return;
+    }
+    if (rw_ota_on_trial()) {
+        respond_err(RW_UERR_BUSY);
+        return;
+    }
+
+    const uint32_t base = RW_SLOT_OFFSET(rw_ota_spare_slot());
+
+    /* One call for the whole slot: the bootrom picks block erases for the bulk of it. */
+    rw_sys_feed_watchdog();
+    absolute_time_t started = get_absolute_time();
+    uint32_t        ints    = save_and_disable_interrupts();
+    flash_range_erase(base, RW_SLOT_SIZE);
+    restore_interrupts(ints);
+    const int32_t whole_ms = (int32_t)(absolute_time_diff_us(started, get_absolute_time()) / 1000);
+    rw_sys_feed_watchdog();
+
+    /* The same region again, a sector at a time, which is what the OTA path does today. The
+     * watchdog is fed between sectors because nothing else is running to feed it. */
+    started = get_absolute_time();
+    for (uint32_t off = 0; off < RW_SLOT_SIZE; off += RW_FLASH_SECTOR) {
+        rw_sys_feed_watchdog();
+        ints = save_and_disable_interrupts();
+        flash_range_erase(base + off, RW_FLASH_SECTOR);
+        restore_interrupts(ints);
+    }
+    const int32_t sector_ms = (int32_t)(absolute_time_diff_us(started, get_absolute_time()) / 1000);
+    rw_sys_feed_watchdog();
+
+    char buf[192];
+    snprintf(buf, sizeof(buf),
+             "{\"slot\":%u,\"bytes\":%u,\"whole_ms\":%ld,\"sectors\":%u,\"sector_ms\":%ld}",
+             (unsigned)rw_ota_spare_slot(), (unsigned)RW_SLOT_SIZE, (long)whole_ms,
+             (unsigned)(RW_SLOT_SIZE / RW_FLASH_SECTOR), (long)sector_ms);
+    respond_ok_json(buf);
+}
+
 static void cmd_ota_selftest(void) {
     if (rw_ota_write_active()) {
         respond_err(RW_UERR_BUSY);
@@ -779,6 +839,10 @@ static void dispatch(const rw_cmdline_t *cl) {
             if (!arity(cl, 1, 2)) { respond_err(RW_UERR_BAD_ARGS); return; }
             cmd_ota_stage(cl);
             return;
+
+        case RW_CMD_FLASH_BENCH:
+            cmd_flash_bench();
+            break;
 
         case RW_CMD_OTA_SELFTEST:
             if (!arity(cl, 0, 0)) { respond_err(RW_UERR_BAD_ARGS); return; }

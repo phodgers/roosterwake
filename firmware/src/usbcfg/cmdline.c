@@ -81,6 +81,7 @@ static const cmd_entry_t k_commands[] = {
     {RW_CMD_OTA_STATE,     "OTA_STATE"},
     {RW_CMD_OTA_STAGE,     "OTA_STAGE"},
     {RW_CMD_OTA_SELFTEST,  "OTA_SELFTEST"},
+    {RW_CMD_FLASH_BENCH,   "FLASH_BENCH"},
     {RW_CMD_TEST_WAKE,     "TEST_WAKE"},
     {RW_CMD_FACTORY_RESET, "FACTORY_RESET"},
     {RW_CMD_REBOOT,        "REBOOT"},
