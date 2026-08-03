@@ -44,6 +44,12 @@ static rw_net_state_t s_state;
 static char           s_ssid[RW_CFG_SSID_LEN];
 static char           s_psk[RW_CFG_PSK_LEN];
 static uint8_t        s_auth = RW_WIFI_AUTH_AUTO;
+/*
+ * Compared by identity where it has to be cleared again, so the one error raised after a join
+ * can be told apart from every error raised before one.
+ */
+static const char k_err_sntp[] = "sntp_timeout";
+
 static const char    *s_last_error;
 
 static uint32_t        s_backoff_ms = JOIN_BACKOFF_MIN_MS;
@@ -322,12 +328,30 @@ void rw_net_task(void) {
         return;
     }
 
-    if (!rw_wallclock_valid() && !s_sntp_warned && time_reached(s_sntp_deadline)) {
+    /*
+     * Every other error here is raised before a join and cleared by the next successful one.
+     * This one is raised *after* the join, so nothing downstream ever cleared it: a device whose
+     * clock arrived late went on reporting `sntp_timeout` for the rest of its life, and STATUS
+     * then blamed the clock for whatever went wrong next. It cost an afternoon.
+     *
+     * So it is withdrawn when the condition it describes goes away, which is what any error
+     * outliving its cause has to do.
+     */
+    if (rw_wallclock_valid()) {
+        if (s_last_error == k_err_sntp) {
+            RW_LOG_INFO("sntp: clock arrived, withdrawing the timeout");
+            s_last_error = NULL;
+        }
+        s_sntp_warned = false;
+        return;
+    }
+
+    if (!s_sntp_warned && time_reached(s_sntp_deadline)) {
         /* Said once, not every loop. SNTP keeps retrying on its own schedule; without a clock
          * every TLS connection will fail certificate validity, and this is the line that
          * explains why. */
         RW_LOG_ERROR("sntp: no answer yet - TLS cannot verify certificates without a clock");
-        s_last_error  = "sntp_timeout";
+        s_last_error  = k_err_sntp;
         s_sntp_warned = true;
     }
 }
