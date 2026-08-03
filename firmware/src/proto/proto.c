@@ -12,10 +12,12 @@
 #include "pico/time.h"
 
 #include "brand.h"
+#include "net/lanscan.h"
 #include "net/net.h"
 #include "proto/auth.h"
 #include "proto/json.h"
 #include "proto/probe.h"
+#include "proto/scan_json.h"
 #include "ota/image.h"
 #include "ota/ota.h"
 #include "ota/ota_write.h"
@@ -46,6 +48,7 @@ typedef enum {
     PENDING_WAKE,
     PENDING_STATUS,
     PENDING_PROBE,
+    PENDING_SCAN,
     PENDING_CONFIG,
 } pending_kind_t;
 
@@ -472,6 +475,92 @@ static void log_sink(rw_log_level_t level, const char *msg) {
     reentrant = false;
 }
 
+/* PROTOCOL.md §4: a scan that could not run at all reports ok:false with `err` and no host
+ * list — an empty list means "nothing answered", which is a different thing from "never
+ * looked". */
+static void send_scan_result_err(const char *req_id, const char *err) {
+    rw_jw_t w;
+    rw_jw_init(&w, s.out, sizeof(s.out));
+    rw_jw_raw(&w, "{");
+    rw_jw_key(&w, "t");
+    rw_jw_str(&w, "scan_result");
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "req_id");
+    rw_jw_str(&w, req_id);
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "ok");
+    rw_jw_raw(&w, "false");
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "err");
+    rw_jw_str(&w, err);
+    rw_jw_raw(&w, "}");
+    rw_jw_finish(&w);
+    send_json(&w);
+}
+
+/* What rw_scan_json_hosts() must leave room for: `,"truncated":false}` and the terminator the
+ * writer keeps back. Stated as a constant because getting it wrong costs a frame the relay
+ * closes the connection over rather than an error anybody sees. */
+#define SCAN_TAIL_RESERVE 20
+
+/*
+ * Sweep the segment and answer. Runs from the main loop, never from a callback: it blocks for
+ * several seconds, which is why `scan` is queued like every other command that does real work.
+ *
+ * Both arrays are static rather than automatic. Together they are over 1.5 KB, which is more
+ * than belongs on this stack, and only one can ever be in use — `queue()` admits one command at
+ * a time and this is the only thing that touches them.
+ */
+static void run_scan(const char *req_id) {
+    static rw_lan_host_t  found[RW_LAN_SCAN_MAX];
+    static rw_scan_host_t hosts[RW_SCAN_JSON_MAX];
+
+    /* If these ever disagree the extra hosts would be swept and then silently dropped, which
+     * looks exactly like a quiet network. */
+    _Static_assert(RW_SCAN_JSON_MAX == RW_LAN_SCAN_MAX,
+                   "scan_json and lanscan disagree about how many hosts a sweep returns");
+
+    const int count = rw_lan_scan(found, RW_LAN_SCAN_MAX);
+    if (count < 0) {
+        send_scan_result_err(req_id, "no_link");
+        return;
+    }
+
+    for (int i = 0; i < count; i++) {
+        snprintf(hosts[i].ip, sizeof(hosts[i].ip), "%s", ip4addr_ntoa(&found[i].ip));
+        memcpy(hosts[i].mac, found[i].mac, sizeof(hosts[i].mac));
+        snprintf(hosts[i].name, sizeof(hosts[i].name), "%s", found[i].name);
+    }
+
+    char gateway[16];
+    rw_net_gateway_str(gateway, sizeof(gateway));
+
+    rw_jw_t w;
+    rw_jw_init(&w, s.out, sizeof(s.out));
+    rw_jw_raw(&w, "{");
+    rw_jw_key(&w, "t");
+    rw_jw_str(&w, "scan_result");
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "req_id");
+    rw_jw_str(&w, req_id);
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "ok");
+    rw_jw_raw(&w, "true");
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "gateway");
+    rw_jw_str(&w, gateway);
+    rw_jw_raw(&w, ",");
+    const bool all = rw_scan_json_hosts(&w, hosts, count, SCAN_TAIL_RESERVE);
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "truncated");
+    rw_jw_raw(&w, all ? "false" : "true");
+    rw_jw_raw(&w, "}");
+    rw_jw_finish(&w);
+
+    RW_LOG_INFO("proto: scan found %d host(s)%s", count, all ? "" : ", list truncated");
+    send_json(&w);
+}
+
 /* ── Deferred command execution ────────────────────────────────────────────── */
 
 static void probe_report(void *ctx, rw_probe_state_t state, uint32_t elapsed_s) {
@@ -520,6 +609,10 @@ static void run_pending(void) {
                 s.probe_owned = false;
                 send_probe_result_err(s.req_id, "busy");
             }
+            break;
+
+        case PENDING_SCAN:
+            run_scan(s.req_id);
             break;
 
         case PENDING_CONFIG: {
@@ -1158,6 +1251,15 @@ static void on_text(rw_ws_client_t *ws, void *ctx, char *text, size_t len) {
             return;
         }
         handle_probe(text, tokens, count, req_id);
+    } else if (rw_json_eq(text, &tokens[t_idx], "scan")) {
+        if (req_id[0] == '\0') {
+            return;
+        }
+        /* §5: a second scan while one is running is refused rather than queued. The sweep
+         * already bounds itself in time; queueing turns one slow command into a backlog. */
+        if (!queue(PENDING_SCAN, req_id)) {
+            send_scan_result_err(req_id, "busy");
+        }
     } else if (rw_json_eq(text, &tokens[t_idx], "config_push")) {
         if (req_id[0] == '\0') {
             return;

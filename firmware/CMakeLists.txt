@@ -147,6 +147,7 @@ set(RW_PORTABLE_SOURCES
     src/ota/state.c
     src/proto/auth.c
     src/proto/json.c
+    src/proto/scan_json.c
     src/provisioning/dhcp_msg.c
     src/provisioning/dns_msg.c
     src/provisioning/http_req.c

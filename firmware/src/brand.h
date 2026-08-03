@@ -53,7 +53,7 @@ _Static_assert(sizeof(RW_SETUP_SSID_PREFIX) - 1 + RW_SETUP_SSID_SUFFIX_LEN <= 32
 #define RW_USBCFG_VERSION 1
 
 /* Firmware version reported in `hello`, `status_result` and `INFO`. */
-#define RW_FW_VERSION "1.9.0"
+#define RW_FW_VERSION "1.10.0"
 
 /*
  * Board identifier reported in `hello` (PROTOCOL.md §4) and `INFO` (usbcfg.md §4).
@@ -81,6 +81,6 @@ _Static_assert(sizeof(RW_SETUP_SSID_PREFIX) - 1 + RW_SETUP_SSID_SUFFIX_LEN <= 32
  * `sched` is reserved by the protocol and has no command yet, so it is not advertised. There
  * is no `log` capability: diagnostics are enabled locally and no frame can turn them on.
  */
-#define RW_CAPS_JSON "[\"wake\",\"status\",\"probe\",\"config\",\"ota\"]"
+#define RW_CAPS_JSON "[\"wake\",\"status\",\"probe\",\"scan\",\"config\",\"ota\"]"
 
 #endif /* RW_BRAND_H */

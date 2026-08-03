@@ -38,10 +38,11 @@ subtly wrong.
 - **Size limits.** **No frame in either direction may exceed 2048 bytes.** A receiver MUST
   reject a larger frame with close code `1009`. Devices are memory-constrained; this limit is
   a hard part of the contract, not a suggestion.
-  The largest frame either side sends is `hello` with eight targets, and it does not come
-  close: eight entries of a 24-character name plus a 17-character MAC is under 600 bytes, and
-  the rest of the frame adds roughly 200 more. A single symmetric bound is easier to implement
-  correctly than two, and lets both sides size one receive buffer.
+  Most frames are nowhere near it: `hello` with eight targets is under 800 bytes all told.
+  The one frame that can reach the ceiling is `scan_result`, whose host list is as long as the
+  segment is busy — which is why it is specified to drop hosts and say so rather than to grow.
+  A single symmetric bound is easier to implement correctly than two, and lets both sides size
+  one receive buffer.
 - **Encoding** is UTF-8. Target names may contain any UTF-8; relays MUST NOT assume ASCII.
 
 ### 1.1 TLS requirements
@@ -285,6 +286,7 @@ Defined capabilities, each naming the relay→device command it gates:
 | `wake` | `wake` |
 | `status` | `status` |
 | `probe` | `probe` |
+| `scan` | `scan` |
 | `config` | `config_push` |
 | `ota` | `ota_offer`, and the binary frames that follow it |
 | `sched` | reserved for device-side scheduling; no command yet |
@@ -402,6 +404,46 @@ and `state` omitted — a `probe` naming an unparseable MAC otherwise has nowher
 
 ```json
 { "t": "probe_result", "req_id": "…", "ok": false, "err": "bad_mac" }
+```
+
+### `scan_result`
+
+Sent once, in answer to `scan`.
+
+```json
+{
+  "t": "scan_result",
+  "req_id": "…",
+  "ok": true,
+  "gateway": "192.168.1.1",
+  "truncated": false,
+  "hosts": [
+    { "ip": "192.168.1.20", "mac": "AA:BB:CC:DD:EE:FF", "name": "DESKTOP" }
+  ]
+}
+```
+
+`hosts` is ordered by address, lowest first. `name` is present only for a host that answered a
+NetBIOS node status query — Windows and Samba answer, most other things stay silent — and is
+omitted otherwise. It is untrusted input from an unauthenticated peer on the local segment: a
+relay or dashboard MUST treat it as text to display, never as an identifier, and MUST NOT match
+a device or account against it.
+
+`gateway` is the device's default route where it knows one. It is what lets a caller mark the
+one entry on the list that is a router rather than a candidate to wake.
+
+**`truncated` is `true` when hosts were found that did not fit.** §1's 2048-byte ceiling binds
+this frame more tightly than any other in the protocol, and a busy segment can answer with more
+hosts than it can carry. A device MUST drop hosts rather than exceed the limit, and MUST set
+`truncated` when it drops any. A device that drops SHOULD keep named hosts in preference to
+unnamed ones: the list exists so that somebody can find one particular machine on it, and a
+host that answered a name query is far likelier to be that machine than one that did not.
+
+`ok: false` carries `err` from §6 in place of `hosts` — `no_link` when the device is not
+joined to a network, `busy` when another operation holds the radio.
+
+```json
+{ "t": "scan_result", "req_id": "…", "ok": false, "err": "no_link" }
 ```
 
 ### `config_ack`
@@ -536,6 +578,29 @@ configured targets replies `ok:false, err:"no_target"`.
 Asks the device to watch for the target coming up, by ARP resolution and optionally ICMP.
 `timeout_s` is 10–300. The device sends `probe_result` on each state change and a final one
 at resolution or timeout. Only sent to devices advertising the `probe` capability.
+
+### `scan`
+
+```json
+{ "t": "scan", "req_id": "…" }
+```
+
+Asks the device which other hosts are on its own segment, so that a caller can offer a list to
+choose from instead of asking somebody to read a MAC address off the machine they mean to wake.
+
+It takes no parameters. The range swept is the device's own subnet and the bounds on the sweep
+are the device's to choose, because they depend on what the radio and the address space can
+stand — a relay that could set them could ask a device to spend an unbounded time off the air.
+
+The device answers exactly once, and may take **up to 15 seconds** to do it: an ARP sweep of
+the subnet with a name pass behind it. That is longer than a relay should hold a caller's
+request open, so a relay SHOULD acknowledge the command as soon as it is sent and let the
+answer be collected separately, as it does for `probe`. Only sent to devices advertising the
+`scan` capability.
+
+A device MUST answer a second `scan` that arrives while one is running with `busy` rather than
+queueing it: the sweep already bounds itself in time, and queueing turns one slow command into
+an unbounded backlog of them.
 
 ### `config_push`
 
@@ -836,8 +901,8 @@ A relay is v1-conformant if it:
 6. Never sends a frame larger than 2048 bytes.
 7. Enforces one live connection per `device_id`, closing the displaced one with `4001`.
 
-Everything else — `status`, `probe`, `config_push`, `log`, `enrol`, `adopt`, `ota_offer` — is
-optional.
+Everything else — `status`, `probe`, `scan`, `config_push`, `log`, `enrol`, `adopt`,
+`ota_offer` — is optional.
 
 **`enrol` and `adopt` are optional on purpose.** A self-hosted relay whose operator adds tokens
 to a list by hand needs neither, and requiring them would mean every minimal implementation had
@@ -856,6 +921,7 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 
 | Version | Date | Change |
 |---|---|---|
+| 1 | 2026-08-03 | **Asking a device who else is on its segment.** One new capability, `scan`, and the frame pair it gates — `scan` and `scan_result`. Adding a target to a device meant reading a MAC address off the machine to be woken and typing it in, which is the least popular thing this product asks of anyone; the device is already on that segment and can go and ask. The capability is separate from `probe` even though both resolve addresses by ARP, because `probe` watches one address the caller already knows and `scan` enumerates ones it does not — a device may reasonably implement either without the other. `scan_result` is the first frame in the protocol whose natural size can reach §1's 2048-byte ceiling, so it is specified to drop hosts and set `truncated` rather than to grow, and to drop unnamed hosts first: the list exists to find one machine, and a host that answered a name query is likelier to be it. Names are carried but explicitly untrusted — they come from an unauthenticated peer on the local network — and §4 forbids matching anything against them. |
 | 1 | 2026-07-31 | **Firmware updates over the relay connection.** Four new frames — `ota_offer`, `ota_accept`, `ota_reject`, `ota_result` — and the one exception to §1's "frames are text": the payload of an update the device has agreed to receive arrives as unfragmented binary frames. There is no second connection because there is no room for one; a TLS session costs 44 KB of a 64 KB heap on the reference device, so an image either shares this socket or does not arrive. The offer carries the image's signed header and **nothing else**, which is the whole of the security argument: board, length, version and payload digest are all inside the signature, so there is no unsigned restatement of them for a relay to lie in. A device with two slots writes the inactive one and restarts; the update proves itself by reconnecting, and a failure announces itself by the previous version reappearing rather than by silence. Binary frames outside a transfer close the connection with `1008`. |
 | 1 | 2026-07-29 | Initial specification. |
 | 1 | 2026-07-30 | **Enrolment and adoption.** Three new frames — `enrol`, `adopt`, `adopt_ack` — and the §3.4 rules a relay applies to the first. Until now a relay could only learn a token out of band, which meant a device nobody had registered in advance could never reach a hosted service at all: no path existed from a board somebody flashed themselves to a relay that would speak to it. `enrol` transmits the token exactly once, on first contact, and §3.1 now sets out why that exception is defensible and the two rules — a validated certificate, and the compiled-in relay URL — that fence it. §3.4's four-row table is the whole of the security argument: refuse only where the id is already owned, replace freely where it is not, so that the protection cannot itself become a way to lock people out of boards they hold. `adopt` carries an account address off a captive portal that has no route to the internet, which is the only moment in setup where the person's identity can be captured. §11 restates how a relay comes to hold a token, and records that possession of the hardware is treated as the ownership claim. |

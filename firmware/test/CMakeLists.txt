@@ -89,6 +89,7 @@ set(RW_PORTABLE_SOURCES
     ${RW_SRC}/ota/state.c
     ${RW_SRC}/proto/auth.c
     ${RW_SRC}/proto/json.c
+    ${RW_SRC}/proto/scan_json.c
     ${RW_SRC}/provisioning/dhcp_msg.c
     ${RW_SRC}/provisioning/dns_msg.c
     ${RW_SRC}/provisioning/http_req.c
@@ -114,6 +115,7 @@ set(TEST_SOURCES
     test_usbcfg.c
     test_provisioning.c
     test_nbns.c
+    test_scan_json.c
 )
 
 add_executable(rw_tests ${TEST_SOURCES} ${RW_PORTABLE_SOURCES} ${MBEDTLS_SOURCES}
