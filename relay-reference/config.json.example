@@ -7,5 +7,5 @@
   },
   "wake_timeout_ms": 5000,
   "request_timeout_ms": 10000,
-  "source_url": "https://github.com/phodgers/remotewake"
+  "source_url": "https://github.com/phodgers/roosterwake"
 }

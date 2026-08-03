@@ -28,7 +28,7 @@ typedef enum {
     RW_WS_HS_BAD_STATUS,      /* anything but 101 */
     RW_WS_HS_BAD_UPGRADE,     /* Upgrade/Connection headers missing or wrong */
     RW_WS_HS_BAD_ACCEPT,      /* Sec-WebSocket-Accept absent or does not match */
-    RW_WS_HS_NO_SUBPROTOCOL,  /* the relay did not echo remotewake.v1 */
+    RW_WS_HS_NO_SUBPROTOCOL,  /* the relay did not echo roosterwake.v1 */
     RW_WS_HS_TOO_LARGE,       /* headers exceeded RW_WS_RESPONSE_MAX */
 } rw_ws_hs_result_t;
 

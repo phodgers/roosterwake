@@ -59,7 +59,7 @@ All three are versioned and treated as public API.
 
 See [`docs/QUICKSTART.md`](docs/QUICKSTART.md) for the full walkthrough. In brief:
 
-1. Flash `remotewake.uf2` onto a Pico 2 W by holding BOOTSEL while plugging it in, then
+1. Flash `roosterwake.uf2` onto a Pico 2 W by holding BOOTSEL while plugging it in, then
    dragging the file onto the drive that appears.
 2. Power it up. It starts a Wi-Fi hotspot called `RoosterWake-Setup-XXXX`.
 3. Join that hotspot from your phone. A setup page opens automatically.

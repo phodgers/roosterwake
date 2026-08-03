@@ -34,7 +34,7 @@ import { WebSocketServer } from 'ws';
 
 // ── Protocol constants (PROTOCOL.md §1, §2, §9) ─────────────────────────────
 
-export const SUBPROTOCOL = 'remotewake.v1';
+export const SUBPROTOCOL = 'roosterwake.v1';
 export const WS_PATH = '/ws';
 export const PROTOCOL_VERSION = 1;
 
@@ -67,7 +67,7 @@ const WAKE_RATE_WINDOW_MS = 60_000;
 const MAX_TARGETS = 8;
 
 const SERVER_ID = 'remotewake-relay-reference/1.0.0';
-const DEFAULT_SOURCE_URL = 'https://github.com/phodgers/remotewake';
+const DEFAULT_SOURCE_URL = 'https://github.com/phodgers/roosterwake';
 
 /** Defaults for the config knobs an operator may override. */
 const DEFAULT_PORT = 8080;
@@ -787,7 +787,7 @@ export function createRelay(rawConfig, options = {}) {
   const wss = new WebSocketServer({
     noServer: true,
     maxPayload: MAX_DEVICE_FRAME_BYTES,
-    // §1 and §12.1: echo `remotewake.v1`. `ws` calls this with the set of protocols the client
+    // §1 and §12.1: echo `roosterwake.v1`. `ws` calls this with the set of protocols the client
     // offered; returning the string adds the response header.
     handleProtocols: (protocols) => (protocols.has(SUBPROTOCOL) ? SUBPROTOCOL : false),
   });
@@ -805,7 +805,7 @@ export function createRelay(rawConfig, options = {}) {
 
     // §1 describes what a device does when the *relay* omits the subprotocol header: it closes,
     // because it has been pointed at something that is not a Rooster Wake relay. The mirror
-    // image is handled here. A client that does not offer `remotewake.v1` is not a Rooster Wake
+    // image is handled here. A client that does not offer `roosterwake.v1` is not a Rooster Wake
     // device, and refusing the upgrade outright gives whoever pointed it here a readable error
     // instead of a socket that hangs until the handshake timer fires.
     const offered = (req.headers['sec-websocket-protocol'] ?? '')

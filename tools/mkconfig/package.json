@@ -1,5 +1,5 @@
 {
-  "name": "@remotewake/mkconfig",
+  "name": "@roosterwake/mkconfig",
   "version": "1.0.0",
   "description": "Generate a Rooster Wake configuration UF2 for headless provisioning of a Pico 2 W dongle",
   "license": "MIT",
@@ -33,7 +33,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/phodgers/remotewake.git",
+    "url": "git+https://github.com/phodgers/roosterwake.git",
     "directory": "tools/mkconfig"
   }
 }

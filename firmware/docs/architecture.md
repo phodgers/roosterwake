@@ -171,7 +171,7 @@ device.
 Two behaviours are worth calling out because they are protocol requirements rather than
 choices:
 
-- **A relay that does not echo `remotewake.v1` is closed on** (PROTOCOL.md §1). This is how a
+- **A relay that does not echo `roosterwake.v1` is closed on** (PROTOCOL.md §1). This is how a
   device detects that it has been pointed at a captive portal, a misconfigured reverse proxy or
   somebody's Home Assistant. Without it the device connects, waits for a `challenge` that never
   arrives, and blinks at a wall for an hour.

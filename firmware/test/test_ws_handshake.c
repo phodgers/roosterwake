@@ -50,7 +50,7 @@ static void test_request(void) {
     RW_CHECK(strstr(out, "Connection: Upgrade\r\n") != NULL);
     RW_CHECK(strstr(out, "Sec-WebSocket-Version: 13\r\n") != NULL);
     RW_CHECK(strstr(out, "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n") != NULL);
-    RW_CHECK(strstr(out, "Sec-WebSocket-Protocol: remotewake.v1\r\n") != NULL);
+    RW_CHECK(strstr(out, "Sec-WebSocket-Protocol: roosterwake.v1\r\n") != NULL);
     RW_CHECK_MSG(strstr(out, "\r\n\r\n") != NULL, "request is not terminated");
 
     /* A non-default port is carried. */
@@ -86,7 +86,7 @@ static void test_response(void) {
                        "Upgrade: websocket\r\n"
                        "Connection: Upgrade\r\n"
                        "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n"
-                       "Sec-WebSocket-Protocol: remotewake.v1\r\n"
+                       "Sec-WebSocket-Protocol: roosterwake.v1\r\n"
                        "\r\n";
     RW_CHECK_EQ_INT(parse(good, &consumed), RW_WS_HS_OK);
     RW_CHECK_EQ_INT(consumed, strlen(good));
@@ -105,7 +105,7 @@ static void test_response(void) {
                              "upgrade: WebSocket\r\n"
                              "CONNECTION: keep-alive, Upgrade\r\n"
                              "sec-websocket-accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n"
-                             "Sec-WebSocket-Protocol: remotewake.v1\r\n"
+                             "Sec-WebSocket-Protocol: roosterwake.v1\r\n"
                              "\r\n";
     RW_CHECK_EQ_INT(parse(mixed_case, &consumed), RW_WS_HS_OK);
 
@@ -136,14 +136,14 @@ static void test_response(void) {
                              "Upgrade: websocket\r\n"
                              "Connection: Upgrade\r\n"
                              "Sec-WebSocket-Accept: AAAAAAAAAAAAAAAAAAAAAAAAAAA=\r\n"
-                             "Sec-WebSocket-Protocol: remotewake.v1\r\n"
+                             "Sec-WebSocket-Protocol: roosterwake.v1\r\n"
                              "\r\n";
     RW_CHECK_EQ_INT(parse(bad_accept, &consumed), RW_WS_HS_BAD_ACCEPT);
 
     const char *no_accept = "HTTP/1.1 101 Switching Protocols\r\n"
                             "Upgrade: websocket\r\n"
                             "Connection: Upgrade\r\n"
-                            "Sec-WebSocket-Protocol: remotewake.v1\r\n"
+                            "Sec-WebSocket-Protocol: roosterwake.v1\r\n"
                             "\r\n";
     RW_CHECK_EQ_INT(parse(no_accept, &consumed), RW_WS_HS_BAD_ACCEPT);
 
@@ -173,7 +173,7 @@ static void test_response(void) {
                                      "Upgrade: websocket\r\n"
                                      "Connection: Upgrade\r\n"
                                      "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n"
-                                     "Sec-WebSocket-Protocol: remotewake.v12\r\n"
+                                     "Sec-WebSocket-Protocol: roosterwake.v12\r\n"
                                      "\r\n";
     RW_CHECK_EQ_INT(parse(prefix_subprotocol, &consumed), RW_WS_HS_NO_SUBPROTOCOL);
 

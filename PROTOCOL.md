@@ -23,13 +23,13 @@ subtly wrong.
   RFC 1918 addresses, and firmware built for production refuses it otherwise.
 - Default endpoint: `wss://relay.roosterwake.com/ws`. Configurable per device; self-hosters
   point it wherever they like.
-- **Subprotocol**: the client sends `Sec-WebSocket-Protocol: remotewake.v1`. A relay that
+- **Subprotocol**: the client sends `Sec-WebSocket-Protocol: roosterwake.v1`. A relay that
   understands this protocol MUST echo it. A relay that does not MUST omit the header, and the
   client MUST then close the connection — this is how a device detects that it has been
   pointed at something that is not a Rooster Wake relay (a captive portal, a misconfigured
   reverse proxy, someone's Home Assistant) instead of hanging.
   Symmetrically, a relay MUST **refuse the upgrade** (HTTP 400) when the client does not offer
-  `remotewake.v1`, rather than accepting the socket and waiting for a `hello` that will never
+  `roosterwake.v1`, rather than accepting the socket and waiting for a `hello` that will never
   come. Both halves are specified because leaving either undefined lets two conforming relays
   behave differently, and a third-party firmware then works against one and hangs against the
   other.
@@ -892,7 +892,7 @@ LAN with broadcast traffic.
 
 A relay is v1-conformant if it:
 
-1. Echoes the `remotewake.v1` subprotocol.
+1. Echoes the `roosterwake.v1` subprotocol.
 2. Implements the §3.2 handshake, including constant-time proof comparison, fresh nonces, and
    sending `challenge` even for unknown device IDs.
 3. Answers `{"t":"ping"}` with exactly `{"t":"pong"}`.

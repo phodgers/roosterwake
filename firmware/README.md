@@ -31,12 +31,12 @@ cmake -S loader -B ../build-loader -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build ../build-loader                       # build-loader/loader.uf2
 
 cmake -S . -B ../build-a -G Ninja -DCMAKE_BUILD_TYPE=Release -DRW_SLOT=a
-cmake --build ../build-a                            # build-a/remotewake.uf2
+cmake --build ../build-a                            # build-a/roosterwake.uf2
 ```
 
 Install them as **two separate files**, loader first. Hold BOOTSEL while plugging the board in,
 copy `loader.uf2`, and let the board restart: with both slots empty the loader returns to the ROM
-bootloader by itself, so the drive reappears and `remotewake.uf2` can be copied straight after.
+bootloader by itself, so the drive reappears and `roosterwake.uf2` can be copied straight after.
 
 Do not merge the two into one UF2. A file spanning both regions loses whichever region's blocks
 arrive last — in either order — leaving one of them erased.

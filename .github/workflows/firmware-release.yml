@@ -163,20 +163,20 @@ jobs:
               # The signed image wraps the raw flash image, not the UF2: a UF2 is a container for
               # a host to write, and the device is writing to its own flash.
               python3 firmware/tools/sign_image.py \
-                "build-${board}-${slot}/remotewake.bin" \
-                "dist/remotewake-${v}-${board}-${slot}.rwfw" \
+                "build-${board}-${slot}/roosterwake.bin" \
+                "dist/roosterwake-${v}-${board}-${slot}.rwfw" \
                 --key signing-key.pem --version "$v" --board "$board"
             done
 
             # Slot A is what a fresh install writes. Slot B has no UF2 because nothing ever
             # flashes it by cable - it exists to be the destination of the first update.
-            cp "build-${board}-a/remotewake.uf2" "dist/remotewake-${v}-${board}-install.uf2"
-            echo "size_${board}=$(stat -c%s "build-${board}-a/remotewake.bin")" >> "$GITHUB_OUTPUT"
+            cp "build-${board}-a/roosterwake.uf2" "dist/roosterwake-${v}-${board}-install.uf2"
+            echo "size_${board}=$(stat -c%s "build-${board}-a/roosterwake.bin")" >> "$GITHUB_OUTPUT"
           done
 
           cd dist
-          sha256sum ./* > "remotewake-${v}.sha256"
-          cat "remotewake-${v}.sha256"
+          sha256sum ./* > "roosterwake-${v}.sha256"
+          cat "roosterwake-${v}.sha256"
 
       - name: Write the release notes
         id: notes
@@ -203,8 +203,8 @@ jobs:
             echo
             echo "| Board | Loader | Firmware |"
             echo "|---|---|---|"
-            echo "| Pico 2 W (RP2350) — the product | \`loader-${v}-pico2_w.uf2\` | \`remotewake-${v}-pico2_w-install.uf2\` |"
-            echo "| Pico W (RP2040) | \`loader-${v}-pico_w.uf2\` | \`remotewake-${v}-pico_w-install.uf2\` |"
+            echo "| Pico 2 W (RP2350) — the product | \`loader-${v}-pico2_w.uf2\` | \`roosterwake-${v}-pico2_w-install.uf2\` |"
+            echo "| Pico W (RP2040) | \`loader-${v}-pico_w.uf2\` | \`roosterwake-${v}-pico_w-install.uf2\` |"
             echo
             echo "**The two boards are not interchangeable.** RP2040 firmware on an RP2350 does not boot."
             echo
@@ -223,7 +223,7 @@ jobs:
             echo "A device that updates gets three boots to reach the relay. If it cannot, the"
             echo "loader returns to the previous image on its own."
             echo
-            echo "Verify downloads against \`remotewake-${v}.sha256\`."
+            echo "Verify downloads against \`roosterwake-${v}.sha256\`."
             echo
             echo "Flash used: ${{ steps.art.outputs.size_pico2_w }} bytes on the Pico 2 W of"
             echo "720,896 available per slot; ${{ steps.art.outputs.size_pico_w }} on the Pico W."
@@ -274,9 +274,9 @@ jobs:
             for kind in loader install ota-a ota-b; do
               case "$kind" in
                 loader)  file="dist/loader-${v}-${board}.uf2" ;;
-                install) file="dist/remotewake-${v}-${board}-install.uf2" ;;
-                ota-a)   file="dist/remotewake-${v}-${board}-a.rwfw" ;;
-                ota-b)   file="dist/remotewake-${v}-${board}-b.rwfw" ;;
+                install) file="dist/roosterwake-${v}-${board}-install.uf2" ;;
+                ota-a)   file="dist/roosterwake-${v}-${board}-a.rwfw" ;;
+                ota-b)   file="dist/roosterwake-${v}-${board}-b.rwfw" ;;
               esac
               sha=$(sha256sum "$file" | cut -d' ' -f1)
               echo "publishing ${board} ${kind} (${sha})"

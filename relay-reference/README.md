@@ -46,7 +46,7 @@ You need Node 20 or newer, and somewhere the dongle can reach over TLS.
 ### 1. Install
 
 ```sh
-git clone https://github.com/phodgers/remotewake.git
+git clone https://github.com/phodgers/roosterwake.git
 cd remotewake/relay-reference
 npm install
 ```
@@ -337,7 +337,7 @@ A transcript looks like this, and reading it is usually faster than reading a st
 
 ```
 09:41:19.402 . connecting to ws://127.0.0.1:8080/ws
-09:41:19.418 . connected (subprotocol remotewake.v1)
+09:41:19.418 . connected (subprotocol roosterwake.v1)
 09:41:19.419 -> {"t":"hello","v":1,"device_id":"a1b2…","nonce_c":"4c1e…","fw":"1.0.0",…}
 09:41:19.423 <- {"t":"challenge","nonce_s":"9d2f…"}
 09:41:19.424 -> {"t":"auth","proof_c":"3f2a9c81b4e05d7602ff1a8c9d3e4b57"}

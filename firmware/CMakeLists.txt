@@ -56,7 +56,7 @@ option(RW_TLS_TRACE "Trace the TLS handshake over the serial port (very verbose)
 
 include(pico_sdk_import.cmake)
 
-project(remotewake_firmware C CXX ASM)
+project(roosterwake_firmware C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
@@ -214,10 +214,10 @@ add_custom_command(
 )
 add_custom_target(rw_portal_html DEPENDS ${RW_PORTAL_HDR})
 
-add_executable(remotewake ${RW_PORTABLE_SOURCES} ${RW_DEVICE_SOURCES})
-add_dependencies(remotewake rw_portal_html)
+add_executable(roosterwake ${RW_PORTABLE_SOURCES} ${RW_DEVICE_SOURCES})
+add_dependencies(roosterwake rw_portal_html)
 
-target_include_directories(remotewake PRIVATE
+target_include_directories(roosterwake PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/src
     # mbedtls_config.h lives here and is found by the SDK's pico_mbedtls_config.h, which does
     # #include "mbedtls_config.h" and relies on the application to supply it.
@@ -225,7 +225,7 @@ target_include_directories(remotewake PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
 
-target_link_libraries(remotewake
+target_link_libraries(roosterwake
     pico_stdlib
     pico_unique_id
     pico_rand
@@ -241,10 +241,10 @@ target_link_libraries(remotewake
 
 # RP2350 only: the RP2040 has no separately-managed XIP cache and no such library.
 if (PICO_RP2350)
-    target_link_libraries(remotewake hardware_xip_cache)
+    target_link_libraries(roosterwake hardware_xip_cache)
 endif()
 
-target_compile_definitions(remotewake PRIVATE
+target_compile_definitions(roosterwake PRIVATE
     # Core 1 is never launched, so flash_safe_execute() has nothing to coordinate with. Without
     # this it refuses to run at all, because it cannot know what the other core is doing.
     PICO_FLASH_ASSUME_CORE1_SAFE=1
@@ -261,7 +261,7 @@ target_compile_definitions(remotewake PRIVATE
 # which is what the document specifies. The strings come from brand.h so that renaming the
 # product remains a one-file edit; they are passed as definitions because the SDK's descriptor
 # table is built from macros, not from a header it includes.
-target_compile_definitions(remotewake PRIVATE
+target_compile_definitions(roosterwake PRIVATE
     USBD_MANUFACTURER="Rooster Wake"
     USBD_PRODUCT="Rooster Wake"
 )
@@ -279,11 +279,11 @@ target_compile_definitions(remotewake PRIVATE
 # the assembler breaks the SDK's crt0. Two list entries rather than one string because `-include`
 # takes its filename as a separate argument, and this path contains a space.
 set(RW_TRACE_HEADER ${CMAKE_CURRENT_LIST_DIR}/src/diag/radio_trace.h)
-target_compile_options(remotewake PRIVATE
+target_compile_options(roosterwake PRIVATE
     $<$<COMPILE_LANGUAGE:C>:-include>
     $<$<COMPILE_LANGUAGE:C>:${RW_TRACE_HEADER}>
 )
-set_property(TARGET remotewake APPEND PROPERTY LINK_DEPENDS ${RW_TRACE_HEADER})
+set_property(TARGET roosterwake APPEND PROPERTY LINK_DEPENDS ${RW_TRACE_HEADER})
 
 # Strict warnings, but only on our own sources. The SDK's libraries are INTERFACE targets whose
 # sources compile into this executable, and holding third-party code to our warning settings
@@ -298,19 +298,19 @@ set_source_files_properties(${RW_PORTABLE_SOURCES} ${RW_DEVICE_SOURCES}
 
 if (RW_FORCE_DIAG_LOG)
     message(STATUS "Diagnostic logging forced ON - this build chatters on the USB serial port")
-    target_compile_definitions(remotewake PRIVATE RW_FORCE_DIAG_LOG=1)
+    target_compile_definitions(roosterwake PRIVATE RW_FORCE_DIAG_LOG=1)
 endif()
 
 if (RW_TLS_TRACE)
     message(STATUS "TLS handshake tracing is ON - this build prints the whole handshake")
-    target_compile_definitions(remotewake PRIVATE RW_TLS_TRACE=1)
+    target_compile_definitions(roosterwake PRIVATE RW_TLS_TRACE=1)
 endif()
 
 if (RW_TLS_INSECURE)
     message(WARNING
         "RW_TLS_INSECURE is ON. This build does not verify relay certificates and can be "
         "intercepted by anything on the path. It flashes the error LED continuously.")
-    target_compile_definitions(remotewake PRIVATE RW_TLS_INSECURE=1)
+    target_compile_definitions(roosterwake PRIVATE RW_TLS_INSECURE=1)
 endif()
 
 if (RW_TLS_CUSTOM_CA)
@@ -325,7 +325,7 @@ if (RW_TLS_CUSTOM_CA)
     file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/generated/rw_custom_ca.h
         "/* Generated from ${RW_TLS_CUSTOM_CA}. Do not edit. */\n"
         "static const unsigned char k_rw_custom_ca[] = {${_rw_ca_bytes}0x00};\n")
-    target_compile_definitions(remotewake PRIVATE RW_TLS_CUSTOM_CA=1)
+    target_compile_definitions(roosterwake PRIVATE RW_TLS_CUSTOM_CA=1)
     message(STATUS "TLS root bundle replaced by ${RW_TLS_CUSTOM_CA}")
 endif()
 
@@ -346,20 +346,20 @@ set(RW_FLASH_RESERVE_LD ${CMAKE_CURRENT_BINARY_DIR}/generated/flash_reserve.ld)
 configure_file(${CMAKE_CURRENT_LIST_DIR}/src/config/flash_reserve.ld.in
                ${RW_FLASH_RESERVE_LD} @ONLY)
 
-target_link_options(remotewake PRIVATE -T${RW_FLASH_RESERVE_LD})
-set_target_properties(remotewake PROPERTIES LINK_DEPENDS ${RW_FLASH_RESERVE_LD})
+target_link_options(roosterwake PRIVATE -T${RW_FLASH_RESERVE_LD})
+set_target_properties(roosterwake PROPERTIES LINK_DEPENDS ${RW_FLASH_RESERVE_LD})
 
 # ── Outputs ───────────────────────────────────────────────────────────────────
 
-pico_enable_stdio_usb(remotewake 1)
-pico_enable_stdio_uart(remotewake 0)
+pico_enable_stdio_usb(roosterwake 1)
+pico_enable_stdio_uart(roosterwake 0)
 
 # These three land in the image's binary-info block and are what `picotool info` prints off a
 # board, so they are the only description a support conversation gets from hardware alone. The URL
 # must be the real repository: an org that does not exist sends anyone who reads it to a 404.
-pico_set_program_name(remotewake "Rooster Wake")
-pico_set_program_description(remotewake "Wake-on-LAN dongle")
-pico_set_program_url(remotewake "https://github.com/phodgers/remotewake")
+pico_set_program_name(roosterwake "Rooster Wake")
+pico_set_program_description(roosterwake "Wake-on-LAN dongle")
+pico_set_program_url(roosterwake "https://github.com/phodgers/roosterwake")
 
 # ── Packaging the UF2 ─────────────────────────────────────────────────────────
 #
@@ -381,9 +381,9 @@ set(RW_UF2_ARGS "--platform;${RW_PICOTOOL_PLATFORM}")
 if (PICO_PLATFORM STREQUAL "rp2350-arm-s")
     list(APPEND RW_UF2_ARGS "--abs-block" "${RW_ABS_BLOCK_ADDR}")
 endif()
-set_target_properties(remotewake PROPERTIES PICOTOOL_EXTRA_UF2_ARGS "${RW_UF2_ARGS}")
+set_target_properties(roosterwake PROPERTIES PICOTOOL_EXTRA_UF2_ARGS "${RW_UF2_ARGS}")
 
-pico_add_extra_outputs(remotewake)
+pico_add_extra_outputs(roosterwake)
 
 # ── Host tests ────────────────────────────────────────────────────────────────
 #

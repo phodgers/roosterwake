@@ -57,7 +57,7 @@ _Static_assert(sizeof(RW_SETUP_SSID_PREFIX) - 1 + RW_SETUP_SSID_SUFFIX_LEN <= 32
                "setup SSID prefix leaves no room for the -XXXX suffix within 32 bytes");
 
 /* WebSocket subprotocol (PROTOCOL.md §1). A relay that does not echo this is not a relay. */
-#define RW_WS_SUBPROTOCOL "remotewake.v1"
+#define RW_WS_SUBPROTOCOL "roosterwake.v1"
 
 /* Wire protocol major version (PROTOCOL.md §10) and usbcfg protocol version (usbcfg.md §8). */
 #define RW_PROTO_VERSION  1

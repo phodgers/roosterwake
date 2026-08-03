@@ -192,7 +192,7 @@ async function handshake(client, { deviceId, token, nonceC = randomBytes(16).toS
 
 // ── §12 minimal conformance ─────────────────────────────────────────────────
 
-test('§12.1 the relay echoes the remotewake.v1 subprotocol', async () => {
+test('§12.1 the relay echoes the roosterwake.v1 subprotocol', async () => {
   await withRelay({}, async (ctx) => {
     const client = new RawClient(ctx.ws);
     assert.equal(await client.opened, SUBPROTOCOL);

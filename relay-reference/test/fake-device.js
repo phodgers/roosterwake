@@ -36,7 +36,7 @@ import WebSocket from 'ws';
 
 // ── Protocol constants (PROTOCOL.md §1, §8, §9) ─────────────────────────────
 
-const SUBPROTOCOL = 'remotewake.v1';
+const SUBPROTOCOL = 'roosterwake.v1';
 const PROTOCOL_VERSION = 1;
 
 /** §9: literal bytes. Not JSON.stringify of an object — the byte sequence is the contract. */
