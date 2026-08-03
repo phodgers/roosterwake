@@ -397,7 +397,7 @@ static void test_restart_decision(void) {
     RW_CHECK(!rw_config_needs_restart(&before, &after));
 
     /* The things setup writes at step 4. None of them touches the radio. */
-    snprintf(after.relay_url, sizeof(after.relay_url), "wss://relay.remotewake.com/ws");
+    snprintf(after.relay_url, sizeof(after.relay_url), "wss://relay.roosterwake.com/ws");
     snprintf(after.token, sizeof(after.token), "%064d", 7);
     after.target_count = 1;
     RW_CHECK(!rw_config_needs_restart(&before, &after));

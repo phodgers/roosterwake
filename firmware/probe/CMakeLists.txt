@@ -72,7 +72,7 @@ target_compile_definitions(probe PRIVATE PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS=
 set_source_files_properties(main.c PROPERTIES
     COMPILE_OPTIONS "-Wall;-Wextra;-Wshadow;-Wundef;-Werror")
 
-pico_set_program_name(probe "Remote Wake slot probe")
+pico_set_program_name(probe "Rooster Wake slot probe")
 
 set(RW_UF2_ARGS "--platform;${RW_PICOTOOL_PLATFORM}")
 if (PICO_PLATFORM STREQUAL "rp2350-arm-s")

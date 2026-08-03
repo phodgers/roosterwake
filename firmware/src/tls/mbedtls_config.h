@@ -1,5 +1,5 @@
 /*
- * mbedTLS configuration for Remote Wake.
+ * mbedTLS configuration for Rooster Wake.
  *
  * Picked up through the SDK's pico_mbedtls_config.h, which does `#include "mbedtls_config.h"`
  * and finds this file because firmware/src/tls is on the include path.

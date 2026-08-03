@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026 the Remote Wake authors.
+// Copyright (C) 2026 the Rooster Wake authors.
 
 /**
- * Remote Wake — fake device.
+ * Rooster Wake — fake device.
  *
  * A dongle made of software. It speaks the device half of ../../PROTOCOL.md over a real
  * WebSocket: the mutual challenge-response handshake, the 25-second application-level
@@ -259,7 +259,7 @@ export class FakeDevice extends EventEmitter {
       // this check is the difference between a clear error and a socket that hangs forever.
       if (ws.protocol !== SUBPROTOCOL) {
         this.log.error(
-          `relay did not echo the ${SUBPROTOCOL} subprotocol — this is not a Remote Wake relay`,
+          `relay did not echo the ${SUBPROTOCOL} subprotocol — this is not a Rooster Wake relay`,
         );
         ws.close(1002, 'subprotocol');
         return;

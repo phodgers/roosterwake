@@ -1,4 +1,4 @@
-# Remote Wake firmware
+# Rooster Wake firmware
 
 C firmware for a Raspberry Pi Pico 2 W, built on pico-sdk 2.2.0. MIT licensed.
 
@@ -117,8 +117,8 @@ Three ways in, all writing the same flash record. Whichever finishes first wins.
 
 | Path | How |
 |---|---|
-| **Setup hotspot** | An unconfigured device raises an open AP called `RemoteWake-Setup-XXXX`. Join it from a phone and the captive portal opens by itself — pick a network, enter the password, give it a PC's MAC address |
-| **USB serial** | The line protocol in [`docs/usbcfg.md`](docs/usbcfg.md), driven from a terminal, a script, or `setup.remotewake.com` via Web Serial |
+| **Setup hotspot** | An unconfigured device raises an open AP called `RoosterWake-Setup-XXXX`. Join it from a phone and the captive portal opens by itself — pick a network, enter the password, give it a PC's MAC address |
+| **USB serial** | The line protocol in [`docs/usbcfg.md`](docs/usbcfg.md), driven from a terminal, a script, or `setup.roosterwake.com` via Web Serial |
 | **Config UF2** | [`tools/mkconfig`](../tools/mkconfig) builds an image carrying a whole configuration; drag it onto BOOTSEL and the device comes up provisioned with no interaction at all |
 
 The portal is a single HTML file in [`src/provisioning/portal/`](src/provisioning/portal), gzipped

@@ -13,9 +13,9 @@ static void test_parsing(void) {
 
     rw_url_t u;
 
-    RW_CHECK(rw_url_parse("wss://relay.remotewake.com/ws", &u));
+    RW_CHECK(rw_url_parse("wss://relay.roosterwake.com/ws", &u));
     RW_CHECK(u.tls);
-    RW_CHECK_EQ_STR(u.host, "relay.remotewake.com");
+    RW_CHECK_EQ_STR(u.host, "relay.roosterwake.com");
     RW_CHECK_EQ_INT(u.port, 443);
     RW_CHECK_EQ_STR(u.path, "/ws");
 
@@ -94,7 +94,7 @@ static void test_plaintext_policy(void) {
 
     RW_CHECK(!rw_url_plaintext_permitted("8.8.8.8"));
     RW_CHECK(!rw_url_plaintext_permitted("1.1.1.1"));
-    RW_CHECK(!rw_url_plaintext_permitted("relay.remotewake.com"));
+    RW_CHECK(!rw_url_plaintext_permitted("relay.roosterwake.com"));
 
     /*
      * A hostname is not evidence of where it points. The check runs before DNS on purpose: a

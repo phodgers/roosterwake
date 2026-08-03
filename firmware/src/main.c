@@ -1,5 +1,5 @@
 /*
- * Remote Wake firmware entry point.
+ * Rooster Wake firmware entry point.
  *
  * One thread, one loop, no allocation after start-up. Everything that can block is either
  * bounded and pumped (rw_sys_pump_ms) or deferred to this loop by the layer that received it.

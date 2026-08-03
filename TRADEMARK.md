@@ -23,29 +23,34 @@ The firmware, the case and the tools are MIT licensed. The reference relay is AG
 
 ## What the trademark covers
 
-The name **Remote Wake**, the Remote Wake logo, and the `remotewake.com` domain are
-trademarks of Puresoft Ltd. Trademark law is separate from copyright law: a permissive
-software licence grants rights to the *code*, never to the *brand*.
+The name **Rooster Wake**, the rooster logo, and the `roosterwake.com` and `roosterwake.com`
+domains are trademarks of Puresoft Ltd. Trademark law is separate from copyright law: a
+permissive software licence grants rights to the *code*, never to the *brand*.
 
 So, specifically — you may **not**, without written permission:
 
-- Name your fork, product, service or company "Remote Wake", or anything close enough to be
+- Name your fork, product, service or company "Rooster Wake", or anything close enough to be
   confusing.
-- Use the Remote Wake logo as the logo of your fork, product or service.
-- Describe your fork or service as "official", "certified", "endorsed by", or "the" Remote
+- Use the rooster logo as the logo of your fork, product or service.
+- Describe your fork or service as "official", "certified", "endorsed by", or "the" Rooster
   Wake — or imply any of that through styling, domain names or app-store listings.
 - Register domain names, social accounts, or app-store listings using the mark.
-- Sell hardware branded as "Remote Wake" or in packaging that presents itself as ours.
+- Sell hardware branded as "Rooster Wake" or in packaging that presents itself as ours.
+
+The words **wake on LAN**, **remote wake** and **wake your PC** are not claimed and could not
+be: they describe the capability, every vendor in the category uses them, and a mark that
+merely describes what a product does is not registrable. Describe your fork with them freely.
+That distinction is the reason the product is not called Remote Wake.
 
 ## What you may say about your fork
 
 Accurate, descriptive references are fine and always have been. You do not need permission to
 write any of these:
 
-- "Compatible with the Remote Wake protocol."
-- "Based on Remote Wake."
-- "A fork of Remote Wake."
-- "Works with Remote Wake dongles."
+- "Compatible with the Rooster Wake protocol."
+- "Based on Rooster Wake."
+- "A fork of Rooster Wake."
+- "Works with Rooster Wake dongles."
 
 The test is whether a reasonable person would think your thing *is* ours, or is endorsed by
 us. Describing a relationship is fine; implying identity or endorsement is not.
@@ -64,7 +69,7 @@ That boundary is not going to move. Holding the mark is what lets us promise tha
 
 ## Raspberry Pi
 
-Remote Wake is not affiliated with, sponsored by, or endorsed by Raspberry Pi Ltd. The
+Rooster Wake is not affiliated with, sponsored by, or endorsed by Raspberry Pi Ltd. The
 Raspberry Pi Pico 2 W is used unmodified and with its own branding intact; "Raspberry Pi" and
 "Pico" are trademarks of Raspberry Pi Ltd, used here descriptively to identify the hardware.
 
@@ -72,7 +77,7 @@ Raspberry Pi Pico 2 W is used unmodified and with its own branding intact; "Rasp
 
 We are not looking for reasons to say no. If you want to do something this document does not
 obviously permit — a community meetup, a book, a regional reseller arrangement, a
-compatibility badge — open an issue or email `legal@remotewake.com` and ask. Most requests of
+compatibility badge — open an issue or email `legal@roosterwake.com` and ask. Most requests of
 that shape get a yes.
 
 ---

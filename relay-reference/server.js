@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026 the Remote Wake authors.
+// Copyright (C) 2026 the Rooster Wake authors.
 
 /**
- * Remote Wake — reference relay.
+ * Rooster Wake — reference relay.
  *
  * A complete, single-tenant implementation of the dongle↔relay protocol specified in
  * ../PROTOCOL.md. It holds one WebSocket per device and exposes a small HTTP API so that
@@ -468,7 +468,7 @@ class Connection {
       frame = JSON.parse(text);
     } catch {
       // Malformed JSON during the handshake is worth failing loudly, because it almost always
-      // means the socket is not talking to a Remote Wake device at all. Afterwards it is a
+      // means the socket is not talking to a Rooster Wake device at all. Afterwards it is a
       // damaged frame on an otherwise good link, and dropping it is kinder than a reconnect.
       if (this.state !== 'open') {
         this.send({ t: 'hello_ack', ok: false, err: 'bad_frame' });
@@ -804,8 +804,8 @@ export function createRelay(rawConfig, options = {}) {
     }
 
     // §1 describes what a device does when the *relay* omits the subprotocol header: it closes,
-    // because it has been pointed at something that is not a Remote Wake relay. The mirror
-    // image is handled here. A client that does not offer `remotewake.v1` is not a Remote Wake
+    // because it has been pointed at something that is not a Rooster Wake relay. The mirror
+    // image is handled here. A client that does not offer `remotewake.v1` is not a Rooster Wake
     // device, and refusing the upgrade outright gives whoever pointed it here a readable error
     // instead of a socket that hangs until the handshake timer fires.
     const offered = (req.headers['sec-websocket-protocol'] ?? '')

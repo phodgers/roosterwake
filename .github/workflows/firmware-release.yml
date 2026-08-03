@@ -12,7 +12,7 @@ name: firmware release
 #   -b.rwfw         the signed slot B image, streamed to a device running slot A
 #
 # The UF2s are attached to the GitHub release so nobody needs a toolchain to own this device. All
-# four go to the firmware registry, which is what setup.remotewake.com and the relay read.
+# four go to the firmware registry, which is what setup.roosterwake.com and the relay read.
 
 on:
   push:
@@ -190,7 +190,7 @@ jobs:
             echo
             echo "**You do not need a toolchain.** Pick whichever suits you:"
             echo
-            echo "1. **Browser** — open <https://setup.remotewake.com>, plug the dongle in, and"
+            echo "1. **Browser** — open <https://setup.roosterwake.com>, plug the dongle in, and"
             echo "   follow the steps. It writes both files for you. Chromium-based browsers only"
             echo "   (Web Serial and WebUSB)."
             echo "2. **Drag and drop** — hold BOOTSEL while plugging the board in, then copy"
@@ -242,14 +242,14 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
-          name: Remote Wake firmware ${{ steps.ver.outputs.version }}
+          name: Rooster Wake firmware ${{ steps.ver.outputs.version }}
           body_path: notes.md
           files: dist/*
           fail_on_unmatched_files: true
 
       # Publishes every artefact to the firmware registry, so nothing downstream has a version
       # number compiled into it. Without this step a release is a file on a web page:
-      # setup.remotewake.com reads `firmware_releases` to know what to install, and the relay
+      # setup.roosterwake.com reads `firmware_releases` to know what to install, and the relay
       # reads it to know what to offer.
       #
       # The BYTES are uploaded, not a download URL for the endpoint to fetch. This repository is
@@ -284,7 +284,7 @@ jobs:
               # exit code. A 409 means this version already exists with different contents, which is
               # a real problem and should stop the workflow rather than be logged and ignored.
               curl -sS --fail-with-body -X POST \
-                "https://admin.remotewake.com/api/firmware/releases?version=${v}&board=${board}&kind=${kind}&channel=stable" \
+                "https://admin.roosterwake.com/api/firmware/releases?version=${v}&board=${board}&kind=${kind}&channel=stable" \
                 -H "authorization: Bearer ${ADMIN_API_KEY}" \
                 -H 'content-type: application/octet-stream' \
                 -H "x-firmware-sha256: ${sha}" \

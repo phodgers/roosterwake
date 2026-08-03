@@ -1,5 +1,5 @@
 /*
- * lwIP configuration for Remote Wake.
+ * lwIP configuration for Rooster Wake.
  *
  * NO_SYS, poll mode: there is no TCP/IP thread and no locking. Every lwIP callback runs on the
  * main loop because the main loop is the only thing that calls cyw43_arch_poll(). See

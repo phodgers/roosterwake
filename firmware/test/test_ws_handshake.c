@@ -37,7 +37,7 @@ static void test_request(void) {
     rw_test_begin("upgrade request");
 
     char   out[512];
-    size_t n = rw_ws_build_request(out, sizeof(out), "relay.remotewake.com", 443, true, "/ws",
+    size_t n = rw_ws_build_request(out, sizeof(out), "relay.roosterwake.com", 443, true, "/ws",
                                    "dGhlIHNhbXBsZSBub25jZQ==", RW_WS_SUBPROTOCOL);
     RW_CHECK(n > 0);
     RW_CHECK_EQ_INT(strlen(out), n);
@@ -45,7 +45,7 @@ static void test_request(void) {
     RW_CHECK(strstr(out, "GET /ws HTTP/1.1\r\n") == out);
     /* The default port is omitted: a relay behind virtual hosting matches the header verbatim,
      * and "host:443" is not the same string as "host". */
-    RW_CHECK_MSG(strstr(out, "Host: relay.remotewake.com\r\n") != NULL, "Host header wrong");
+    RW_CHECK_MSG(strstr(out, "Host: relay.roosterwake.com\r\n") != NULL, "Host header wrong");
     RW_CHECK(strstr(out, "Upgrade: websocket\r\n") != NULL);
     RW_CHECK(strstr(out, "Connection: Upgrade\r\n") != NULL);
     RW_CHECK(strstr(out, "Sec-WebSocket-Version: 13\r\n") != NULL);
@@ -65,7 +65,7 @@ static void test_request(void) {
     RW_CHECK(strstr(out, "Host: 10.0.0.5\r\n") != NULL);
 
     /* Refused rather than truncated when it does not fit. */
-    RW_CHECK_EQ_INT(rw_ws_build_request(out, 32, "relay.remotewake.com", 443, true, "/ws", "k",
+    RW_CHECK_EQ_INT(rw_ws_build_request(out, 32, "relay.roosterwake.com", 443, true, "/ws", "k",
                                         RW_WS_SUBPROTOCOL),
                     0);
 }
@@ -149,7 +149,7 @@ static void test_response(void) {
 
     /*
      * The case PROTOCOL.md §1 exists for: a perfectly good WebSocket endpoint that is not a
-     * Remote Wake relay. Somebody's Home Assistant, a misconfigured reverse proxy. The device
+     * Rooster Wake relay. Somebody's Home Assistant, a misconfigured reverse proxy. The device
      * must close rather than wait for a `challenge` that will never arrive.
      */
     const char *no_subprotocol = "HTTP/1.1 101 Switching Protocols\r\n"

@@ -1,5 +1,4 @@
-<!-- Brand strings in this file are the working name (see remotewake.com). -->
-# Remote Wake
+# Rooster Wake
 
 **A tiny always-on Wi-Fi dongle that wakes your sleeping PC from anywhere.**
 
@@ -7,7 +6,7 @@ Wake-on-LAN magic packets are LAN broadcasts. They cannot cross the internet. So
 inside your network has to send one — and for most people today, that something is a PC they
 left switched on.
 
-Remote Wake is a Raspberry Pi Pico 2 W in a snap case, plugged into any mains socket near
+Rooster Wake is a Raspberry Pi Pico 2 W in a snap case, plugged into any mains socket near
 your router. It holds an *outbound* TLS connection to a relay, so there are no ports to
 forward and nothing exposed to the internet. When a wake command arrives, it broadcasts the
 magic packet on your LAN. Your PC can be properly asleep, and nothing else in the house has
@@ -25,7 +24,7 @@ will.
 
 **Buy it.** If you would rather not print a case and source parts, we sell a kit —
 a Pico 2 W, an official Raspberry Pi power supply, and the case, pre-flashed and ready.
-[remotewake.com](https://remotewake.com)
+[roosterwake.com](https://roosterwake.com)
 
 **Subscribe.** Our hosted relay is free for basic remote wake, with a paid tier for voice
 assistants, scheduled wakes, wake confirmation, and multiple devices.
@@ -62,7 +61,7 @@ See [`docs/QUICKSTART.md`](docs/QUICKSTART.md) for the full walkthrough. In brie
 
 1. Flash `remotewake.uf2` onto a Pico 2 W by holding BOOTSEL while plugging it in, then
    dragging the file onto the drive that appears.
-2. Power it up. It starts a Wi-Fi hotspot called `RemoteWake-Setup-XXXX`.
+2. Power it up. It starts a Wi-Fi hotspot called `RoosterWake-Setup-XXXX`.
 3. Join that hotspot from your phone. A setup page opens automatically.
 4. Pick your network, enter the password, and enter the MAC address of the PC you want to
    wake.
@@ -110,4 +109,4 @@ Firmware, case and tools are MIT. The reference relay is AGPL-3.0. The **code** 
 **name and logo** are not — see [`TRADEMARK.md`](TRADEMARK.md), which explains exactly what
 you can do (a lot) and what you cannot (call your fork ours).
 
-Remote Wake is not affiliated with Raspberry Pi Ltd.
+Rooster Wake is not affiliated with Raspberry Pi Ltd.

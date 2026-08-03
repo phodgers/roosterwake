@@ -1,7 +1,7 @@
 {
   "name": "@remotewake/mkconfig",
   "version": "1.0.0",
-  "description": "Generate a Remote Wake configuration UF2 for headless provisioning of a Pico 2 W dongle",
+  "description": "Generate a Rooster Wake configuration UF2 for headless provisioning of a Pico 2 W dongle",
   "license": "MIT",
   "type": "module",
   "bin": {

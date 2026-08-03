@@ -1,4 +1,4 @@
-# Remote Wake firmware — Raspberry Pi Pico 2 W (RP2350A, CYW43439)
+# Rooster Wake firmware — Raspberry Pi Pico 2 W (RP2350A, CYW43439)
 #
 # SPDX-License-Identifier: MIT
 
@@ -262,8 +262,8 @@ target_compile_definitions(remotewake PRIVATE
 # product remains a one-file edit; they are passed as definitions because the SDK's descriptor
 # table is built from macros, not from a header it includes.
 target_compile_definitions(remotewake PRIVATE
-    USBD_MANUFACTURER="Remote Wake"
-    USBD_PRODUCT="Remote Wake"
+    USBD_MANUFACTURER="Rooster Wake"
+    USBD_PRODUCT="Rooster Wake"
 )
 
 # ── Radio tracing shim ────────────────────────────────────────────────────────
@@ -354,9 +354,12 @@ set_target_properties(remotewake PROPERTIES LINK_DEPENDS ${RW_FLASH_RESERVE_LD})
 pico_enable_stdio_usb(remotewake 1)
 pico_enable_stdio_uart(remotewake 0)
 
-pico_set_program_name(remotewake "Remote Wake")
+# These three land in the image's binary-info block and are what `picotool info` prints off a
+# board, so they are the only description a support conversation gets from hardware alone. The URL
+# must be the real repository: an org that does not exist sends anyone who reads it to a 404.
+pico_set_program_name(remotewake "Rooster Wake")
 pico_set_program_description(remotewake "Wake-on-LAN dongle")
-pico_set_program_url(remotewake "https://github.com/remotewake/remotewake")
+pico_set_program_url(remotewake "https://github.com/phodgers/remotewake")
 
 # ── Packaging the UF2 ─────────────────────────────────────────────────────────
 #

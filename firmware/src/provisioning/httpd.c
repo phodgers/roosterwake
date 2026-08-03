@@ -76,10 +76,10 @@ static void build_stub(void) {
         s_stub, sizeof(s_stub),
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-        "<title>Remote Wake setup</title>"
+        "<title>Rooster Wake setup</title>"
         "<meta http-equiv=\"refresh\" content=\"0;url=%s\"></head>"
         "<body style=\"font:16px system-ui,sans-serif;margin:2rem\">"
-        "<h1>Remote Wake setup</h1>"
+        "<h1>Rooster Wake setup</h1>"
         "<p>Continue to <a href=\"%s\">%s</a></p></body></html>",
         s_redirect, s_redirect, s_redirect);
 }

@@ -62,7 +62,7 @@ size_t rw_ws_build_request(char *out, size_t out_len, const char *host, uint16_t
  * same TCP segment as the response.
  *
  * A missing Sec-WebSocket-Protocol is a hard failure (PROTOCOL.md §1). That is how a device
- * detects it has been pointed at something that is not a Remote Wake relay, and the
+ * detects it has been pointed at something that is not a Rooster Wake relay, and the
  * alternative — connecting anyway and waiting for a `challenge` that never arrives — is how a
  * device on a hotel network sits there blinking for an hour.
  */

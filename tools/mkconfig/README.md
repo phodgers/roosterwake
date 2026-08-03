@@ -1,6 +1,6 @@
 # mkconfig
 
-Generate a configuration UF2 for a Remote Wake dongle. Drag it onto the BOOTSEL drive and the
+Generate a configuration UF2 for a Rooster Wake dongle. Drag it onto the BOOTSEL drive and the
 device comes up already provisioned — no hotspot, no captive portal, no phone.
 
 Useful when you are setting up more than one device, when the dongle is going somewhere you

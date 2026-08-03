@@ -2,7 +2,7 @@
 
 **Version 1** · Status: **stable**
 
-This document specifies the on-flash layout of a Remote Wake device's configuration. It is a
+This document specifies the on-flash layout of a Rooster Wake device's configuration. It is a
 **public, versioned contract**, because three independent implementations must agree on it
 byte for byte:
 
@@ -79,7 +79,7 @@ it is zero.
 | 0 | 33 | `ssid` | Max 32 bytes + NUL. Empty means unprovisioned |
 | 33 | 65 | `psk` | Max 64 bytes + NUL. Empty for an open network |
 | 98 | 1 | `wifi_auth` | `0` open · `1` WPA2-PSK · `2` WPA3-SAE · `255` auto-detect (default) |
-| 99 | 129 | `relay_url` | Max 128 bytes + NUL. e.g. `wss://relay.remotewake.com/ws` |
+| 99 | 129 | `relay_url` | Max 128 bytes + NUL. e.g. `wss://relay.roosterwake.com/ws` |
 | 228 | 17 | `device_id` | 16 lower-case hex chars + NUL |
 | 245 | 65 | `token` | 64 lower-case hex chars + NUL |
 | 310 | 129 | `owner_email` | Max 128 bytes + NUL. Empty unless an adoption is pending |

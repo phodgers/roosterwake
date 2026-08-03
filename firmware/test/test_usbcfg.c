@@ -240,8 +240,8 @@ static void test_staging(void) {
 
     rw_test_begin("SET_RELAY accepts wss anywhere");
     rw_stage_init(&st, &base);
-    RW_CHECK(rw_stage_set_relay(&st, "wss://relay.remotewake.com/ws") == RW_UERR_NONE);
-    RW_CHECK_EQ_STR(st.cfg.relay_url, "wss://relay.remotewake.com/ws");
+    RW_CHECK(rw_stage_set_relay(&st, "wss://relay.roosterwake.com/ws") == RW_UERR_NONE);
+    RW_CHECK_EQ_STR(st.cfg.relay_url, "wss://relay.roosterwake.com/ws");
 
     rw_test_begin("SET_RELAY accepts ws only for private addresses (§4)");
     RW_CHECK(rw_stage_set_relay(&st, "ws://192.168.1.10:8080/ws") == RW_UERR_NONE);
@@ -253,8 +253,8 @@ static void test_staging(void) {
     RW_CHECK(rw_stage_set_relay(&st, "ws://8.8.8.8/ws") == RW_UERR_BAD_ARG);
 
     rw_test_begin("SET_RELAY refuses non-websocket schemes and rubbish");
-    RW_CHECK(rw_stage_set_relay(&st, "https://relay.remotewake.com/ws") == RW_UERR_BAD_ARG);
-    RW_CHECK(rw_stage_set_relay(&st, "relay.remotewake.com") == RW_UERR_BAD_ARG);
+    RW_CHECK(rw_stage_set_relay(&st, "https://relay.roosterwake.com/ws") == RW_UERR_BAD_ARG);
+    RW_CHECK(rw_stage_set_relay(&st, "relay.roosterwake.com") == RW_UERR_BAD_ARG);
     RW_CHECK(rw_stage_set_relay(&st, "") == RW_UERR_BAD_ARG);
     RW_CHECK(rw_stage_set_relay(&st, NULL) == RW_UERR_BAD_ARG);
 
@@ -401,7 +401,7 @@ static void test_response_encoders(void) {
     snprintf(cfg.psk, sizeof(cfg.psk), "SUPERSECRETWIFIPASSWORD");
     snprintf(cfg.token, sizeof(cfg.token), "d34db33fd34db33fd34db33fd34db33f");
     snprintf(cfg.owner_email, sizeof(cfg.owner_email), "philip@example.com");
-    snprintf(cfg.relay_url, sizeof(cfg.relay_url), "wss://relay.remotewake.com/ws");
+    snprintf(cfg.relay_url, sizeof(cfg.relay_url), "wss://relay.roosterwake.com/ws");
     snprintf(cfg.device_id, sizeof(cfg.device_id), "a1b2c3d4e5f60718");
     cfg.wifi_auth       = RW_WIFI_AUTH_WPA2;
     cfg.target_count    = 1;

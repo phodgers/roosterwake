@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Remote Wake reference relay.
+# Rooster Wake reference relay.
 #
 #   docker build -t remotewake-relay .
 #   docker run --rm -p 8080:8080 -v "$PWD/config.json:/app/config.json:ro" remotewake-relay

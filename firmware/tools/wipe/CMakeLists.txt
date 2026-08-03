@@ -47,7 +47,7 @@ pico_enable_stdio_uart(wipe 0)
 set_source_files_properties(main.c PROPERTIES
     COMPILE_OPTIONS "-Wall;-Wextra;-Wshadow;-Wundef;-Werror")
 
-pico_set_program_name(wipe "Remote Wake flash wipe")
+pico_set_program_name(wipe "Rooster Wake flash wipe")
 
 set(RW_UF2_ARGS "--platform;${RW_PICOTOOL_PLATFORM}")
 set_target_properties(wipe PROPERTIES PICOTOOL_EXTRA_UF2_ARGS "${RW_UF2_ARGS}")

@@ -1,4 +1,4 @@
-# Remote Wake reference relay.
+# Rooster Wake reference relay.
 #
 #   cp config.json.example config.json   # then edit it
 #   docker compose up -d

@@ -206,7 +206,7 @@ test('buildUf2 produces well-formed blocks at the right address', () => {
 test('a UF2 round-trips back to the original config', () => {
   const cfg = {
     ssid: 'HomeNet', psk: 'hunter2', wifi_auth: 'wpa2',
-    relay_url: 'wss://relay.remotewake.com/ws',
+    relay_url: 'wss://relay.roosterwake.com/ws',
     device_id: 'a1b2c3d4e5f60718', token: 'e'.repeat(64),
     targets: [{ name: 'Desktop', mac: 'AA:BB:CC:DD:EE:FF' }, { name: 'NAS', mac: '11:22:33:44:55:66' }],
   };

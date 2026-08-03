@@ -15,7 +15,7 @@
 #include <assert.h>
 
 /* Display name. Used in the captive portal, the USB product string and log banners. */
-#define RW_PRODUCT_NAME "Remote Wake"
+#define RW_PRODUCT_NAME "Rooster Wake"
 
 /*
  * USB descriptor strings (usbcfg.md §1). VID is Raspberry Pi's 0x2E8A, the SDK default.
@@ -25,18 +25,29 @@
  * header it includes. Change them here and there together; the assertion below is the reminder
  * that they are the same strings.
  */
-#define RW_USB_MANUFACTURER "Remote Wake"
+#define RW_USB_MANUFACTURER "Rooster Wake"
 #define RW_USB_PRODUCT      RW_PRODUCT_NAME
 
 _Static_assert(sizeof(RW_USB_PRODUCT) <= 20,
                "USB string descriptors are capped at 20 characters by USBD_DESC_STR_MAX");
 
-/* Relay endpoint used when flash config carries no relay_url (PROTOCOL.md §1). */
-#define RW_DEFAULT_RELAY_URL "wss://relay.remotewake.com/ws"
+/*
+ * Relay endpoint used when flash config carries no relay_url (PROTOCOL.md §1).
+ *
+ * This string is compiled in, and a device dials it forever unless reconfigured — so whatever
+ * host it names has to keep resolving for the service life of every unit that ships with it.
+ * Changing it after units are in the field means an OTA that travels over the OLD endpoint,
+ * with the old host kept alive until the last device has taken the update.
+ *
+ * That cost was not paid here: the value moved from remotewake.com while the only two devices
+ * that had ever used it were on a desk, and both were reflashed. The old host is gone. This is
+ * the last moment that was free.
+ */
+#define RW_DEFAULT_RELAY_URL "wss://relay.roosterwake.com/ws"
 
 /* Setup hotspot SSID is RW_SETUP_SSID_PREFIX "-XXXX", the four hex characters being the low
  * 16 bits of the device_id, so two dongles powered up in the same room are distinguishable. */
-#define RW_SETUP_SSID_PREFIX "RemoteWake-Setup"
+#define RW_SETUP_SSID_PREFIX "RoosterWake-Setup"
 #define RW_SETUP_SSID_SUFFIX_LEN 5 /* '-' plus four hex digits */
 
 /* IEEE 802.11 caps an SSID at 32 octets. A rename that overflows it produces a hotspot that
@@ -53,7 +64,7 @@ _Static_assert(sizeof(RW_SETUP_SSID_PREFIX) - 1 + RW_SETUP_SSID_SUFFIX_LEN <= 32
 #define RW_USBCFG_VERSION 1
 
 /* Firmware version reported in `hello`, `status_result` and `INFO`. */
-#define RW_FW_VERSION "1.10.6"
+#define RW_FW_VERSION "1.11.0"
 
 /*
  * Board identifier reported in `hello` (PROTOCOL.md §4) and `INFO` (usbcfg.md §4).

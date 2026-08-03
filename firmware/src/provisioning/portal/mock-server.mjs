@@ -41,7 +41,7 @@ createServer(async (req, res) => {
 
   if (url.pathname === '/api/info') {
     return json(res, {
-      product: 'Remote Wake', device_id: 'a1b2c3d4e5f60718', fw: '1.0.0',
+      product: 'Rooster Wake', device_id: 'a1b2c3d4e5f60718', fw: '1.0.0',
       board: 'pico2_w', configured: false, ssid: '',
     });
   }

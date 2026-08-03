@@ -1,5 +1,5 @@
 /**
- * Reference encoder/decoder for the Remote Wake flash config record.
+ * Reference encoder/decoder for the Rooster Wake flash config record.
  *
  * This is the JavaScript half of a format implemented twice — the other half is
  * firmware/src/config/config.c, in C, on the device. The two are kept honest by the golden

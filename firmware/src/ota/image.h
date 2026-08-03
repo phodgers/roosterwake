@@ -55,7 +55,7 @@
 typedef enum {
     RW_OTA_OK = 0,
     RW_OTA_ERR_SHORT,     /* fewer than RW_OTA_HEADER_LEN bytes offered */
-    RW_OTA_ERR_MAGIC,     /* not a Remote Wake image */
+    RW_OTA_ERR_MAGIC,     /* not a Rooster Wake image */
     RW_OTA_ERR_FORMAT,    /* a format version this build does not understand */
     RW_OTA_ERR_FLAGS,     /* reserved bits set */
     RW_OTA_ERR_LENGTH,    /* empty, or larger than the slot it must fit */

@@ -1,8 +1,8 @@
-# Remote Wake wire protocol
+# Rooster Wake wire protocol
 
 **Version 1** · Status: **stable** · Last changed: 2026-07-29
 
-This document specifies the protocol between a Remote Wake device (the "dongle") and a relay.
+This document specifies the protocol between a Rooster Wake device (the "dongle") and a relay.
 It is the public contract. Our hosted service implements it, the reference relay in
 [`relay-reference/`](relay-reference/) implements it, and any third-party firmware or relay
 that implements it correctly will interoperate with both.
@@ -21,12 +21,12 @@ subtly wrong.
 
 - **WebSocket over TLS** (`wss://`). Plain `ws://` is permitted only for loopback and
   RFC 1918 addresses, and firmware built for production refuses it otherwise.
-- Default endpoint: `wss://relay.remotewake.com/ws`. Configurable per device; self-hosters
+- Default endpoint: `wss://relay.roosterwake.com/ws`. Configurable per device; self-hosters
   point it wherever they like.
 - **Subprotocol**: the client sends `Sec-WebSocket-Protocol: remotewake.v1`. A relay that
   understands this protocol MUST echo it. A relay that does not MUST omit the header, and the
   client MUST then close the connection — this is how a device detects that it has been
-  pointed at something that is not a Remote Wake relay (a captive portal, a misconfigured
+  pointed at something that is not a Rooster Wake relay (a captive portal, a misconfigured
   reverse proxy, someone's Home Assistant) instead of hanging.
   Symmetrically, a relay MUST **refuse the upgrade** (HTTP 400) when the client does not offer
   `remotewake.v1`, rather than accepting the socket and waiting for a `hello` that will never

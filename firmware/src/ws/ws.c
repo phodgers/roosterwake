@@ -176,7 +176,7 @@ static void handle_handshake_bytes(rw_ws_client_t *ws) {
             ws_teardown(ws, RW_WS_FAIL_HANDSHAKE, 0);
             return;
         case RW_WS_HS_NO_SUBPROTOCOL:
-            /* PROTOCOL.md §1: the endpoint speaks WebSocket but is not a Remote Wake relay.
+            /* PROTOCOL.md §1: the endpoint speaks WebSocket but is not a Rooster Wake relay.
              * This is the captive-portal and misconfigured-proxy case, and closing here is
              * what turns a device that hangs forever into one that says so. */
             RW_LOG_ERROR("ws: endpoint did not echo %s - this is not a relay", RW_WS_SUBPROTOCOL);

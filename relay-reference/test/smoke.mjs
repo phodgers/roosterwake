@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026 the Remote Wake authors.
+// Copyright (C) 2026 the Rooster Wake authors.
 
 /**
  * End-to-end conformance tests for the reference relay.

@@ -39,7 +39,7 @@ typedef enum {
     RW_WS_FAIL_CONNECT,
     RW_WS_FAIL_TLS,
     RW_WS_FAIL_HANDSHAKE,     /* not a WebSocket, or the accept value was wrong */
-    RW_WS_FAIL_NO_SUBPROTOCOL,/* answered 101 but is not a Remote Wake relay */
+    RW_WS_FAIL_NO_SUBPROTOCOL,/* answered 101 but is not a Rooster Wake relay */
     RW_WS_FAIL_PROTOCOL,      /* framing violation */
     RW_WS_FAIL_TOO_BIG,       /* the relay exceeded the 2048-byte cap */
     RW_WS_FAIL_TIMEOUT,       /* 75 s without a frame */

@@ -1,6 +1,6 @@
-# Remote Wake reference relay
+# Rooster Wake reference relay
 
-A complete, self-hostable relay for the Remote Wake dongle. Node 20+, one dependency, one
+A complete, self-hostable relay for the Rooster Wake dongle. Node 20+, one dependency, one
 file you can read in a sitting. It implements [`../PROTOCOL.md`](../PROTOCOL.md) in full,
 including every part of the §12 conformance list.
 
@@ -18,7 +18,7 @@ dashboard, and it is not going to grow them.
 That is not an oversight and it is not a crippled build. Everything the *device* does is here
 and complete — the full handshake, the full command set, the diagnostics that matter. What is
 missing is the *service*: accounts, apps, voice assistant skills, uptime, support. That is
-what the hosted relay at [remotewake.com](https://remotewake.com) sells, and it is what pays
+what the hosted relay at [roosterwake.com](https://roosterwake.com) sells, and it is what pays
 for this repository — the firmware, the case, the protocol work and this relay — to exist and
 keep being maintained.
 

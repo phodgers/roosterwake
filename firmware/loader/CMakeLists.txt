@@ -76,7 +76,7 @@ pico_enable_stdio_uart(loader 0)
 set_source_files_properties(main.c PROPERTIES
     COMPILE_OPTIONS "-Wall;-Wextra;-Wshadow;-Wundef;-Werror")
 
-pico_set_program_name(loader "Remote Wake loader")
+pico_set_program_name(loader "Rooster Wake loader")
 
 # --platform states the chip instead of leaving picotool to infer it, and --abs-block moves the
 # RP2350-E10 block out of the top of the XIP window and into the last page of the loader's own

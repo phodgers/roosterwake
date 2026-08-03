@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * mkconfig — generate a data-only UF2 that provisions a Remote Wake dongle.
+ * mkconfig — generate a data-only UF2 that provisions a Rooster Wake dongle.
  *
  * Drag the resulting file onto the BOOTSEL drive and the device comes up configured, with no
  * captive-portal step. This is the open mechanism behind "Path 3" provisioning; the hosted
@@ -25,7 +25,7 @@ import {
 import { buildUf2, parseUf2, flattenUf2, FAMILY, FAMILY_NAME } from '../lib/uf2.mjs';
 
 const USAGE = `
-mkconfig — generate a Remote Wake configuration UF2
+mkconfig — generate a Rooster Wake configuration UF2
 
 USAGE
   mkconfig [options] --out <file.uf2>
@@ -38,7 +38,7 @@ WI-FI
 
 RELAY
   --relay <url>            Relay WebSocket URL (ws:// or wss://, max 128 bytes)
-                           [default: wss://relay.remotewake.com/ws]
+                           [default: wss://relay.roosterwake.com/ws]
   --device-id <hex16>      Device ID, 16 lower-case hex chars. Generated if omitted.
   --token <hex64>          Device token, 64 lower-case hex chars. Generated if omitted.
   --email <address>        Account address to adopt to (hosted service only)
@@ -149,7 +149,7 @@ function doVerify(path) {
   console.log(`Address:   0x${flat.base.toString(16).toUpperCase()}`);
   console.log(`Family:    ${FAMILY_NAME[flat.familyId] ?? 'unknown'} (0x${(flat.familyId ?? 0).toString(16)})`);
   if (!cfg) {
-    console.error('\nPayload is not a valid Remote Wake config record (bad magic, version, or CRC).');
+    console.error('\nPayload is not a valid Rooster Wake config record (bad magic, version, or CRC).');
     process.exit(1);
   }
   console.log(`\nConfiguration (v${cfg.version}, seq ${cfg.seq}):`);
@@ -186,7 +186,7 @@ function main() {
     ssid: args.ssid,
     psk: args.psk,
     wifi_auth: args.auth ?? 'auto',
-    relay_url: args.relay ?? 'wss://relay.remotewake.com/ws',
+    relay_url: args.relay ?? 'wss://relay.roosterwake.com/ws',
     device_id: args.device_id ?? randomBytes(8).toString('hex'),
     token: args.token ?? randomBytes(32).toString('hex'),
     owner_email: args.email,

@@ -2,12 +2,12 @@
 
 **Protocol version 1** · Status: **stable**
 
-A Remote Wake device exposes a line-based command channel over USB CDC. It is how a computer
+A Rooster Wake device exposes a line-based command channel over USB CDC. It is how a computer
 configures a dongle without going near the Wi-Fi captive portal, and it is a **public,
 versioned contract**.
 
 This channel is open and documented deliberately. Our hosted setup page at
-`setup.remotewake.com` drives it through the browser's Web Serial API — but the *channel* is
+`setup.roosterwake.com` drives it through the browser's Web Serial API — but the *channel* is
 open, so anyone can drive it from a terminal, a shell script, a Python tool, or their own web
 page. The polished guided experience is ours; the mechanism belongs to everybody.
 
@@ -25,7 +25,7 @@ page. The polished guided experience is ours; the mechanism belongs to everybody
 | Max line | 512 bytes including the terminator. Longer lines are discarded to the next `\n` and answered `ERR too_long` |
 
 The device presents as VID `0x2E8A` (Raspberry Pi), with the product string
-`Remote Wake` and the serial number set to the 16-hex-character `device_id`. That serial
+`Rooster Wake` and the serial number set to the 16-hex-character `device_id`. That serial
 number is how a host tells two connected dongles apart without sending a command.
 
 **The USB serial number is upper-case hex; `device_id` everywhere else is lower-case.**
@@ -184,7 +184,7 @@ Staged only — nothing is written to flash until `COMMIT`.
 ### `SET_RELAY <url>`
 
 ```
-> SET_RELAY wss://relay.remotewake.com/ws
+> SET_RELAY wss://relay.roosterwake.com/ws
 < OK
 ```
 
@@ -262,7 +262,7 @@ Return the staged-and-saved configuration **with all secrets omitted**.
 
 ```
 > GET_CONFIG
-< OK {"ssid":"HomeNet","auth":"wpa2","psk_set":true,"relay":"wss://relay.remotewake.com/ws",
+< OK {"ssid":"HomeNet","auth":"wpa2","psk_set":true,"relay":"wss://relay.roosterwake.com/ws",
      "device_id":"a1b2c3d4e5f60718","token_set":true,"email_set":false,
      "targets":[{"name":"Office Desktop","mac":"AA:BB:CC:DD:EE:FF"}],"flags":0}
 ```
@@ -428,7 +428,7 @@ config sectors — so a device reflashed this way comes back already provisioned
 < OK
 > ADD_TARGET "Office Desktop" AA:BB:CC:DD:EE:FF
 < OK {"targets":1}
-> SET_RELAY wss://relay.remotewake.com/ws
+> SET_RELAY wss://relay.roosterwake.com/ws
 < OK
 > SET_EMAIL philip@example.com
 < OK
@@ -438,7 +438,7 @@ config sectors — so a device reflashed this way comes back already provisioned
   ... device reboots, port re-enumerates, reconnect ...
 
 > GET_CONFIG
-< OK {"ssid":"HomeNet","auth":"auto","psk_set":true,"relay":"wss://relay.remotewake.com/ws",
+< OK {"ssid":"HomeNet","auth":"auto","psk_set":true,"relay":"wss://relay.roosterwake.com/ws",
      "device_id":"a1b2c3d4e5f60718","token_set":true,"email_set":false,
      "targets":[{"name":"Office Desktop","mac":"AA:BB:CC:DD:EE:FF"}],"flags":0}
 > STATUS
