@@ -1,0 +1,76 @@
+name: Bug report
+description: Something does not work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a security vulnerability, close this and use
+        [private reporting](https://github.com/phodgers/roosterwake/security/advisories/new)
+        instead.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: What you did, what you expected, what you got instead.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Firmware version
+      description: From `INFO` over USB serial, or the setup page. If it is not the firmware, say which component and version.
+      placeholder: "1.11.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: board
+    attributes:
+      label: Board
+      options:
+        - pico2_w (Pico 2 W)
+        - pico_w (Pico W)
+        - Not applicable
+    validations:
+      required: true
+
+  - type: dropdown
+    id: relay
+    attributes:
+      label: Relay
+      description: The two behave differently enough that this changes where to look first.
+      options:
+        - Hosted (roosterwake.com)
+        - Self-hosted (relay-reference)
+        - Other or unknown
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Numbered, from a known starting state. Say if it is intermittent and how often it happens.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Serial log or relay output
+      description: |
+        USB serial at 115200. Paste the log around the failure, not just the last line.
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: secrets
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have removed Wi-Fi passwords and device tokens from anything pasted above.
+          required: true

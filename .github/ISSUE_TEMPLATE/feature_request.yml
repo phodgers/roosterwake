@@ -1,0 +1,49 @@
+name: Feature request
+description: Suggest a change to the device, the protocol or the self-host relay.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The reference relay is deliberately single-tenant. Multi-user accounts, billing and a web
+        dashboard are out of scope — see [CONTRIBUTING.md](https://github.com/phodgers/roosterwake/blob/main/CONTRIBUTING.md).
+        Everything else is open.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do that you cannot do now.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like instead
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Firmware
+        - Wire protocol (PROTOCOL.md)
+        - Self-host relay (relay-reference)
+        - Config tooling (tools/mkconfig)
+        - Case
+        - Documentation
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: protocol
+    attributes:
+      label: Compatibility
+      description: |
+        PROTOCOL.md, usbcfg.md and config-format.md are versioned public API.
+      options:
+        - label: This would change one of those contracts.
+          required: false
