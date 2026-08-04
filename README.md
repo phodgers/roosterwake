@@ -43,7 +43,7 @@ real implementation of it, not a toy.
 |---|---|---|
 | [`firmware/`](firmware/) | Pico 2 W firmware, C, pico-sdk | MIT |
 | [`relay-reference/`](relay-reference/) | Minimal self-host relay, Node + `ws` | AGPL-3.0 |
-| [`case/`](case/) | Snap case: STEP, STL, 3MF, print notes | MIT |
+| [`case/`](case/) | Snap case: STL, print notes | MIT, Adafruit Industries |
 | [`tools/mkconfig/`](tools/mkconfig/) | Generate a config UF2 for headless provisioning | MIT |
 | [`docs/`](docs/) | Quickstart, flashing, provisioning, self-hosting, troubleshooting | — |
 
@@ -105,8 +105,9 @@ Security issues: please see [`SECURITY.md`](SECURITY.md) rather than opening a p
 
 ## Licence and trademark
 
-Firmware, case and tools are MIT. The reference relay is AGPL-3.0. The **code** is free; the
-**name and logo** are not — see [`TRADEMARK.md`](TRADEMARK.md), which explains exactly what
-you can do (a lot) and what you cannot (call your fork ours).
+Firmware and tools are MIT. The reference relay is AGPL-3.0. The case is MIT, Copyright (c) 2016
+Adafruit Industries — see [`case/LICENSE`](case/LICENSE). The **code** is free; the **name and
+logo** are not — see [`TRADEMARK.md`](TRADEMARK.md), which explains exactly what you can do (a
+lot) and what you cannot (call your fork ours).
 
-Rooster Wake is not affiliated with Raspberry Pi Ltd.
+Rooster Wake is not affiliated with Raspberry Pi Ltd or Adafruit Industries.
