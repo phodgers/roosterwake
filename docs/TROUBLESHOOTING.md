@@ -188,15 +188,25 @@ a relay problem.
 
 ### Starting over
 
-Two ways, and both erase the whole configuration:
+Over USB serial:
 
-- **Hold BOOTSEL for five seconds at power-on.** The LED goes solid while it erases both config
-  slots, then the board reboots unprovisioned and raises the setup hotspot again. Releasing the
-  button before five seconds cancels it.
-- **`FACTORY_RESET`** over USB serial.
+```
+FACTORY_RESET CONFIRM
+```
 
-The `device_id` survives either. It is derived from the board's unique flash ID, not stored in
-the config sectors, because PROTOCOL.md §2 requires it to be stable for the life of the device.
+The literal `CONFIRM` is required; without it you get `ERR needs_confirm`. It clears Wi-Fi,
+targets, the relay override, the account address and the enrolled flag, then reboots into setup
+mode. There is no undo and the Wi-Fi password is gone.
+
+**`device_id` and `token` survive.** They identify the hardware rather than its owner, and a
+device that came back with a fresh token would be refused by any relay that already knew it —
+which would turn the recovery action into the thing needing recovery. Re-running setup afterwards
+can bind the device to a different account, which is what makes reset the right answer for a
+mistyped address, a gift or a resale. See §8 of
+[`../firmware/docs/config-format.md`](../firmware/docs/config-format.md).
+
+The firmware also samples BOOTSEL once during startup and treats a five-second hold as the same
+reset. Use the serial command unless you have no cable.
 
 ---
 
