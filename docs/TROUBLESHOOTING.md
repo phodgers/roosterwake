@@ -188,10 +188,15 @@ a relay problem.
 
 ### Starting over
 
-`FACTORY_RESET` over USB serial clears the configuration.
+Two ways, and both erase the whole configuration:
 
-There is currently **no physical button reset** — holding BOOTSEL does not erase configuration,
-whatever older notes may say. Use the serial command.
+- **Hold BOOTSEL for five seconds at power-on.** The LED goes solid while it erases both config
+  slots, then the board reboots unprovisioned and raises the setup hotspot again. Releasing the
+  button before five seconds cancels it.
+- **`FACTORY_RESET`** over USB serial.
+
+The `device_id` survives either. It is derived from the board's unique flash ID, not stored in
+the config sectors, because PROTOCOL.md §2 requires it to be stable for the life of the device.
 
 ---
 

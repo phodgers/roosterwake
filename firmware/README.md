@@ -130,6 +130,9 @@ under `firmware/` is MIT.
 
 ## What is not here yet
 
-No over-the-air firmware update: updates happen by UF2, either drag-and-drop or through the
-setup page's WebUSB flashing. This is a deliberate v1 decision rather than a gap — see §12 of
-[`docs/architecture.md`](docs/architecture.md).
+`sched` — device-side scheduling. PROTOCOL.md §4 reserves the capability but defines no command
+for it, so there is nothing to implement against and it is not advertised. Scheduled wakes are a
+relay-side feature.
+
+Everything else in the capability list is built: `wake`, `status`, `probe`, `scan`, `config` and
+`ota`. See §12 of [`docs/architecture.md`](docs/architecture.md) for what each covers.

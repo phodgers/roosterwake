@@ -292,20 +292,30 @@ the firmware hung; "software" means somebody asked for a reboot. Different probl
 
 ## 12. Scope of this build
 
-This firmware implements the relay side of the product: flash configuration, Wi-Fi, TLS, the
-WebSocket protocol, wake, status, probe, and the LED and watchdog around them.
+This firmware implements the whole device side of the product: flash configuration, Wi-Fi, TLS,
+the WebSocket protocol, and the LED and watchdog around them.
 
-Two things named in the surrounding documents are **not** in this build:
+The capabilities advertised in `hello` (PROTOCOL.md §4) are the authoritative list of what a
+relay may ask this build to do. `RW_CAPS_JSON` in `brand.h` is the single place that decides:
 
-- **The USB serial command channel** ([usbcfg.md](usbcfg.md)). The USB CDC interface is up and
-  the config module it drives is complete, but the command parser is a separate component. An
-  unprovisioned device shows the setup LED pattern and waits.
-- **The Wi-Fi setup hotspot and captive portal.** `RW_SETUP_SSID_PREFIX` in `brand.h` reserves
-  the name and asserts at compile time that it leaves room for the `-XXXX` suffix inside the
-  32-byte SSID limit, but nothing in this build brings up an access point. Until it exists, a
-  device is provisioned over USB or with a config UF2 from `tools/mkconfig`.
+| Capability | Command | Where |
+|---|---|---|
+| `wake` | `wake` | §7 |
+| `status` | `status` | — |
+| `probe` | `probe` | §8 |
+| `scan` | `scan` | — |
+| `config` | `config_push` | §3 |
+| `ota` | `ota_offer` | `src/ota/`, A/B slots behind the loader |
 
-`RW_LED_SETUP_AP` is named for where it is going; today it means "unprovisioned".
+Provisioning is available by three independent routes, none of which needs the hosted service:
+the USB serial command channel ([usbcfg.md](usbcfg.md), `src/usbcfg/`), the Wi-Fi setup hotspot
+and captive portal (`src/provisioning/`, DHCP and DNS written from scratch), and a config UF2
+from `tools/mkconfig`.
+
+**Not in this build:** `sched`. The protocol reserves the capability but defines no command for
+it, so it is not advertised and there is nothing to implement against. Scheduled wakes are a
+relay-side feature. There is deliberately no `log` capability either — diagnostics are enabled
+locally by the operator and no frame can turn them on.
 
 ---
 
