@@ -143,8 +143,8 @@ jobs:
       - name: Report the image sizes
         run: |
           set -euo pipefail
-          arm-none-eabi-size build-a/remotewake.elf
-          ls -l build-a/remotewake.uf2 build-a/remotewake.bin build-loader/loader.uf2
+          arm-none-eabi-size build-a/roosterwake.elf
+          ls -l build-a/roosterwake.uf2 build-a/roosterwake.bin build-loader/loader.uf2
 
           # The linker already caps each region — the FLASH region is written per slot, so an
           # image that outgrows its slot fails to link. This reports the headroom, which is the
@@ -152,7 +152,7 @@ jobs:
           slot=$((704 * 1024))
           loader=$((64 * 1024))
           for s in a b; do
-            used=$(stat -c%s "build-${s}/remotewake.bin")
+            used=$(stat -c%s "build-${s}/roosterwake.bin")
             echo "slot ${s}: ${used} bytes of ${slot} (${{ matrix.board }})"
           done
           used=$(stat -c%s build-loader/loader.bin)
@@ -164,9 +164,9 @@ jobs:
       - name: Upload the images
         uses: actions/upload-artifact@v4
         with:
-          name: remotewake-uf2-${{ matrix.board }}
+          name: roosterwake-uf2-${{ matrix.board }}
           path: |
             build-loader/loader.uf2
-            build-a/remotewake.uf2
-            build-a/remotewake.elf
+            build-a/roosterwake.uf2
+            build-a/roosterwake.elf
           if-no-files-found: error

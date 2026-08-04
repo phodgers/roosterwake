@@ -20,7 +20,7 @@ jobs:
     # mkconfig is a published MIT CLI declaring `engines: node >=20`, so 20 is a promise to
     # anyone who installs it — and an untested promise is just a wish. Both ends of the
     # supported range run here: 20 because we claim it, 24 because that is what a user who
-    # types `npx @remotewake/mkconfig` today actually gets.
+    # types `npx @roosterwake/mkconfig` today actually gets.
     #
     # This matrix exists because of a real failure: the test script used to be
     # `node --test "test/*.test.mjs"`, and `node --test` only expands globs from 22 onwards.
