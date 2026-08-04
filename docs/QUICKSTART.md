@@ -1,86 +1,137 @@
 # Quick start
 
-From a board still in its bag to a PC you can wake from anywhere.
+From a board still in its bag to a PC you can wake from anywhere, using nothing but this
+repository. No account is required for any step on this page.
 
 ## What you need
 
 - A **Raspberry Pi Pico W** or **Pico 2 W**. Nothing else — no soldering, no extra components.
 - A **micro USB data cable**. Charge-only cables carry power but no data and are the most common
-  reason the board does not appear.
+  reason the board never appears.
 - A **target PC**, ideally on wired Ethernet. Wi-Fi targets are best-effort; see
   [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md).
 - The dongle and the target must end up on **the same network segment**. Guest SSIDs, client
   isolation and VLANs all break this.
 
-## 1. Create an account
+The Pico W and Pico 2 W are **2.4 GHz only**. A 5 GHz-only SSID will not be found.
 
-Sign up at [roosterwake.com](https://roosterwake.com). Sign-in is a magic link; there is no
-password. The setup site is behind that sign-in.
+## 1. Flash the firmware
 
-## 2. Open the setup page
+Download both UF2 files for your board from
+[the latest release](https://github.com/phodgers/roosterwake/releases/latest):
 
-Go to [setup.roosterwake.com](https://setup.roosterwake.com) and pick a route:
+| File | What it is |
+|---|---|
+| `loader-<version>-<board>.uf2` | The loader. Owns the first 64 KB of flash and is never replaced over the air. |
+| `roosterwake-<version>-<board>-install.uf2` | The firmware itself. |
 
-| Route | Needs | Use when |
-|---|---|---|
-| **Cable** | Chrome or Edge on desktop, USB data cable | Default. Faster, and it can read errors back off the device. |
-| **Phone** | Any browser | No desktop to hand, or the cable route cannot see the board. |
+`<board>` is `pico2_w` or `pico_w`. The `.rwfw` files in the same release are signed OTA images
+streamed to a running device — they are not flashed by hand.
 
-Firefox and Safari do not implement WebSerial, so the cable route needs Chrome or Edge.
+Hold **BOOTSEL** while plugging the board in. It appears as a USB drive called `RPI-RP2` (or
+`RP2350` on a Pico 2 W). Drag the **loader** onto it. The board reboots as the file lands, which
+dismounts the drive — that is expected.
 
-### Cable route
+Hold BOOTSEL and plug it in again, then drag the **install** file onto the drive. That is the
+board programmed.
 
-Press **Connect** and pick the board from the browser's chooser. If nothing answers, it is
-almost always one of two things: a charge-only cable, or a board with no firmware yet. The page
-offers the bare-board route for the second.
+## 2. Provision it
 
-A board with no firmware is programmed by dragging two files onto the drive it presents. Hold
-**BOOTSEL** while plugging it in to make that drive appear. The board reboots as each file lands,
-so the browser asks for the drive again between them — that is expected, not a failure.
+Three routes, all writing the same configuration. Pick one.
 
-### Phone route
+### Captive portal — no tools needed
 
-Power the dongle. It raises an open Wi-Fi hotspot called **`RoosterWake-Setup-XXXX`**. Join it
-and the setup page opens on its own. If it does not, browse to `http://192.168.4.1`.
+Power the dongle. With no configuration it raises an open Wi-Fi hotspot called
+**`RoosterWake-Setup-XXXX`**. Join it from a phone or laptop and the setup page opens on its own;
+if it does not, browse to `http://192.168.4.1`.
 
-## 3. Work through the five steps
+The portal scans for networks, takes the password, takes the target's name and MAC address, and
+lets you set the relay URL. Save, and it reboots onto your network.
 
-1. **Connect** — the page finds the board and reads what is on it.
-2. **Firmware** — installs or updates. Current release is **1.11.0**.
-3. **Wi-Fi** — pick your network and enter the password. This step commits and waits for the
-   radio, so you find out here whether the credentials work, not at the end.
-4. **Target** — **Find your PC** scans the LAN and lists what it finds by name. Pick the target,
-   or type its MAC by hand.
-5. **Prove it** — checks the target PC is actually able to be woken, then sends a real wake.
+### Config image — headless, and good for several devices
 
-Step 5 asks where the PC is, because the answer changes what it can show you. On another machine
-you watch it wake. On the machine you are sitting at, you cannot watch it wake itself, so it sends
-a test packet and hands over to your phone.
+[`../tools/mkconfig/`](../tools/mkconfig/) generates a UF2 that provisions the board when you drag
+it on, with no browser and no serial session:
 
-## 4. Pre-flight the target PC
+```sh
+cd tools/mkconfig
+node bin/mkconfig.mjs \
+  --ssid "Your Network" --psk "your-password" --auth wpa2 \
+  --target "Desktop=AA:BB:CC:DD:EE:FF" \
+  --out config.uf2
+```
 
-Step 5 asks you to run a command on the target and paste the output back. It reports four
-conditions:
+Read it back with `node bin/mkconfig.mjs --verify config.uf2`. The password and token are never
+printed back out.
 
-- Wired adapter with a link
-- **Wake on Magic Packet** enabled on the adapter
-- The adapter is **allowed to wake the computer**
-- **Fast Startup** off
+### USB serial — a terminal and nothing else
 
-Anything failing comes with the exact command that fixes it. Run the fix, then re-run the
-pre-flight as a separate step — changing an adapter property restarts the adapter, and a report
-taken while the link is still down reads as a fresh fault.
+Connect at any baud; USB CDC ignores the line rate.
 
-Note: changing adapter properties drops the link for several seconds. If you are connected to
-that machine remotely over the same adapter, you will be disconnected.
+```
+SCAN
+SET_WIFI <ssid> <password> wpa2
+ADD_TARGET Desktop AA:BB:CC:DD:EE:FF
+SET_RELAY wss://relay.example.com/ws
+COMMIT
+```
 
-The pre-flight is Windows only. Linux and macOS targets skip the step; see
-[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md).
+`SET_*` commands stage; only `COMMIT` writes. Read `reboot_in_ms` in the reply rather than
+assuming — Wi-Fi changes force a restart, while targets and the relay URL are applied in place.
+The full command set is in [`../firmware/docs/usbcfg.md`](../firmware/docs/usbcfg.md).
+
+## 3. Point it at a relay
+
+The device holds an outbound TLS connection to a relay, and it must be `wss://` unless the address
+is loopback or RFC 1918 — production firmware refuses plaintext to a public address.
+
+Run your own with [`../relay-reference/`](../relay-reference/); it is a complete implementation of
+[`../PROTOCOL.md`](../PROTOCOL.md) and takes about five minutes. See
+[`SELF-HOSTING.md`](SELF-HOSTING.md) for the device side and
+[`../relay-reference/README.md`](../relay-reference/README.md) for the relay itself.
+
+You will need the **device id** and a **token**. The device id is derived from the board's unique
+ID and is not yours to choose — `INFO` over USB serial prints it. The token is 32 random bytes you
+generate, write into the device, and put in the relay's config. It is never transmitted, so a
+mismatch shows up only as an `auth` failure.
+
+## 4. Prepare the target PC
+
+Wake-on-LAN has to be enabled on the machine you want to wake. On Windows that means four separate
+things — firmware, adapter property, wake permission and Fast Startup. On Linux it is `ethtool`;
+on macOS, "Wake for network access", and only from sleep.
+
+[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) has the exact commands for each.
 
 ## 5. Wake it
 
-From the dashboard at [roosterwake.com](https://roosterwake.com). Put the target to sleep or shut
-it down, then send a wake.
+Put the target to sleep or shut it down, then ask your relay to wake it:
+
+```sh
+curl -s -X POST https://relay.example.com/wake \
+  -H "Authorization: Bearer $API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"device_id":"a1b2c3d4e5f60718"}'
+```
+
+A reply with `ok:true` means the dongle sent the packet, and `sent` and `ifaces` say how many went
+where. If the PC stays asleep after that, the problem is the PC or the network segment — go to
+[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md).
+
+---
+
+## The hosted service
+
+[roosterwake.com](https://roosterwake.com) runs a relay so you do not have to, and
+[setup.roosterwake.com](https://setup.roosterwake.com) is a guided flasher that does all of the
+above in a browser, including registering the device to your account. It needs an account,
+because registering a device to an account is what it is for.
+
+Nothing on this page depends on it. Every mechanism the guided setup drives — the captive portal,
+`mkconfig`, and the `usbcfg` command channel including `SET_TOKEN` — is public, documented and
+usable against your own relay with a terminal.
+
+Walkthrough: [`HOSTED-SETUP.md`](HOSTED-SETUP.md).
 
 ## Where to go next
 
@@ -88,6 +139,6 @@ it down, then send a wake.
 |---|---|
 | It did not work | [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) |
 | Run your own relay | [`SELF-HOSTING.md`](SELF-HOSTING.md) |
-| Provision without a browser | [`../tools/mkconfig/`](../tools/mkconfig/) |
+| The wire protocol | [`../PROTOCOL.md`](../PROTOCOL.md) |
 | Talk to the device directly | [`../firmware/docs/usbcfg.md`](../firmware/docs/usbcfg.md) |
 | A case for it | [`../case/`](../case/) |

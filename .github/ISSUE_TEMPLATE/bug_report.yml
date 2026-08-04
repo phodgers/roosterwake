@@ -22,7 +22,7 @@ body:
     attributes:
       label: Firmware version
       description: From `INFO` over USB serial, or the setup page. If it is not the firmware, say which component and version.
-      placeholder: "1.11.0"
+      placeholder: "1.10.6"
     validations:
       required: true
 

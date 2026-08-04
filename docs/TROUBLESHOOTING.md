@@ -162,11 +162,14 @@ expected, not a fault.
 INFO
 ```
 
-Check `relay_url` and the firmware version. A device on firmware older than **1.11.0** cannot
-reach the hosted relay at all — the URL and the WebSocket subprotocol both changed. Update it.
+Check `relay_url`. The device refuses plaintext `ws://` to a public address, so a URL that is not
+`wss://` will never connect.
 
-For a self-hosted relay, an `auth` failure means the token in the device and the token in the
-relay's config do not match. The token is never transmitted, so nothing else will tell you.
+An `auth` failure means the token in the device and the token in the relay's config do not match.
+The token is never transmitted, so nothing else will tell you.
+
+A relay that does not echo the `roosterwake.v1` subprotocol is not v1-conformant and the device
+will close the connection. See §12 of [`../PROTOCOL.md`](../PROTOCOL.md).
 
 ### It reports `ok:false`
 

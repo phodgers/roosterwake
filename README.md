@@ -45,7 +45,7 @@ real implementation of it, not a toy.
 | [`relay-reference/`](relay-reference/) | Minimal self-host relay, Node + `ws` | AGPL-3.0 |
 | [`case/`](case/) | Snap case: STL, print notes | MIT, Adafruit Industries |
 | [`tools/mkconfig/`](tools/mkconfig/) | Generate a config UF2 for headless provisioning | MIT |
-| [`docs/`](docs/) | Quickstart, flashing, provisioning, self-hosting, troubleshooting | — |
+| [`docs/`](docs/) | Quickstart, provisioning, self-hosting, guided setup, troubleshooting | — |
 
 The contracts that keep forks and our hosted service interoperable are
 [`PROTOCOL.md`](PROTOCOL.md) (the dongle↔relay wire protocol),
@@ -59,16 +59,19 @@ All three are versioned and treated as public API.
 
 See [`docs/QUICKSTART.md`](docs/QUICKSTART.md) for the full walkthrough. In brief:
 
-1. Flash `roosterwake.uf2` onto a Pico 2 W by holding BOOTSEL while plugging it in, then
-   dragging the file onto the drive that appears.
+1. Hold BOOTSEL while plugging a Pico 2 W in, and drag the release's `loader-*.uf2` onto the
+   drive that appears. Repeat with `*-install.uf2`.
 2. Power it up. It starts a Wi-Fi hotspot called `RoosterWake-Setup-XXXX`.
 3. Join that hotspot from your phone. A setup page opens automatically.
 4. Pick your network, enter the password, and enter the MAC address of the PC you want to
    wake.
 5. It reboots, joins your network, and connects to the relay.
 
-Self-hosting the relay instead takes about five minutes:
+Nothing there needs an account. Self-hosting the relay takes about five minutes:
 [`docs/SELF-HOSTING.md`](docs/SELF-HOSTING.md).
+
+On the hosted service, [setup.roosterwake.com](https://setup.roosterwake.com) does all of it in a
+browser and registers the device to your account: [`docs/HOSTED-SETUP.md`](docs/HOSTED-SETUP.md).
 
 ---
 
