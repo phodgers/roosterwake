@@ -44,11 +44,12 @@ case closed. The board must be bare — no headers, and nothing soldered to the 
 
 STL carries no units. Import as **millimetres**.
 
-Adafruit produce it in SLA resin. The snap fit is dimensioned for that process, so FDM prints may
-need horizontal expansion trimmed to seat. Neither part has an overhang requiring support when
-printed flat on the plate.
+Both parts print flat on the plate with no supports and no scaling. The snap fit seats correctly
+straight off the printer — Adafruit produce these in SLA resin, but no horizontal-expansion
+adjustment was needed.
 
 Print translucent to keep the Pico's LED readable through the lid slots — the firmware uses it for
 status during setup.
 
-We have not test-printed these files.
+**Test-printed and confirmed** on a Pico 2 W: the lid closes, the board is held firm, BOOTSEL is
+pressable and the micro USB port reachable with the case shut.
