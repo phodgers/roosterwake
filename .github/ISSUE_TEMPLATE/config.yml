@@ -1,8 +1,7 @@
+# GitHub adds its own "Report a security vulnerability" entry whenever SECURITY.md exists, so a
+# contact link for it here would be the second of two.
 blank_issues_enabled: true
 contact_links:
-  - name: Security vulnerability
-    url: https://github.com/phodgers/roosterwake/security/advisories/new
-    about: Report privately. Do not open a public issue for a security problem.
   - name: Trademark or brand permission
     url: https://github.com/phodgers/roosterwake/blob/main/TRADEMARK.md
     about: What you may call a fork, and how to ask about anything TRADEMARK.md does not cover.

@@ -30,7 +30,10 @@ body:
     id: board
     attributes:
       label: Board
+      # GitHub pre-selects the first option, so it has to be the non-answer. Anything else and a
+      # skipped field reports a board the reporter never chose.
       options:
+        - Not stated
         - pico2_w (Pico 2 W)
         - pico_w (Pico W)
         - Not applicable
@@ -43,6 +46,7 @@ body:
       label: Relay
       description: The two behave differently enough that this changes where to look first.
       options:
+        - Not stated
         - Hosted (roosterwake.com)
         - Self-hosted (relay-reference)
         - Other or unknown
