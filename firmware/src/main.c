@@ -29,9 +29,25 @@
 #include "tls/tls.h"
 #include "usbcfg/usbcfg.h"
 
-/* config-format.md §8: hold BOOTSEL for five seconds at power-on. Sampled after the watchdog
- * is running, so a user holding the button does not trip it. */
-#define FACTORY_RESET_HOLD_MS 5000
+/*
+ * config-format.md §8: hold BOOTSEL for five seconds to factory reset.
+ *
+ * Watched across a window rather than sampled once, and the distinction is the whole feature.
+ * The bootrom claims BOOTSEL at reset — a board powered up with it held enters USB mass storage
+ * and this firmware never runs — so the press can only be made *after* boot. Against a single
+ * sample that leaves one instant to hit, whose timing moves with however long the radio took to
+ * initialise. It was not reliably hittable by hand on either board.
+ *
+ * Polled from the main loop instead, for the first FACTORY_RESET_WINDOW_MS of uptime. Nothing
+ * blocks, boot is not delayed for the ordinary case where nobody presses anything, and the user
+ * instruction becomes "plug it in and hold the button", which is the one people already expect.
+ */
+#define FACTORY_RESET_HOLD_MS   5000
+#define FACTORY_RESET_WINDOW_MS 20000
+
+/* Reading BOOTSEL drives the QSPI chip select and spins with interrupts off, so it is polled at
+ * a human cadence rather than every loop slice. */
+#define FACTORY_RESET_POLL_MS 100
 
 /* The loop never blocks longer than this, so timers, the keepalive and the watchdog all stay
  * responsive without spinning the core flat out. */
@@ -93,23 +109,8 @@ static bool is_provisioned(const rw_config_t *cfg) {
     return cfg->ssid[0] != '\0' && cfg->device_id[0] != '\0';
 }
 
-static void check_factory_reset(void) {
-    if (!rw_sys_bootsel_pressed()) {
-        return;
-    }
-
-    RW_LOG_WARN("hold BOOTSEL for %d ms to factory reset", FACTORY_RESET_HOLD_MS);
-    absolute_time_t deadline = make_timeout_time_ms(FACTORY_RESET_HOLD_MS);
-    while (!time_reached(deadline)) {
-        if (!rw_sys_bootsel_pressed()) {
-            return; /* released early: not a reset */
-        }
-        rw_sys_feed_watchdog();
-        rw_led_task();
-        sleep_ms(20);
-    }
-
-    RW_LOG_WARN("factory reset: erasing both config slots");
+static void do_factory_reset(void) {
+    RW_LOG_WARN("factory reset: erasing config");
     rw_led_set(RW_LED_ERROR);
     if (rw_config_flash_factory_reset() != RW_FLASH_OK) {
         RW_LOG_ERROR("factory reset failed");
@@ -123,6 +124,51 @@ static void check_factory_reset(void) {
         sleep_ms(20);
     }
     rw_sys_reboot(100);
+}
+
+/*
+ * Called from the main loop. Returns once the window has closed, after which it costs one
+ * comparison per iteration and never touches the button again.
+ */
+static void factory_reset_task(void) {
+    static absolute_time_t next_poll;
+    static absolute_time_t held_since;
+    static bool            holding = false;
+    static bool            closed  = false;
+
+    if (closed) {
+        return;
+    }
+    /* The deadline only applies between presses. A hold that started inside the window is timed
+     * to completion, rather than being cancelled by the window closing mid-press. */
+    if (!holding && to_ms_since_boot(get_absolute_time()) > FACTORY_RESET_WINDOW_MS) {
+        closed = true;
+        return;
+    }
+    if (!time_reached(next_poll)) {
+        return;
+    }
+    next_poll = make_timeout_time_ms(FACTORY_RESET_POLL_MS);
+
+    if (!rw_sys_bootsel_pressed()) {
+        if (holding) {
+            RW_LOG_INFO("factory reset: released early, cancelled");
+        }
+        holding = false;
+        return;
+    }
+
+    if (!holding) {
+        holding    = true;
+        held_since = get_absolute_time();
+        RW_LOG_WARN("hold BOOTSEL for %d ms to factory reset", FACTORY_RESET_HOLD_MS);
+        return;
+    }
+
+    if (absolute_time_diff_us(held_since, get_absolute_time()) >= (int64_t)FACTORY_RESET_HOLD_MS * 1000) {
+        do_factory_reset();
+        holding = false; /* only reached if the erase failed */
+    }
 }
 
 /* Pick the LED pattern that matches what the device is actually doing. */
@@ -225,7 +271,6 @@ int main(void) {
         RW_LOG_ERROR("radio: cyw43 did not initialise; USB configuration only, retrying");
     }
 
-    check_factory_reset();
 
     if (!rw_tls_init((s_config.flags & RW_CFG_FLAG_TLS_INSECURE) != 0)) {
         RW_LOG_ERROR("tls: initialisation failed");
@@ -270,6 +315,10 @@ int main(void) {
             cyw43_arch_poll();
         }
         rw_sys_feed_watchdog();
+
+        /* Before anything that can wedge. A board someone is holding the button on is a board
+         * whose owner has already decided the rest of it is not working. */
+        factory_reset_task();
 
         /* Serviced first, and unconditionally: a device that has wedged its relay session — or
          * never got a radio at all — is exactly the device someone plugs into a laptop to ask

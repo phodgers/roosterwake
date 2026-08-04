@@ -242,8 +242,9 @@ record with every defined flag set.
 
 ## 8. Factory reset
 
-`FACTORY_RESET CONFIRM` over usbcfg clears everything a person configured and keeps the device's
-identity:
+Two triggers, one behaviour: `FACTORY_RESET CONFIRM` over usbcfg, or **holding BOOTSEL for five
+seconds within the first 20 seconds after power-on**. Both clear everything a person configured
+and keep the device's identity:
 
 | Cleared | Kept |
 |---|---|
@@ -252,6 +253,20 @@ identity:
 | `targets`, `target_count` | |
 | `owner_email` | |
 | `flags`, including `ENROLLED` | |
+
+### The button, and why it is a window rather than a moment
+
+The bootrom claims BOOTSEL at reset: a board powered up with it held enters USB mass storage and
+the firmware never runs at all. So the press can only be made **after** boot, and the firmware
+polls for it across the first 20 seconds of uptime rather than sampling once.
+
+The distinction is not academic. It was a single sample taken just after the radio came up, which
+left one instant to hit whose timing moved with however long the radio took — unhittable by hand
+on either board, and the reason this path went unexercised for so long. Anything that reintroduces
+a single sample reintroduces that.
+
+A hold already in progress when the window closes is timed to completion, so a press made at
+19 seconds still works.
 
 `device_id` is derived from the board's unique flash id and is re-derived on every boot, so it
 could not be erased even in principle. **The token is kept deliberately**, and the reason is

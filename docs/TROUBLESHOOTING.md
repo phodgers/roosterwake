@@ -205,8 +205,18 @@ can bind the device to a different account, which is what makes reset the right 
 mistyped address, a gift or a resale. See §8 of
 [`../firmware/docs/config-format.md`](../firmware/docs/config-format.md).
 
-The firmware also samples BOOTSEL once during startup and treats a five-second hold as the same
-reset. Use the serial command unless you have no cable.
+Without a cable, use the button:
+
+**Plug the dongle in, wait a couple of seconds, then hold BOOTSEL for five seconds.** The LED goes
+solid while it erases, then confirms for two seconds and reboots into setup mode. Release before
+five seconds and nothing happens.
+
+Do not hold the button while plugging in. That is a different feature — the chip's own bootloader
+takes the button at power-on and the dongle comes up as a USB drive instead, which is how you
+recover a board with no firmware on it. Let go once the reset starts, or you will land there
+anyway on the reboot.
+
+The window is the first 20 seconds after power-on. After that the button does nothing.
 
 ---
 
