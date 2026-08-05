@@ -286,8 +286,7 @@ int main(void) {
         /* Nothing below this point can run without a radio. Fall straight into the loop, where
          * usbcfg still answers and the retry lives. */
     } else if (provisioned) {
-        RW_LOG_INFO("config: seq %lu, %u target(s), relay %s", (unsigned long)s_config.seq,
-                    s_config.target_count,
+        RW_LOG_INFO("config: seq %lu, relay %s", (unsigned long)s_config.seq,
                     s_config.relay_url[0] ? s_config.relay_url : RW_DEFAULT_RELAY_URL);
         rw_net_start(s_config.ssid, s_config.psk, s_config.wifi_auth);
         rw_relay_start();

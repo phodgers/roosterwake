@@ -56,8 +56,7 @@ size_t rw_jw_finish(rw_jw_t *w);
 /*
  * Index of the value token for a top-level key of the object at token 0, or -1.
  *
- * Only top-level keys, deliberately: every frame in PROTOCOL.md is a flat object apart from
- * `targets`, which is handled explicitly.
+ * Only top-level keys, deliberately: every frame a device parses is a flat object of scalars.
  */
 int rw_json_find(const char *js, const jsmntok_t *tokens, int count, const char *key);
 

@@ -36,7 +36,7 @@ static void wr32(uint8_t *p, uint32_t v) {
 
 /* ── CRC-32/ISO-HDLC ─────────────────────────────────────────────────────────
  *
- * Bitwise rather than table-driven. 580 payload bytes is 4640 shift-and-mask iterations, which
+ * Bitwise rather than table-driven. 443 payload bytes is 3544 shift-and-mask iterations, which
  * is microseconds on a 150 MHz core and happens twice per config write. A 1 KB lookup table
  * would buy nothing measurable and would have to be either generated at runtime or transcribed
  * by hand, and a hand-transcribed table is a defect waiting for a code review nobody does.
@@ -114,9 +114,6 @@ size_t rw_config_encode(const rw_config_t *cfg, uint8_t *out, size_t out_len) {
     if (out_len < RW_CFG_RECORD_LEN) {
         return 0;
     }
-    if (cfg->target_count > RW_CFG_MAX_TARGETS) {
-        return 0;
-    }
 
     memset(out, 0, RW_CFG_RECORD_LEN);
     uint8_t *payload = out + RW_CFG_HEADER_LEN;
@@ -132,19 +129,6 @@ size_t rw_config_encode(const rw_config_t *cfg, uint8_t *out, size_t out_len) {
 
     payload[RW_CFG_OFF_WIFI_AUTH] = cfg->wifi_auth;
     wr32(payload + RW_CFG_OFF_FLAGS, cfg->flags);
-    payload[RW_CFG_OFF_TARGET_COUNT] = cfg->target_count;
-
-    for (uint8_t i = 0; i < cfg->target_count; i++) {
-        size_t base = RW_CFG_OFF_TARGETS + (size_t)i * RW_CFG_TARGET_ENTRY_LEN;
-        if (cfg->targets[i].name[0] == '\0') {
-            return 0; /* an empty name round-trips to a target nobody can identify in a UI */
-        }
-        if (!put_str(payload, base, RW_CFG_TARGET_NAME_LEN, cfg->targets[i].name)) {
-            return 0;
-        }
-        memcpy(payload + base + RW_CFG_TARGET_NAME_LEN, cfg->targets[i].mac, 6);
-    }
-    /* Entries beyond target_count stay all-zero, as required by config-format.md §2.4. */
 
     out[0] = RW_CFG_MAGIC0;
     out[1] = RW_CFG_MAGIC1;
@@ -170,9 +154,10 @@ bool rw_config_decode(const uint8_t *record, size_t len, rw_config_t *out) {
     }
 
     uint16_t version = rd16(record + 4);
-    /* §3 step 2: a greater version is refused rather than misparsed, so downgrading firmware
-     * falls back to the older slot. v1 is the first layout, so there is nothing below it to
-     * migrate forward and any other value is simply not a record this build understands. */
+    /* §3 step 2 and §6: exactly one layout is read, this build's own. A greater version would be
+     * misparsed and a lesser one is not migrated — a device that finds only records of another
+     * version is unprovisioned, and raises its setup hotspot rather than acting on fields it has
+     * guessed the position of. */
     if (version != RW_CFG_VERSION) {
         return false;
     }
@@ -215,17 +200,6 @@ bool rw_config_decode(const uint8_t *record, size_t len, rw_config_t *out) {
     /* Unknown flag bits are carried through untouched, so a config written by newer firmware
      * or a newer mkconfig survives a round trip through this build (config-format.md §2.3). */
     out->flags = rd32(payload + RW_CFG_OFF_FLAGS);
-
-    uint8_t count = payload[RW_CFG_OFF_TARGET_COUNT];
-    if (count > RW_CFG_MAX_TARGETS) {
-        count = RW_CFG_MAX_TARGETS;
-    }
-    out->target_count = count;
-    for (uint8_t i = 0; i < count; i++) {
-        size_t base = RW_CFG_OFF_TARGETS + (size_t)i * RW_CFG_TARGET_ENTRY_LEN;
-        get_str(payload, base, RW_CFG_TARGET_NAME_LEN, out->targets[i].name);
-        memcpy(out->targets[i].mac, payload + base + RW_CFG_TARGET_NAME_LEN, 6);
-    }
 
     return true;
 }

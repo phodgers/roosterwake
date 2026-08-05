@@ -16,8 +16,8 @@
 /*
  * PROTOCOL.md §1: no frame in either direction may exceed 2048 bytes, and a receiver MUST
  * reject a larger one with close code 1009. The bound is symmetric so both sides can size one
- * buffer; the largest frame this firmware constructs is `hello` with eight targets, which is
- * under 800 bytes.
+ * buffer; the largest frame this firmware constructs is `scan_result`, which drops hosts to
+ * stay inside it rather than growing past it.
  */
 #define RW_WS_MAX_INBOUND  2048
 #define RW_WS_MAX_OUTBOUND 2048

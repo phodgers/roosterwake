@@ -409,8 +409,10 @@ size_t rw_portal_api_join_status(char *buf, size_t cap) {
 }
 
 size_t rw_portal_api_config(const char *body, size_t len, char *buf, size_t cap) {
+    /* Reject anything that is not an object before reading fields out of it, so a truncated or
+     * mistyped body is one clear error rather than two silently absent settings. */
     jsmn_parser parser;
-    jsmntok_t   tokens[96];
+    jsmntok_t   tokens[16];
     jsmn_init(&parser);
     int n = jsmn_parse(&parser, body, len, tokens, sizeof(tokens) / sizeof(tokens[0]));
     if (n < 1 || tokens[0].type != JSMN_OBJECT) {
@@ -438,50 +440,16 @@ size_t rw_portal_api_config(const char *body, size_t len, char *buf, size_t cap)
         }
     }
 
-    int targets = rw_json_find(body, tokens, n, "targets");
-    if (targets >= 0 && tokens[targets].type == JSMN_ARRAY) {
-        /* Replace wholesale rather than append: the portal sends the complete list it wants,
-         * and appending would duplicate every entry if the user went back a step. */
-        rw_stage_clear_targets(&s_stage);
-
-        int idx = targets + 1;
-        for (int i = 0; i < tokens[targets].size; i++) {
-            if (idx >= n || tokens[idx].type != JSMN_OBJECT) {
-                return json_err(buf, cap, "bad_arg");
-            }
-            char name[RW_CFG_TARGET_NAME_LEN] = {0};
-            char mac[24]                      = {0};
-
-            int fields = tokens[idx].size;
-            int f      = idx + 1;
-            for (int k = 0; k < fields && f + 1 < n; k++) {
-                if (rw_json_eq(body, &tokens[f], "name")) {
-                    if (!rw_json_str(body, &tokens[f + 1], name, sizeof(name))) {
-                        return json_err(buf, cap, "bad_name");
-                    }
-                } else if (rw_json_eq(body, &tokens[f], "mac")) {
-                    if (!rw_json_str(body, &tokens[f + 1], mac, sizeof(mac))) {
-                        return json_err(buf, cap, "bad_mac");
-                    }
-                }
-                f = rw_json_skip(tokens, n, f + 1);
-            }
-
-            rw_uerr_t err = rw_stage_add_target(&s_stage, name, mac);
-            if (err != RW_UERR_NONE) {
-                return json_err(buf, cap, err == RW_UERR_TOO_MANY ? "too_many" : "bad_mac");
-            }
-            idx = rw_json_skip(tokens, n, idx);
-        }
-    }
-
+    /*
+     * Nothing here names a machine to wake. The device stores no such list — the caller names
+     * the MAC in every `wake` — so the portal collects the network, the account address and the
+     * relay override, and the machines are added wherever the wakes will come from.
+     */
     rw_jw_t w;
     rw_jw_init(&w, buf, cap);
     rw_jw_raw(&w, "{");
     rw_jw_key(&w, "ok");
-    rw_jw_raw(&w, "true,");
-    rw_jw_key(&w, "targets");
-    rw_jw_int(&w, s_stage.cfg.target_count);
+    rw_jw_raw(&w, "true");
     rw_jw_raw(&w, "}");
     return rw_jw_finish(&w);
 }

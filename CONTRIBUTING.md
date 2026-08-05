@@ -76,7 +76,7 @@ The JavaScript side, from `tools/mkconfig`:
 npm test
 ```
 
-Both check the same golden vectors in `firmware/test/vectors/config-v1.json`, so a one-sided
+Both check the same golden vectors in `firmware/test/vectors/config-v2.json`, so a one-sided
 change to the encoder fails in the other suite. If you change the encoder, regenerate the vectors
 with `npm run gen-vectors` in `tools/mkconfig` and mirror the change in
 `firmware/src/config/config.c`. CI fails if regenerating is not a no-op.

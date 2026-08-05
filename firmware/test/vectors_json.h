@@ -1,7 +1,7 @@
 /*
  * Reading the golden vector file.
  *
- * The JSON in vectors/config-v1.json is the source of truth for a format three codebases have
+ * The JSON in vectors/config-v2.json is the source of truth for a format three codebases have
  * to agree on, so the C tests parse that file rather than a generated copy of it. A generated
  * copy is one more artefact that can be stale, and staleness in this particular file is
  * exactly the failure the vectors exist to catch.

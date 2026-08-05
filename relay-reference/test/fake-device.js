@@ -7,9 +7,9 @@
  *
  * A dongle made of software. It speaks the device half of ../../PROTOCOL.md over a real
  * WebSocket: the mutual challenge-response handshake, the 25-second application-level
- * keepalive, wake/status/config_push, backoff and reconnection. The only thing it does not do
- * is put a magic packet on a wire — it reports exactly what it *would* have sent, in the same
- * shape a real dongle reports it.
+ * keepalive, wake and status, backoff and reconnection. The only thing it does not do is put a
+ * magic packet on a wire — it reports exactly what it *would* have sent, in the same shape a
+ * real dongle reports it.
  *
  * That is enough to develop and test an entire relay with no hardware on the desk, which is
  * why PROTOCOL.md §12 points implementers here.
@@ -25,8 +25,7 @@
  *   node test/fake-device.js \
  *     --relay ws://127.0.0.1:8080/ws \
  *     --device-id a1b2c3d4e5f60718 \
- *     --token <64 hex chars> \
- *     --target Desktop=AA:BB:CC:DD:EE:FF
+ *     --token <64 hex chars>
  */
 
 import { EventEmitter } from 'node:events';
@@ -36,8 +35,14 @@ import WebSocket from 'ws';
 
 // ── Protocol constants (PROTOCOL.md §1, §8, §9) ─────────────────────────────
 
+/**
+ * §1: the subprotocol token names the protocol family and stays `roosterwake.v1` across major
+ * versions — it answers "is this a Rooster Wake relay at all", which a device has to settle
+ * before it can send a frame. The major version is `hello.v`, answered with close code 4000 by
+ * a relay that does not speak it (§10).
+ */
 const SUBPROTOCOL = 'roosterwake.v1';
-const PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = 2;
 
 /** §9: literal bytes. Not JSON.stringify of an object — the byte sequence is the contract. */
 const PING_FRAME = '{"t":"ping"}';
@@ -57,17 +62,6 @@ const BACKOFF_MAX_MS = 60_000;
 /** §7: the one close code that means "stop trying". */
 const CLOSE_DEPROVISIONED = 4002;
 
-/** §5: config_push replaces the target list wholesale, capped at eight. */
-const MAX_TARGETS = 8;
-
-/**
- * Reference firmware sends two identical datagrams to each destination per burst — the second
- * costs nothing and covers a dropped broadcast, which is the single most common way a wake
- * silently fails. `sent` in a wake_result is destinations × repeat × 2, which is where the
- * `sent: 24` in PROTOCOL.md §4 comes from: four destinations, three bursts, two datagrams.
- */
-const PACKETS_PER_DESTINATION = 2;
-
 /** Standard Wake-on-LAN destination ports. Sending to both is free and catches more NICs. */
 const WOL_PORTS = [9, 7];
 
@@ -81,6 +75,21 @@ export function normaliseMac(mac) {
   const hex = mac.replace(/[:\-.\s]/g, '');
   if (!RE_MAC.test(hex)) return null;
   return (hex.toUpperCase().match(/../g) ?? []).join(':');
+}
+
+/**
+ * §2: a wake target must be a unicast address, and a device must refuse the excluded cases with
+ * `bad_mac`. Real firmware checks here because since v2 the frame is the only way a MAC reaches
+ * it. Sending anyway would succeed at every layer and wake nothing — `ok:true`, a full `sent`
+ * count, and no machine — so the check is what keeps that answer honest. A locally-administered
+ * address (bit 1) is wakeable and must not be rejected.
+ */
+export function isWakeable(mac) {
+  const octets = (mac ?? '').split(':').map((o) => parseInt(o, 16));
+  if (octets.length !== 6 || octets.some(Number.isNaN)) return false;
+  if (octets[0] & 0x01) return false; // multicast/group, and broadcast with it
+  if (octets.every((o) => o === 0x00)) return false; // "unspecified"
+  return true;
 }
 
 /**
@@ -154,7 +163,6 @@ export class FakeDevice extends EventEmitter {
     this.fw = opts.fw ?? '1.0.0';
     this.board = opts.board ?? 'pico2_w';
     this.caps = opts.caps ?? ['wake', 'status'];
-    this.targets = opts.targets ?? [];
     this.simulate = opts.simulate ?? 'ok';
     this.burstGapMs = opts.burstGapMs ?? 100;
     this.reconnect = opts.reconnect !== false;
@@ -276,7 +284,6 @@ export class FakeDevice extends EventEmitter {
         fw: this.fw,
         board: this.board,
         caps: this.caps,
-        targets: this.targets,
       });
     });
 
@@ -409,12 +416,9 @@ export class FakeDevice extends EventEmitter {
       case 'status':
         if (this.state === 'open') this.onStatus(frame);
         return;
-      case 'config_push':
-        if (this.state === 'open') this.onConfigPush(frame);
-        return;
       default:
         // §2 and §10: unknown `t` values are ignored silently. Not an error, not a close —
-        // this is exactly what makes it safe for us to add frame types inside v1.
+        // this is exactly what makes it safe to add frame types without a major version bump.
         this.log.debug(`ignoring unknown frame type "${frame.t}"`);
         return;
     }
@@ -504,22 +508,24 @@ export class FakeDevice extends EventEmitter {
 
     const reply = (body) => this.sendFrame({ t: 'wake_result', req_id: frame.req_id, ...body });
 
-    let mac;
+    // §5: every `wake` names the machine it means. A device keeps no target list, so a frame
+    // without a MAC has nothing to fall back on and is simply missing a required field — which
+    // §6 spells `bad_frame`, and which is a different fault from a MAC that arrived unparseable.
     if (frame.mac === undefined || frame.mac === null) {
-      // §5: with no MAC, wake the first configured target.
-      if (this.targets.length === 0) {
-        this.log.warn('wake with no MAC and no configured targets');
-        reply({ ok: false, err: 'no_target', sent: 0, ifaces: [] });
-        return;
-      }
-      mac = this.targets[0].mac;
-    } else {
-      mac = normaliseMac(frame.mac);
-      if (!mac) {
-        this.log.warn(`wake carried an unparseable MAC: ${JSON.stringify(frame.mac)}`);
-        reply({ ok: false, err: 'bad_mac', sent: 0, ifaces: [] });
-        return;
-      }
+      this.log.warn('wake carried no MAC');
+      reply({ ok: false, err: 'bad_frame', sent: 0, ifaces: [] });
+      return;
+    }
+    const mac = normaliseMac(frame.mac);
+    if (!mac) {
+      this.log.warn(`wake carried an unparseable MAC: ${JSON.stringify(frame.mac)}`);
+      reply({ ok: false, err: 'bad_mac', sent: 0, ifaces: [] });
+      return;
+    }
+    if (!isWakeable(mac)) {
+      this.log.warn(`wake named ${mac}, which is not an interface (§2)`);
+      reply({ ok: false, err: 'bad_mac', sent: 0, ifaces: [] });
+      return;
     }
 
     if (this.simulate === 'no_link' || this.simulate === 'send_failed') {
@@ -538,7 +544,10 @@ export class FakeDevice extends EventEmitter {
       ifaces.push(`255.255.255.255:${port}`);
       ifaces.push(`${this.net.broadcast}:${port}`);
     }
-    const sent = ifaces.length * repeat * PACKETS_PER_DESTINATION;
+    // §4: `sent` is exactly ifaces.length × repeat — one datagram per destination per burst.
+    // That relationship is fixed because `sent` is the number a support conversation turns on,
+    // and a figure nobody can reproduce from the other fields cannot be checked.
+    const sent = ifaces.length * repeat;
 
     // Real bursts are spaced out; a NIC that missed the first one gets another chance a
     // moment later. Simulating the delay keeps timeout handling in relays honest.
@@ -574,57 +583,7 @@ export class FakeDevice extends EventEmitter {
       netmask: this.net.netmask,
       fw: this.fw,
       reset_reason: 'power_on',
-      targets: this.targets,
     });
-  }
-
-  onConfigPush(frame) {
-    if (typeof frame.req_id !== 'string') return;
-    const reply = (body) => this.sendFrame({ t: 'config_ack', req_id: frame.req_id, ...body });
-
-    // §5 and §11: relays MUST NOT push Wi-Fi credentials or a relay URL, and a device MUST
-    // reject any attempt. Wi-Fi passwords are entered locally and stay in flash — that is the
-    // property that makes compromising a relay, ours or anyone's, not yield anyone's PSK.
-    for (const forbidden of ['ssid', 'psk', 'wifi_auth', 'relay_url']) {
-      if (frame[forbidden] !== undefined) {
-        this.log.error(`relay tried to push "${forbidden}" — refusing (PROTOCOL.md §11)`);
-        reply({ ok: false, err: 'bad_frame', targets: this.targets.length });
-        return;
-      }
-    }
-
-    if (!Array.isArray(frame.targets)) {
-      reply({ ok: false, err: 'bad_frame', targets: this.targets.length });
-      return;
-    }
-    if (frame.targets.length > MAX_TARGETS) {
-      this.log.warn(`config_push carried ${frame.targets.length} targets; the limit is ${MAX_TARGETS}`);
-      reply({ ok: false, err: 'too_many', targets: this.targets.length });
-      return;
-    }
-
-    const accepted = [];
-    for (const t of frame.targets) {
-      const name = typeof t?.name === 'string' ? t.name.trim() : '';
-      const mac = normaliseMac(t?.mac);
-      if (name.length < 1 || [...name].length > 24) {
-        reply({ ok: false, err: 'bad_frame', targets: this.targets.length });
-        return;
-      }
-      if (!mac) {
-        reply({ ok: false, err: 'bad_mac', targets: this.targets.length });
-        return;
-      }
-      accepted.push({ name, mac });
-    }
-
-    // §5: wholesale replacement, not a merge. A real device writes this to flash here.
-    this.targets = accepted;
-    this.log.info(
-      `stored ${accepted.length} target(s): ${accepted.map((t) => `${t.name}=${t.mac}`).join(', ') || '(none)'}`,
-    );
-    reply({ ok: true, targets: accepted.length });
-    this.emit('config', accepted);
   }
 }
 
@@ -677,7 +636,6 @@ Required
 
 Options
   --relay <url>          ws:// or wss:// endpoint  (default ws://127.0.0.1:8080/ws)
-  --target <name=mac>    add a target; repeatable, up to 8
   --ip <cidr>            simulated LAN address     (default 192.168.1.42/24)
   --fw <version>         reported firmware version (default 1.0.0)
   --board <name>         reported board            (default pico2_w)
@@ -695,15 +653,14 @@ Environment
 
 Examples
   # Against a relay running on this machine
-  node test/fake-device.js --device-id a1b2c3d4e5f60718 --token $TOKEN \\
-    --target Desktop=AA:BB:CC:DD:EE:FF --target NAS=11:22:33:44:55:66
+  node test/fake-device.js --device-id a1b2c3d4e5f60718 --token $TOKEN
 
   # Prove your relay's 504 path works
   node test/fake-device.js --device-id a1b2c3d4e5f60718 --token $TOKEN --simulate silent
 `;
 
 export function parseArgs(argv) {
-  const opts = { targets: [] };
+  const opts = {};
   const need = (i, flag) => {
     if (i >= argv.length) throw new Error(`${flag} needs a value`);
     return argv[i];
@@ -720,19 +677,6 @@ export function parseArgs(argv) {
       case '--token':
         opts.token = need(++i, arg);
         break;
-      case '--target': {
-        const spec = need(++i, arg);
-        const split = spec.lastIndexOf('=');
-        if (split < 1) throw new Error(`--target wants name=MAC, got "${spec}"`);
-        const name = spec.slice(0, split).trim();
-        const mac = normaliseMac(spec.slice(split + 1));
-        if (!mac) throw new Error(`--target "${spec}" does not end in a MAC address`);
-        if ([...name].length < 1 || [...name].length > 24) {
-          throw new Error(`--target name must be 1–24 characters, got "${name}"`);
-        }
-        opts.targets.push({ name, mac });
-        break;
-      }
       case '--ip':
         opts.ip = need(++i, arg);
         break;
@@ -787,9 +731,6 @@ export function parseArgs(argv) {
   if (!opts.help) {
     if (!opts.deviceId) throw new Error('--device-id is required');
     if (!opts.token) throw new Error('--token is required');
-    if (opts.targets.length > MAX_TARGETS) {
-      throw new Error(`at most ${MAX_TARGETS} targets (got ${opts.targets.length})`);
-    }
   }
   return opts;
 }

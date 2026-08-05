@@ -31,9 +31,10 @@ typedef enum {
 
 typedef struct {
     /*
-     * Persist a configuration the relay pushed. Runs on the main loop, never inside a network
-     * callback. Returning false makes the device answer config_ack with err "internal", which
-     * is what a flash verification failure should look like from the dashboard.
+     * Persist a configuration the session changed — the enrolled flag, or the account address
+     * erased once an adoption is acknowledged. Runs on the main loop, never inside a network
+     * callback, because a flash write there would stall lwIP mid-frame. A false return is
+     * logged and dropped: both changes re-offer themselves on the next connection.
      */
     bool (*save_config)(rw_config_t *cfg);
 
@@ -44,8 +45,9 @@ typedef struct {
 /*
  * Bind the session to a configuration and the host application's hooks.
  *
- * `cfg` is borrowed, not copied: `config_push` rewrites its target list in place, so the
- * caller's copy is the live one and stays consistent with what usbcfg's STATUS reports.
+ * `cfg` is borrowed, not copied: the session writes the enrolled flag and clears the account
+ * address in place, so the caller's copy is the live one and stays consistent with what
+ * usbcfg's GET_CONFIG reports.
  */
 void rw_relay_init(rw_config_t *cfg, const rw_relay_hooks_t *hooks);
 

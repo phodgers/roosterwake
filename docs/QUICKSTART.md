@@ -45,8 +45,13 @@ Power the dongle. With no configuration it raises an open Wi-Fi hotspot called
 **`RoosterWake-Setup-XXXX`**. Join it from a phone or laptop and the setup page opens on its own;
 if it does not, browse to `http://192.168.4.1`.
 
-The portal scans for networks, takes the password, takes the target's name and MAC address, and
-lets you set the relay URL. Save, and it reboots onto your network.
+The portal scans for networks, takes the password, and lets you set the relay URL and the
+account address the dongle should adopt to. Save, and it reboots onto your network.
+
+It does not ask which PC you want to wake. **A dongle holds no list of machines** — every wake
+names its MAC in the frame that asks ([`../PROTOCOL.md`](../PROTOCOL.md) §5), so the machines
+live with whoever sends the wakes: your account on the hosted service, or your own relay's
+records.
 
 ### Config image — headless, and good for several devices
 
@@ -57,7 +62,7 @@ it on, with no browser and no serial session:
 cd tools/mkconfig
 node bin/mkconfig.mjs \
   --ssid "Your Network" --psk "your-password" --auth wpa2 \
-  --target "Desktop=AA:BB:CC:DD:EE:FF" \
+  --relay "wss://relay.example.com/ws" \
   --out config.uf2
 ```
 
@@ -71,14 +76,14 @@ Connect at any baud; USB CDC ignores the line rate.
 ```
 SCAN
 SET_WIFI <ssid> <password> wpa2
-ADD_TARGET Desktop AA:BB:CC:DD:EE:FF
 SET_RELAY wss://relay.example.com/ws
+SET_TOKEN <your 32 random bytes, hex>
 COMMIT
 ```
 
 `SET_*` commands stage; only `COMMIT` writes. Read `reboot_in_ms` in the reply rather than
-assuming — Wi-Fi changes force a restart, while targets and the relay URL are applied in place.
-The full command set is in [`../firmware/docs/usbcfg.md`](../firmware/docs/usbcfg.md).
+assuming — Wi-Fi changes force a restart, while the relay URL and the token are applied in
+place. The full command set is in [`../firmware/docs/usbcfg.md`](../firmware/docs/usbcfg.md).
 
 ## 3. Point it at a relay
 
@@ -103,6 +108,18 @@ on macOS, "Wake for network access", and only from sleep.
 
 [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) has the exact commands for each.
 
+While you are at that machine, read its **MAC address** off the adapter you just enabled — every
+wake names it, so this is the one thing you cannot get from the dongle:
+
+| | |
+|---|---|
+| Windows | Settings › Network & internet › your adapter, then `Physical address (MAC)` |
+| macOS | System Settings › Network › your adapter › Details › Hardware |
+| Linux | `ip link`, and read the `link/ether` line |
+
+Use the **wired** adapter's address if the machine has one. A randomised or virtual address — the
+second-lowest bit of the first octet set — changes underneath you and the wake stops working.
+
 ## 5. Wake it
 
 Put the target to sleep or shut it down, then ask your relay to wake it:
@@ -111,7 +128,7 @@ Put the target to sleep or shut it down, then ask your relay to wake it:
 curl -s -X POST https://relay.example.com/wake \
   -H "Authorization: Bearer $API_KEY" \
   -H 'Content-Type: application/json' \
-  -d '{"device_id":"a1b2c3d4e5f60718"}'
+  -d '{"device_id":"a1b2c3d4e5f60718","mac":"AA:BB:CC:DD:EE:FF"}'
 ```
 
 A reply with `ok:true` means the dongle sent the packet, and `sent` and `ifaces` say how many went

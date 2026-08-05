@@ -52,7 +52,7 @@ jobs:
         # the firmware is being validated against a stale contract.
         run: |
           node scripts/gen-vectors.mjs
-          if ! git diff --exit-code --stat ../../firmware/test/vectors/config-v1.json; then
+          if ! git diff --exit-code --stat ../../firmware/test/vectors/config-v2.json; then
             echo "::error::Golden vectors are stale. Run 'npm run gen-vectors' in tools/mkconfig"
             echo "::error::and mirror the encoder change in firmware/src/config/config.c."
             exit 1
@@ -66,10 +66,11 @@ jobs:
           set -e
           node bin/mkconfig.mjs \
             --ssid "CI Network" --psk "ci-password" --auth wpa2 \
-            --target "Test PC=AA:BB:CC:DD:EE:FF" \
+            --relay "wss://relay.example.com/ws" \
             --out /tmp/ci-config.uf2
           node bin/mkconfig.mjs --verify /tmp/ci-config.uf2 | tee /tmp/verify.txt
-          grep -q "Test PC -> AA:BB:CC:DD:EE:FF" /tmp/verify.txt
+          grep -q "SSID:      CI Network" /tmp/verify.txt
+          grep -q "Relay:     wss://relay.example.com/ws" /tmp/verify.txt
           grep -q "0x103FF000" /tmp/verify.txt
           grep -q "RP2350_ARM_S" /tmp/verify.txt
           # The token and password must never be printed back out.

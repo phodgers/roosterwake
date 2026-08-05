@@ -3,7 +3,7 @@
  *
  * This is the JavaScript half of a format implemented twice — the other half is
  * firmware/src/config/config.c, in C, on the device. The two are kept honest by the golden
- * vectors in firmware/test/vectors/config-v1.json, which BOTH test suites consume. If either
+ * vectors in firmware/test/vectors/config-v2.json, which BOTH test suites consume. If either
  * side drifts, CI fails on the other.
  *
  * The authoritative specification is firmware/docs/config-format.md. Where this file and that
@@ -17,15 +17,12 @@
 
 export const MAGIC = 0x46435752; // "RWCF" read as little-endian u32
 export const MAGIC_BYTES = Uint8Array.from([0x52, 0x57, 0x43, 0x46]); // 'R','W','C','F'
-export const VERSION = 1;
+export const VERSION = 2;
 
 export const HEADER_LEN = 32;
-export const PAYLOAD_LEN_V1 = 692;
-export const RECORD_LEN_V1 = HEADER_LEN + PAYLOAD_LEN_V1; // 724
+export const PAYLOAD_LEN_V2 = 443;
+export const RECORD_LEN_V2 = HEADER_LEN + PAYLOAD_LEN_V2; // 475
 export const SECTOR_SIZE = 4096;
-
-export const MAX_TARGETS = 8;
-export const TARGET_ENTRY_LEN = 31;
 
 /** Field offsets within the payload. Never change these; append instead. */
 export const OFF = {
@@ -37,8 +34,6 @@ export const OFF = {
   token: 245,
   owner_email: 310,
   flags: 439,
-  target_count: 443,
-  targets: 444,
 };
 
 /** Field widths, including the mandatory NUL terminator for strings. */
@@ -49,7 +44,6 @@ export const LEN = {
   device_id: 17,
   token: 65,
   owner_email: 129,
-  target_name: 25,
 };
 
 export const WIFI_AUTH = { open: 0, wpa2: 1, wpa3: 2, auto: 255 };
@@ -137,10 +131,10 @@ const dec = new TextDecoder('utf-8', { fatal: false });
  * Write a UTF-8 string into a fixed-width, NUL-padded field.
  *
  * Length is checked in BYTES, not characters, and the check leaves room for the terminator.
- * A target named "Björn's Büro" is 12 characters but 14 bytes; truncating at a character
- * count would silently corrupt the encoding, and truncating mid-sequence would produce
- * invalid UTF-8 on the device. So we reject rather than truncate — callers validate at the
- * input boundary where they can give a useful error.
+ * An SSID of "Café Münster" is 12 characters but 14 bytes; truncating at a character count
+ * would silently corrupt the encoding, and truncating mid-sequence would produce invalid UTF-8
+ * on the device. So we reject rather than truncate — callers validate at the input boundary
+ * where they can give a useful error.
  */
 function putStr(buf, offset, width, value, field) {
   const bytes = enc.encode(value ?? '');
@@ -157,23 +151,6 @@ function getStr(buf, offset, width) {
   const limit = offset + width;
   while (end < limit && buf[end] !== 0) end++;
   return dec.decode(buf.subarray(offset, end));
-}
-
-/** Parse a MAC in any common form to six raw octets. */
-export function parseMac(mac, field = 'mac') {
-  if (typeof mac !== 'string') throw new ConfigError(field, 'must be a string');
-  const hex = mac.replace(/[:\-.\s]/g, '');
-  if (!/^[0-9a-fA-F]{12}$/.test(hex)) {
-    throw new ConfigError(field, `"${mac}" is not a valid MAC address`);
-  }
-  const out = new Uint8Array(6);
-  for (let i = 0; i < 6; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
-  return out;
-}
-
-/** Format six octets as the canonical upper-case colon-separated form. */
-export function formatMac(bytes) {
-  return Array.from(bytes, (b) => b.toString(16).toUpperCase().padStart(2, '0')).join(':');
 }
 
 function assertHex(value, chars, field) {
@@ -196,12 +173,11 @@ function assertHex(value, chars, field) {
  * @param {string} [cfg.token]       64 lower-case hex chars
  * @param {string} [cfg.owner_email]
  * @param {number} [cfg.flags=0]
- * @param {Array<{name:string, mac:string}>} [cfg.targets=[]]
  * @param {number} [cfg.seq=GENERATED_SEQ]
- * @returns {Uint8Array} RECORD_LEN_V1 bytes
+ * @returns {Uint8Array} RECORD_LEN_V2 bytes
  */
 export function encode(cfg = {}) {
-  const payload = new Uint8Array(PAYLOAD_LEN_V1);
+  const payload = new Uint8Array(PAYLOAD_LEN_V2);
 
   putStr(payload, OFF.ssid, LEN.ssid, cfg.ssid, 'ssid');
   putStr(payload, OFF.psk, LEN.psk, cfg.psk, 'psk');
@@ -235,27 +211,17 @@ export function encode(cfg = {}) {
   }
   new DataView(payload.buffer).setUint32(OFF.flags, flags, true);
 
-  const targets = cfg.targets ?? [];
-  if (targets.length > MAX_TARGETS) {
-    throw new ConfigError('targets', `at most ${MAX_TARGETS} targets (got ${targets.length})`);
-  }
-  payload[OFF.target_count] = targets.length;
-  targets.forEach((t, i) => {
-    const base = OFF.targets + i * TARGET_ENTRY_LEN;
-    const name = (t.name ?? '').trim();
-    if (name.length === 0) throw new ConfigError(`targets[${i}].name`, 'must not be empty');
-    putStr(payload, base, LEN.target_name, name, `targets[${i}].name`);
-    payload.set(parseMac(t.mac, `targets[${i}].mac`), base + LEN.target_name);
-  });
+  // No list of machines to wake: a device is told which MAC to wake in the frame that asks
+  // (PROTOCOL.md §5), so there is nothing here for a generator to write.
 
   // Header last — it carries the CRC of the finished payload.
-  const record = new Uint8Array(RECORD_LEN_V1);
+  const record = new Uint8Array(RECORD_LEN_V2);
   const view = new DataView(record.buffer);
   record.set(MAGIC_BYTES, 0);
   view.setUint16(4, VERSION, true);
   view.setUint16(6, 0, true); // reserved0
   view.setUint32(8, (cfg.seq ?? GENERATED_SEQ) >>> 0, true);
-  view.setUint32(12, PAYLOAD_LEN_V1, true);
+  view.setUint32(12, PAYLOAD_LEN_V2, true);
   view.setUint32(16, crc32(payload), true);
   // bytes 20..31 reserved1, already zero
   record.set(payload, HEADER_LEN);
@@ -265,9 +231,10 @@ export function encode(cfg = {}) {
 // ── Decode ──────────────────────────────────────────────────────────────────
 
 /**
- * Decode a record. Returns null for anything that is not a valid v1 record, so callers can
- * treat "no config" and "corrupt config" identically — which is what the device does when
- * choosing between slots (config-format.md §3).
+ * Decode a record. Returns null for anything that is not a valid record of exactly VERSION, so
+ * callers treat "no config", "corrupt config" and "a layout this build does not know"
+ * identically — which is what the device does when choosing between slots (config-format.md §3).
+ * There is no migration from an earlier version; §6 says why.
  */
 export function decode(bytes) {
   if (!bytes || bytes.length < HEADER_LEN) return null;
@@ -280,22 +247,13 @@ export function decode(bytes) {
   const seq = view.getUint32(8, true);
   const payloadLen = view.getUint32(12, true);
   const storedCrc = view.getUint32(16, true);
-  if (payloadLen !== PAYLOAD_LEN_V1) return null;
+  if (payloadLen !== PAYLOAD_LEN_V2) return null;
   if (bytes.length < HEADER_LEN + payloadLen) return null;
 
   const payload = bytes.subarray(HEADER_LEN, HEADER_LEN + payloadLen);
   if (crc32(payload) !== storedCrc) return null;
 
   const pv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-  const count = Math.min(payload[OFF.target_count], MAX_TARGETS);
-  const targets = [];
-  for (let i = 0; i < count; i++) {
-    const base = OFF.targets + i * TARGET_ENTRY_LEN;
-    targets.push({
-      name: getStr(payload, base, LEN.target_name),
-      mac: formatMac(payload.subarray(base + LEN.target_name, base + TARGET_ENTRY_LEN)),
-    });
-  }
 
   return {
     version,
@@ -308,7 +266,6 @@ export function decode(bytes) {
     token: getStr(payload, OFF.token, LEN.token),
     owner_email: getStr(payload, OFF.owner_email, LEN.owner_email),
     flags: pv.getUint32(OFF.flags, true),
-    targets,
   };
 }
 

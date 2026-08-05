@@ -63,8 +63,8 @@ See [`docs/QUICKSTART.md`](docs/QUICKSTART.md) for the full walkthrough. In brie
    drive that appears. Repeat with `*-install.uf2`.
 2. Power it up. It starts a Wi-Fi hotspot called `RoosterWake-Setup-XXXX`.
 3. Join that hotspot from your phone. A setup page opens automatically.
-4. Pick your network, enter the password, and enter the MAC address of the PC you want to
-   wake.
+4. Pick your network and enter the password. It does not ask which PC to wake — a dongle holds
+   no list of machines, and every wake names its MAC in the frame that asks.
 5. It reboots, joins your network, and connects to the relay.
 
 Nothing there needs an account. Self-hosting the relay takes about five minutes:

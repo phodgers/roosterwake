@@ -17,8 +17,8 @@
 #include "tls/tls.h"
 
 /* Buffer for one outbound frame. PROTOCOL.md §1 caps a frame at 2048 bytes in both directions;
- * the largest this firmware constructs is a `hello` with eight maximum-length targets, which
- * is under 800. */
+ * the largest this firmware constructs is a `scan_result` on a busy segment, which drops hosts
+ * rather than exceed it. */
 #define WS_TX_MAX (RW_WS_MAX_HEADER + RW_WS_MAX_OUTBOUND)
 
 static void ws_teardown(rw_ws_client_t *ws, rw_ws_fail_t why, uint16_t close_code);

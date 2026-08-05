@@ -26,7 +26,6 @@ static const uerr_entry_t k_errors[] = {
     {RW_UERR_BAD_ARG,        "bad_arg",        "an argument failed validation"},
     {RW_UERR_BAD_FRAME,      "bad_frame",      "malformed quoting or invalid UTF-8"},
     {RW_UERR_TOO_LONG,       "too_long",       "line exceeded 512 bytes"},
-    {RW_UERR_TOO_MANY,       "too_many",       "target limit reached"},
     {RW_UERR_NOTHING_STAGED, "nothing_staged", "no pending changes to commit"},
     {RW_UERR_NEEDS_CONFIRM,  "needs_confirm",  "repeat with the CONFIRM argument"},
     {RW_UERR_NOT_JOINED,     "not_joined",     "wi-fi is not connected"},
@@ -70,8 +69,6 @@ static const cmd_entry_t k_commands[] = {
     {RW_CMD_LAN_SCAN,      "LAN_SCAN"},
     {RW_CMD_SET_WIFI,      "SET_WIFI"},
     {RW_CMD_SET_RELAY,     "SET_RELAY"},
-    {RW_CMD_ADD_TARGET,    "ADD_TARGET"},
-    {RW_CMD_CLEAR_TARGETS, "CLEAR_TARGETS"},
     {RW_CMD_SET_EMAIL,     "SET_EMAIL"},
     {RW_CMD_SET_TOKEN,     "SET_TOKEN"},
     {RW_CMD_GET_CONFIG,    "GET_CONFIG"},
@@ -330,41 +327,6 @@ rw_uerr_t rw_stage_set_relay(rw_stage_t *stage, const char *url) {
     return RW_UERR_NONE;
 }
 
-rw_uerr_t rw_stage_add_target(rw_stage_t *stage, const char *name, const char *mac) {
-    if (name == NULL || name[0] == '\0' || mac == NULL) {
-        return RW_UERR_BAD_ARG;
-    }
-    if (stage->cfg.target_count >= RW_CFG_MAX_TARGETS) {
-        return RW_UERR_TOO_MANY;
-    }
-
-    rw_target_t entry;
-    memset(&entry, 0, sizeof(entry));
-    if (!copy_field(entry.name, RW_CFG_TARGET_NAME_LEN, name)) {
-        return RW_UERR_BAD_ARG;
-    }
-    if (!rw_mac_parse(mac, entry.mac)) {
-        return RW_UERR_BAD_ARG;
-    }
-    /* Refuse addresses no adapter can have. A wake to a multicast or broadcast address leaves
-     * the device reporting a perfectly successful send while nothing ever powers on, which is
-     * the least debuggable outcome available. */
-    if (!rw_mac_wakeable(entry.mac)) {
-        return RW_UERR_BAD_ARG;
-    }
-
-    stage->cfg.targets[stage->cfg.target_count++] = entry;
-    stage->dirty                                  = true;
-    return RW_UERR_NONE;
-}
-
-rw_uerr_t rw_stage_clear_targets(rw_stage_t *stage) {
-    memset(stage->cfg.targets, 0, sizeof(stage->cfg.targets));
-    stage->cfg.target_count = 0;
-    stage->dirty            = true;
-    return RW_UERR_NONE;
-}
-
 rw_uerr_t rw_stage_set_email(rw_stage_t *stage, const char *email) {
     if (email == NULL) {
         return RW_UERR_BAD_ARG;
@@ -444,9 +406,6 @@ rw_uerr_t rw_stage_validate(const rw_stage_t *stage) {
          */
         return RW_UERR_BAD_ARG;
     }
-    if (stage->cfg.target_count > RW_CFG_MAX_TARGETS) {
-        return RW_UERR_TOO_MANY;
-    }
     return RW_UERR_NONE;
 }
 
@@ -523,24 +482,6 @@ size_t rw_usbcfg_config_json(const rw_config_t *cfg, char *buf, size_t cap) {
     rw_jw_key(&w, "email_set");
     rw_jw_raw(&w, cfg->owner_email[0] ? "true" : "false");
     rw_jw_raw(&w, ",");
-
-    rw_jw_key(&w, "targets");
-    rw_jw_raw(&w, "[");
-    for (uint8_t i = 0; i < cfg->target_count && i < RW_CFG_MAX_TARGETS; i++) {
-        if (i > 0) {
-            rw_jw_raw(&w, ",");
-        }
-        char mac[18];
-        rw_mac_format(cfg->targets[i].mac, mac);
-        rw_jw_raw(&w, "{");
-        rw_jw_key(&w, "name");
-        rw_jw_str(&w, cfg->targets[i].name);
-        rw_jw_raw(&w, ",");
-        rw_jw_key(&w, "mac");
-        rw_jw_str(&w, mac);
-        rw_jw_raw(&w, "}");
-    }
-    rw_jw_raw(&w, "],");
 
     rw_jw_key(&w, "flags");
     rw_jw_int(&w, (long)cfg->flags);

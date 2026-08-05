@@ -32,8 +32,8 @@ static void test_writer(void) {
     RW_CHECK(rw_jw_finish(&w) > 0);
     RW_CHECK_EQ_STR(buf, "\"a\\\"b\\\\c\\nd\\te\\u0001\"");
 
-    /* UTF-8 passes through unchanged: target names are UTF-8 by contract and re-encoding them
-     * would only make the frame larger. */
+    /* UTF-8 passes through unchanged: PROTOCOL.md §1 makes frames UTF-8 by contract and
+     * re-encoding would only make them larger. */
     rw_jw_init(&w, buf, sizeof(buf));
     rw_jw_str(&w, "Bj\xc3\xb6rns B\xc3\xbcro");
     RW_CHECK(rw_jw_finish(&w) > 0);
@@ -79,8 +79,8 @@ static void test_reader(void) {
     jsmntok_t   tokens[TOKENS];
     const char *js =
         "{\"t\":\"wake\",\"req_id\":\"8f14e45f\",\"repeat\":3,\"ok\":true,\"neg\":-7,"
-        "\"targets\":[{\"name\":\"Desktop\",\"mac\":\"AA:BB:CC:DD:EE:FF\"},"
-        "{\"name\":\"NAS\",\"mac\":\"11:22:33:44:55:66\"}]}";
+        "\"nested\":[{\"name\":\"Desktop\",\"ssid\":\"AA:BB:CC:DD:EE:FF\"},"
+        "{\"name\":\"NAS\",\"ssid\":\"11:22:33:44:55:66\"}]}";
     int count = parse_doc(js, tokens);
     RW_CHECK(count > 0);
 
@@ -108,13 +108,16 @@ static void test_reader(void) {
     RW_CHECK(rw_json_is_true(js, &tokens[idx]));
     RW_CHECK(!rw_json_int(js, &tokens[idx], &value));
 
-    /* A key that only appears nested must not be found at the top level, or a `config_push`
-     * carrying a target named "ssid" would look like an attempt to set Wi-Fi credentials. */
+    /* A key that only appears nested must not be found at the top level. Every frame a device
+     * reads is a flat object, so a match inside a nested value is always a false one — and a
+     * relay that could reach a top-level name by burying it in an array would be reaching a
+     * field the device treats as local-only. */
     RW_CHECK_EQ_INT(rw_json_find(js, tokens, count, "name"), -1);
+    RW_CHECK_EQ_INT(rw_json_find(js, tokens, count, "ssid"), -1);
     RW_CHECK_EQ_INT(rw_json_find(js, tokens, count, "missing"), -1);
 
-    /* The array and its elements. */
-    idx = rw_json_find(js, tokens, count, "targets");
+    /* The array and its elements: the walk that makes the rule above hold. */
+    idx = rw_json_find(js, tokens, count, "nested");
     RW_CHECK(idx > 0);
     RW_CHECK_EQ_INT(tokens[idx].type, JSMN_ARRAY);
     RW_CHECK_EQ_INT(tokens[idx].size, 2);

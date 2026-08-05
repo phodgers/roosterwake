@@ -91,8 +91,8 @@ rw_flash_status_t rw_config_flash_erase_all(void);
 /*
  * Reset everything a person configured, and keep the device's identity.
  *
- * This is what FACTORY_RESET actually calls. Wi-Fi credentials, targets, the account address,
- * the relay override and the enrolled flag all go; `device_id` and `token` survive.
+ * This is what FACTORY_RESET actually calls. Wi-Fi credentials, the account address, the relay
+ * override and the enrolled flag all go; `device_id` and `token` survive.
  *
  * ── WHY THE TOKEN SURVIVES ────────────────────────────────────────────────
  *

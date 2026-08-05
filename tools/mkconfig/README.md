@@ -15,7 +15,6 @@ Zero dependencies. Node 20 or newer.
 npx @remotewake/mkconfig \
   --ssid "HomeNet" \
   --psk "hunter2" \
-  --target "Desktop=AA:BB:CC:DD:EE:FF" \
   --out remotewake-config.uf2
 ```
 
@@ -24,20 +23,12 @@ if it is not already flashed) and `remotewake-config.uf2` onto the drive that ap
 
 Run `mkconfig --help` for the full option list.
 
-## Where the MAC address comes from
+## There is no option for the PC you want to wake
 
-The `--target` MAC is the address of the **PC you want to wake**, not the dongle. It must be
-the wired Ethernet adapter's MAC if you are waking over Ethernet, which is what you should be
-doing — Wi-Fi wake is unreliable for reasons outside anyone's control.
-
-| | |
-|---|---|
-| Windows | `ipconfig /all`, look for "Physical Address" under your Ethernet adapter |
-| macOS | `ifconfig en0 \| grep ether` |
-| Linux | `ip link show` |
-
-Any separator works — `AA:BB:CC:DD:EE:FF`, `AA-BB-CC-DD-EE-FF`, or `aabbccddeeff`. It is
-normalised on the way in.
+A dongle holds no list of machines. It is told which MAC to wake in the frame that asks
+(PROTOCOL.md §5), so the machines live with whoever sends the wakes — your account on the
+hosted service, or your own relay's records if you self-host. This file carries the network,
+the relay and the device's identity, and nothing about your PCs.
 
 ## Self-hosting
 
@@ -49,7 +40,6 @@ mkconfig --ssid "HomeNet" --psk "hunter2" \
          --relay "wss://wake.example.com/ws" \
          --device-id "$(openssl rand -hex 8)" \
          --token "$(openssl rand -hex 32)" \
-         --target "NAS=11:22:33:44:55:66" \
          --out remotewake-config.uf2
 ```
 
@@ -86,7 +76,7 @@ accidental `git add -A` cannot catch it, but that only helps inside this reposit
   against which the firmware's C is measured.
 - [`lib/uf2.mjs`](lib/uf2.mjs) — UF2 reader/writer.
 - The format is specified in [`firmware/docs/config-format.md`](../../firmware/docs/config-format.md).
-- [`firmware/test/vectors/config-v1.json`](../../firmware/test/vectors/config-v1.json) holds
+- [`firmware/test/vectors/config-v2.json`](../../firmware/test/vectors/config-v2.json) holds
   golden vectors consumed by **both** this package's tests and the firmware's C tests. The
   format is implemented three times — here, in the firmware, and in the hosted dashboard's
   generator — and that shared file is what stops the three from drifting apart.

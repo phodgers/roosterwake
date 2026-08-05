@@ -1,6 +1,6 @@
 # USB serial command channel (`usbcfg`)
 
-**Protocol version 1** · Status: **stable**
+**Protocol version 2** · Status: **stable**
 
 A Rooster Wake device exposes a line-based command channel over USB CDC. It is how a computer
 configures a dongle without going near the Wi-Fi captive portal, and it is a **public,
@@ -89,7 +89,7 @@ Identity and state. Safe to call at any time; the natural first command.
 
 ```
 > INFO
-< OK {"proto":1,"fw":"1.0.0","board":"pico2_w","device_id":"a1b2c3d4e5f60718",
+< OK {"proto":2,"fw":"2.0.0","board":"pico2_w","device_id":"a1b2c3d4e5f60718",
      "mac":"00:00:5E:00:53:01","configured":true,"uptime_s":142,"reset_reason":"power_on"}
 ```
 
@@ -192,23 +192,6 @@ Must be `wss://` or `ws://`, max 128 bytes. `ws://` is accepted only for loopbac
 addresses; anything else is rejected with `ERR bad_arg`, because a plaintext relay URL pointing
 at the public internet sends the device's credentials in clear.
 
-### `ADD_TARGET <name> <mac>`
-
-```
-> ADD_TARGET "Office Desktop" AA:BB:CC:DD:EE:FF
-< OK {"targets":1}
-```
-
-`mac` accepts `:`, `-` or no separators, in any case. `name` is 1–24 bytes UTF-8. Maximum
-eight targets; the ninth returns `ERR too_many`.
-
-### `CLEAR_TARGETS`
-
-```
-> CLEAR_TARGETS
-< OK {"targets":0}
-```
-
 ### `SET_EMAIL <address>`
 
 Stage the account address this device will offer to a hosted relay with PROTOCOL.md's `adopt`
@@ -263,9 +246,12 @@ Return the staged-and-saved configuration **with all secrets omitted**.
 ```
 > GET_CONFIG
 < OK {"ssid":"HomeNet","auth":"wpa2","psk_set":true,"relay":"wss://relay.roosterwake.com/ws",
-     "device_id":"a1b2c3d4e5f60718","token_set":true,"email_set":false,
-     "targets":[{"name":"Office Desktop","mac":"AA:BB:CC:DD:EE:FF"}],"flags":0}
+     "device_id":"a1b2c3d4e5f60718","token_set":true,"email_set":false,"flags":0}
 ```
+
+**There is no list of machines to wake, here or anywhere on the device.** A wake names its MAC
+in the frame that asks for it (PROTOCOL.md §5), so a host that wants to know which machines an
+account can wake asks the relay, not the dongle.
 
 **The PSK and the token are never returned by this channel, by any command, ever.** Only the
 booleans `psk_set` and `token_set`. This is the one guarantee that stops a compromised or
@@ -296,13 +282,13 @@ straight on to `STATUS`.
 
 A restart is needed only for what the running system cannot absorb — `ssid`, `psk`, `wifi_auth`
 and `flags`, because the radio is associated with the credentials it booted on and TLS is
-configured from the flags at startup. A change to the relay URL, the token, the owner email or
-the target list is applied by reopening the relay session, which also clears a session left
-`auth_failed` by a token the relay had refused.
+configured from the flags at startup. A change to the relay URL, the token or the owner email
+is applied by reopening the relay session, which also clears a session left `auth_failed` by a
+token the relay had refused.
 
 This is what lets a host prove the Wi-Fi before it has anything else to write: commit the network
-on its own and wait for `STATUS` to report `joined`, then commit the token and targets without
-dropping the association that was just proved.
+on its own and wait for `STATUS` to report `joined`, then commit the token without dropping the
+association that was just proved.
 
 Validation failures return `ERR` and change nothing. The response is sent *before* any reboot so
 the host sees the outcome rather than a disconnect.
@@ -359,14 +345,16 @@ asks again while `from + 12 < total`. Scan results are excluded — a single `SC
 event per beacon heard and would evict everything worth keeping. Entries shift as new events
 arrive, so a page read during an active retry loop may skip or repeat a line.
 
-### `TEST_WAKE [mac]`
+### `TEST_WAKE <mac>`
 
-Send a magic packet immediately, without going near the relay. With no argument, uses the
-first configured target. Requires Wi-Fi to be joined.
+Send a magic packet immediately, without going near the relay. Requires Wi-Fi to be joined.
+The MAC is required — the device holds no list of machines to choose a default from — and must
+be a unicast address by PROTOCOL.md §2. A group, broadcast or all-zero address is `ERR bad_arg`:
+it would send perfectly and wake nothing, which is the outcome this command exists to rule out.
 
 ```
-> TEST_WAKE
-< OK {"sent":24,"ifaces":["255.255.255.255:9","192.168.1.255:9",
+> TEST_WAKE AA:BB:CC:DD:EE:FF
+< OK {"sent":12,"ifaces":["255.255.255.255:9","192.168.1.255:9",
                           "255.255.255.255:7","192.168.1.255:7"]}
 ```
 
@@ -383,7 +371,7 @@ will help.
 < OK {"erased":true,"reboot_in_ms":1000}
 ```
 
-Clears everything a person configured — Wi-Fi, targets, relay override, account address, and the
+Clears everything a person configured — Wi-Fi, relay override, account address, and the
 enrolled flag — and reboots into setup mode. The literal argument `CONFIRM` is required; without
 it, `ERR needs_confirm`. There is no undo, and the Wi-Fi password is gone.
 
@@ -421,13 +409,11 @@ config sectors — so a device reflashed this way comes back already provisioned
 
 ```
 > INFO
-< OK {"proto":1,"fw":"1.0.0","board":"pico2_w","device_id":"a1b2c3d4e5f60718","configured":false,...}
+< OK {"proto":2,"fw":"2.0.0","board":"pico2_w","device_id":"a1b2c3d4e5f60718","configured":false,...}
 > SCAN
 < OK {"networks":[{"ssid":"HomeNet","rssi":-42,"auth":"wpa2","channel":6}, ...]}
 > SET_WIFI "HomeNet" "correct horse battery staple"
 < OK
-> ADD_TARGET "Office Desktop" AA:BB:CC:DD:EE:FF
-< OK {"targets":1}
 > SET_RELAY wss://relay.roosterwake.com/ws
 < OK
 > SET_EMAIL philip@example.com
@@ -439,8 +425,7 @@ config sectors — so a device reflashed this way comes back already provisioned
 
 > GET_CONFIG
 < OK {"ssid":"HomeNet","auth":"auto","psk_set":true,"relay":"wss://relay.roosterwake.com/ws",
-     "device_id":"a1b2c3d4e5f60718","token_set":true,"email_set":false,
-     "targets":[{"name":"Office Desktop","mac":"AA:BB:CC:DD:EE:FF"}],"flags":0}
+     "device_id":"a1b2c3d4e5f60718","token_set":true,"email_set":false,"flags":0}
 > STATUS
 < OK {"wifi":"joined","ssid":"HomeNet","rssi":-47,"ip":"192.168.1.42",
      "netmask":"255.255.255.0","relay":"connected","last_error":null,"uptime_s":8}
@@ -470,7 +455,6 @@ device through some other channel, or because it maintains the relay's device li
 | `bad_arg` | An argument failed validation (bad MAC, bad URL, oversized string) |
 | `bad_frame` | Line was not valid UTF-8, or quoting was malformed |
 | `too_long` | Line exceeded 512 bytes |
-| `too_many` | Target limit reached |
 | `nothing_staged` | `COMMIT` with no pending changes |
 | `needs_confirm` | `FACTORY_RESET` without the `CONFIRM` argument |
 | `not_joined` | Command requires Wi-Fi, which is not connected |
@@ -480,7 +464,7 @@ device through some other channel, or because it maintains the relay's device li
 | `flash_error` | Flash write or verification failed. Configuration is unchanged |
 | `internal` | Anything else |
 
-Error codes are a closed set for protocol version 1. New codes require a version bump, and
+Error codes are a closed set for protocol version 2. New codes require a version bump, and
 hosts MUST treat an unrecognised code as `internal` rather than failing.
 
 ---
@@ -511,8 +495,14 @@ else. Show a progress indicator; do not time out at five seconds and declare the
 
 ## 8. Versioning
 
-`proto` in the `INFO` response is this document's version. It is `1`.
+`proto` in the `INFO` response is this document's version. It is `2`.
 
 New commands, new optional arguments, and new fields in `OK` payloads may be added within
-version 1. Hosts MUST ignore unrecognised JSON fields. Removing a command, changing an
+version 2. Hosts MUST ignore unrecognised JSON fields. Removing a command, changing an
 argument's meaning, or changing a response field's type requires a version bump.
+
+**Version 2 removed `ADD_TARGET` and `CLEAR_TARGETS`, made `TEST_WAKE`'s MAC required, and
+dropped `targets` from `GET_CONFIG` and `too_many` from §6.** A device holds no list of the
+machines it can wake — PROTOCOL.md §13 says why — so there was nothing left for those commands
+to write to. The unicast check `ADD_TARGET` used to apply moved to `TEST_WAKE`, which is now the
+only place a MAC reaches this channel.

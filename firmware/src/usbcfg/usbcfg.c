@@ -35,10 +35,10 @@
 #include "wol/wol.h"
 
 /*
- * Response buffer. GET_CONFIG with eight maximum-length targets is the largest object this
- * channel emits, at a little under 900 bytes; SCAN is capped to fit alongside it. The writer
- * reports overflow rather than truncating, so a future field that does not fit produces
- * `ERR internal` instead of a malformed line.
+ * Response buffer. LAN_SCAN with its full 24 hosts is the largest object this channel emits;
+ * SCAN's 20 networks are capped to fit the same buffer. The writer reports overflow rather than
+ * truncating, so a future field that does not fit produces `ERR internal` instead of a
+ * malformed line.
  */
 #define RESP_MAX 1600
 
@@ -545,8 +545,12 @@ static void cmd_ota_stage(const rw_cmdline_t *cl) {
 
 /* ── TEST_WAKE ───────────────────────────────────────────────────────────── */
 
+/* The MAC is the argument, not a default: the device holds no list of machines to pick one
+ * from, and a diagnostic that guessed which machine you meant would not be one. It is held to
+ * PROTOCOL.md §2's wakeable-address rule, because a group or broadcast address sends
+ * successfully and wakes nothing — the failure this command exists to rule out. */
 static void cmd_test_wake(const rw_cmdline_t *cl) {
-    if (cl->argc > 2) {
+    if (cl->argc != 2) {
         respond_err(RW_UERR_BAD_ARGS);
         return;
     }
@@ -556,17 +560,9 @@ static void cmd_test_wake(const rw_cmdline_t *cl) {
     }
 
     uint8_t mac[6];
-    if (cl->argc == 2) {
-        if (!rw_mac_parse(cl->argv[1], mac)) {
-            respond_err(RW_UERR_BAD_ARG);
-            return;
-        }
-    } else {
-        if (s_live->target_count == 0) {
-            respond_err(RW_UERR_BAD_ARG);
-            return;
-        }
-        memcpy(mac, s_live->targets[0].mac, 6);
+    if (!rw_mac_parse(cl->argv[1], mac) || !rw_mac_wakeable(mac)) {
+        respond_err(RW_UERR_BAD_ARG);
+        return;
     }
 
     rw_wol_result_t res;
@@ -667,8 +663,8 @@ static void cmd_commit(void) {
 
     /*
      * Reopen the session rather than leave it on the old credentials. The relay borrows the
-     * configuration by pointer, so the new URL, token and targets are already visible to it, but
-     * the live connection authenticated with what it had at the handshake.
+     * configuration by pointer, so the new URL and token are already visible to it, but the live
+     * connection authenticated with what it had at the handshake.
      *
      * `rw_relay_stop` is what makes this work after a refusal: a token the relay rejected leaves
      * the session STOPPED, which `rw_relay_start` alone will not clear.
@@ -774,23 +770,6 @@ static void dispatch(const rw_cmdline_t *cl) {
             rw_uerr_t err = rw_stage_set_relay(&s_stage, cl->argv[1]);
             if (err != RW_UERR_NONE) { respond_err(err); return; }
             respond_ok_bare();
-            return;
-        }
-
-        case RW_CMD_ADD_TARGET: {
-            if (!arity(cl, 2, 2)) { respond_err(RW_UERR_BAD_ARGS); return; }
-            rw_uerr_t err = rw_stage_add_target(&s_stage, cl->argv[1], cl->argv[2]);
-            if (err != RW_UERR_NONE) { respond_err(err); return; }
-            char buf[32];
-            snprintf(buf, sizeof(buf), "{\"targets\":%u}", s_stage.cfg.target_count);
-            respond_ok_json(buf);
-            return;
-        }
-
-        case RW_CMD_CLEAR_TARGETS: {
-            if (!arity(cl, 0, 0)) { respond_err(RW_UERR_BAD_ARGS); return; }
-            rw_stage_clear_targets(&s_stage);
-            respond_ok_json("{\"targets\":0}");
             return;
         }
 

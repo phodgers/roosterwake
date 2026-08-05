@@ -61,7 +61,7 @@ void rw_test_fail(const char *file, int line, const char *fmt, ...);
     } while (0)
 
 /* Byte-compare with a hex diff on the first mismatch, because "buffers differ" is useless when
- * the buffer is a 612-byte flash record. */
+ * the buffer is a 475-byte flash record. */
 void rw_check_mem(const char *file, int line, const char *what, const void *actual,
                   const void *expected, size_t len);
 

@@ -165,8 +165,8 @@
 /*
  * Record buffers.
  *
- * Outbound is 4 KB, which is generous: the largest frame this device sends is a `hello` with
- * eight targets, under 800 bytes, and PROTOCOL.md §1 caps any frame at 2048.
+ * Outbound is 4 KB, which is generous: PROTOCOL.md §1 caps any frame at 2048, and only
+ * `scan_result` comes near that.
  *
  * Inbound is the full 16 KB a TLS 1.2 record is allowed to be, and that is a deliberate
  * change from the 4 KB this was originally specified at. The reason is lwIP: `struct

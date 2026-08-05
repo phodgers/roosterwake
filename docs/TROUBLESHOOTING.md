@@ -168,8 +168,10 @@ Check `relay_url`. The device refuses plaintext `ws://` to a public address, so 
 An `auth` failure means the token in the device and the token in the relay's config do not match.
 The token is never transmitted, so nothing else will tell you.
 
-A relay that does not echo the `roosterwake.v1` subprotocol is not v1-conformant and the device
-will close the connection. See §12 of [`../PROTOCOL.md`](../PROTOCOL.md).
+A relay that does not echo the `roosterwake.v1` subprotocol is not v2-conformant and the device
+will close the connection. The token names the protocol family and does not track the major
+version, which is why it still reads `v1`. See §1 and §12 of
+[`../PROTOCOL.md`](../PROTOCOL.md).
 
 ### It reports `ok:false`
 
@@ -183,8 +185,9 @@ The dongle answered and told you what went wrong, which is more useful than sile
 
 `sent` and `ifaces` in the reply tell you how many packets went where.
 
-`TEST_WAKE` sends a packet without going through the relay, which separates a dongle problem from
-a relay problem.
+`TEST_WAKE <mac>` sends a packet without going through the relay, which separates a dongle problem
+from a relay problem. The address is required — the dongle holds no list of machines to pick a
+default from.
 
 ### Starting over
 
@@ -194,9 +197,9 @@ Over USB serial:
 FACTORY_RESET CONFIRM
 ```
 
-The literal `CONFIRM` is required; without it you get `ERR needs_confirm`. It clears Wi-Fi,
-targets, the relay override, the account address and the enrolled flag, then reboots into setup
-mode. There is no undo and the Wi-Fi password is gone.
+The literal `CONFIRM` is required; without it you get `ERR needs_confirm`. It clears Wi-Fi, the
+relay override, the account address and the enrolled flag, then reboots into setup mode. There is
+no undo and the Wi-Fi password is gone.
 
 **`device_id` and `token` survive.** They identify the hardware rather than its owner, and a
 device that came back with a fresh token would be refused by any relay that already knew it —

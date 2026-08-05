@@ -99,8 +99,7 @@ In a second terminal, start the fake device with the same credentials:
 node test/fake-device.js \
   --relay ws://127.0.0.1:8080/ws \
   --device-id a1b2c3d4e5f60718 \
-  --token 5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8 \
-  --target Desktop=AA:BB:CC:DD:EE:FF
+  --token 5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8
 ```
 
 In a third:
@@ -109,11 +108,11 @@ In a third:
 curl -s -X POST http://127.0.0.1:8080/wake \
   -H "Authorization: Bearer $API_KEY" \
   -H 'Content-Type: application/json' \
-  -d '{"device_id":"a1b2c3d4e5f60718"}'
+  -d '{"device_id":"a1b2c3d4e5f60718","mac":"AA:BB:CC:DD:EE:FF"}'
 ```
 
 ```json
-{"device_id":"a1b2c3d4e5f60718","result_type":"wake_result","req_id":"…","ok":true,"sent":24,
+{"device_id":"a1b2c3d4e5f60718","result_type":"wake_result","req_id":"…","ok":true,"sent":12,
  "ifaces":["255.255.255.255:9","192.168.1.255:9","255.255.255.255:7","192.168.1.255:7"]}
 ```
 
@@ -238,20 +237,27 @@ compared in constant time.
 | `GET` | `/healthz` | — | Liveness. No auth, so an orchestrator does not need a key. |
 | `GET` | `/source` | — | Where this relay's source lives. AGPL §13; see below. |
 | `GET` | `/devices` | — | Every provisioned device, with online state and last-seen. |
-| `POST` | `/wake` | `{device_id, mac?, repeat?}` | Broadcast a magic packet. |
+| `POST` | `/wake` | `{device_id, mac, repeat?}` | Broadcast a magic packet. |
 | `POST` | `/status` | `{device_id}` | Signal strength, uptime, IP, firmware. |
-| `POST` | `/config` | `{device_id, targets:[{name,mac}]}` | Replace the device's target list. |
 
-`mac` is optional: without it the device wakes its first configured target. `repeat` is 1–5,
-default 3. MAC addresses are accepted in any common form and normalised to
-`AA:BB:CC:DD:EE:FF` (§2).
+`mac` names the machine to wake and is required: a dongle keeps no target list, so nothing on
+the device can supply one when the caller does not. A request without it is refused here rather
+than forwarded, because the device could only answer `bad_frame` to it. `repeat` is 1–5,
+default 3. MAC addresses are accepted in any common form and normalised to `AA:BB:CC:DD:EE:FF`
+(§2).
+
+It must also be a **unicast** address. Group, broadcast and all-zero addresses are refused here
+with `bad_mac` — §2 asks a relay to reject them at its own edge, and this is the one bad MAC
+that fails silently: the packet sends perfectly and no machine wakes, so forwarding it buys a
+confident `ok:true` for something that never had a chance. A locally-administered address is a
+real adapter and is accepted.
 
 ### Status codes
 
 | Code | Meaning |
 |---|---|
 | `200` | The device answered. Read `ok` in the body — a device that reports `ok:false` still answered. |
-| `400` | Malformed `device_id`, MAC, target list or JSON. |
+| `400` | Malformed `device_id` or JSON, a MAC that does not parse or is not unicast, or a `/wake` with no `mac`. |
 | `401` | Missing or wrong API key. |
 | `404` | No such `device_id` in `config.json`. |
 | `429` | More than 30 wakes a minute for this device (§11). |
@@ -279,12 +285,6 @@ curl -s -X POST $RW/wake -H "Authorization: Bearer $API_KEY" \
 
 curl -s -X POST $RW/status -H "Authorization: Bearer $API_KEY" \
   -H 'Content-Type: application/json' -d '{"device_id":"a1b2c3d4e5f60718"}'
-
-curl -s -X POST $RW/config -H "Authorization: Bearer $API_KEY" \
-  -H 'Content-Type: application/json' \
-  -d '{"device_id":"a1b2c3d4e5f60718","targets":[
-        {"name":"Desktop","mac":"AA:BB:CC:DD:EE:FF"},
-        {"name":"NAS","mac":"11:22:33:44:55:66"}]}'
 ```
 
 ---
@@ -310,15 +310,14 @@ should be terminating TLS. Change that line only when you know what is in front 
 ## The fake device
 
 [`test/fake-device.js`](test/fake-device.js) is a dongle made of software. It speaks the whole
-device half of the protocol — handshake, keepalive, wake, status, config, backoff — and prints
-every frame in both directions. PROTOCOL.md §12 points implementers at it because it is the
-fastest way to test a relay with nothing on the desk.
+device half of the protocol — handshake, keepalive, wake, status, backoff — and prints every
+frame in both directions. PROTOCOL.md §12 points implementers at it because it is the fastest
+way to test a relay with nothing on the desk.
 
 ```
 node test/fake-device.js --device-id <hex16> --token <hex64> [options]
 
   --relay <url>          ws:// or wss:// endpoint  (default ws://127.0.0.1:8080/ws)
-  --target <name=mac>    add a target; repeatable, up to 8
   --ip <cidr>            simulated LAN address     (default 192.168.1.42/24)
   --fw <version>         reported firmware version (default 1.0.0)
   --caps <a,b,c>         advertised capabilities   (default wake,status)
@@ -338,14 +337,14 @@ A transcript looks like this, and reading it is usually faster than reading a st
 ```
 09:41:19.402 . connecting to ws://127.0.0.1:8080/ws
 09:41:19.418 . connected (subprotocol roosterwake.v1)
-09:41:19.419 -> {"t":"hello","v":1,"device_id":"a1b2…","nonce_c":"4c1e…","fw":"1.0.0",…}
+09:41:19.419 -> {"t":"hello","v":2,"device_id":"a1b2…","nonce_c":"4c1e…","fw":"1.0.0",…}
 09:41:19.423 <- {"t":"challenge","nonce_s":"9d2f…"}
 09:41:19.424 -> {"t":"auth","proof_c":"3f2a9c81b4e05d7602ff1a8c9d3e4b57"}
 09:41:19.426 <- {"t":"hello_ack","ok":true,"proof_s":"b1946ac9…","server":"…","now":1785283279}
 09:41:19.427 . authenticated with remotewake-relay-reference/1.0.0 — link is trusted
 09:41:24.881 <- {"t":"wake","req_id":"8f14e45f-…","mac":"AA:BB:CC:DD:EE:FF"}
 09:41:24.882 . waking AA:BB:CC:DD:EE:FF: 3 burst(s) to 4 destination(s)
-09:41:25.083 -> {"t":"wake_result","req_id":"8f14e45f-…","ok":true,"sent":24,"ifaces":[…]}
+09:41:25.083 -> {"t":"wake_result","req_id":"8f14e45f-…","ok":true,"sent":12,"ifaces":[…]}
 ```
 
 ---

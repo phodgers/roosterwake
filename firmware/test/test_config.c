@@ -32,7 +32,7 @@ static const char *wifi_auth_name(uint8_t value) {
 }
 
 /* Build an rw_config_t from a vector's `config` object — the same input the JS encoder gets. */
-static bool build_config(const rw_doc_t *doc, int cfg_obj, rw_config_t *out) {
+static void build_config(const rw_doc_t *doc, int cfg_obj, rw_config_t *out) {
     rw_config_init(out);
     out->seq = rw_doc_u32(doc, cfg_obj, "seq", RW_CFG_GENERATED_SEQ);
 
@@ -48,30 +48,6 @@ static bool build_config(const rw_doc_t *doc, int cfg_obj, rw_config_t *out) {
     out->wifi_auth = wifi_auth_from_name(auth[0] ? auth : "auto");
 
     out->flags = rw_doc_u32(doc, cfg_obj, "flags", 0);
-
-    int targets = rw_doc_member(doc, cfg_obj, "targets");
-    if (targets >= 0 && doc->tokens[targets].type == JSMN_ARRAY) {
-        int n = doc->tokens[targets].size;
-        if (n > RW_CFG_MAX_TARGETS) {
-            return false;
-        }
-        for (int i = 0; i < n; i++) {
-            int entry = rw_doc_elem(doc, targets, i);
-            char mac_text[32] = {0};
-            if (!rw_doc_str(doc, entry, "name", out->targets[i].name,
-                            sizeof(out->targets[i].name))) {
-                return false;
-            }
-            if (!rw_doc_str(doc, entry, "mac", mac_text, sizeof(mac_text))) {
-                return false;
-            }
-            if (!rw_mac_parse(mac_text, out->targets[i].mac)) {
-                return false;
-            }
-        }
-        out->target_count = (uint8_t)n;
-    }
-    return true;
 }
 
 /* Compare a decoded record against the vector's `decoded` object. */
@@ -110,24 +86,6 @@ static void check_decoded(const rw_doc_t *doc, int dec_obj, const rw_config_t *g
                  vector_name);
     RW_CHECK_MSG(got->seq == rw_doc_u32(doc, dec_obj, "seq", 0), "%s: seq mismatch",
                  vector_name);
-
-    int targets = rw_doc_member(doc, dec_obj, "targets");
-    RW_CHECK_MSG(targets >= 0 && doc->tokens[targets].size == got->target_count,
-                 "%s: target_count %u != %d", vector_name, got->target_count,
-                 targets >= 0 ? doc->tokens[targets].size : -1);
-
-    for (uint8_t i = 0; i < got->target_count; i++) {
-        int entry = rw_doc_elem(doc, targets, i);
-        rw_doc_str(doc, entry, "name", expect, sizeof(expect));
-        RW_CHECK_MSG(strcmp(got->targets[i].name, expect) == 0, "%s: target %u name \"%s\" != \"%s\"",
-                     vector_name, i, got->targets[i].name, expect);
-
-        char mac[18];
-        rw_mac_format(got->targets[i].mac, mac);
-        rw_doc_str(doc, entry, "mac", expect, sizeof(expect));
-        RW_CHECK_MSG(strcmp(mac, expect) == 0, "%s: target %u mac \"%s\" != \"%s\"", vector_name,
-                     i, mac, expect);
-    }
 }
 
 static void test_crc32_check_value(const rw_doc_t *doc) {
@@ -182,7 +140,7 @@ static void test_vectors(const rw_doc_t *doc) {
         /* ── Encode ── */
         rw_config_t cfg;
         int         cfg_obj = rw_doc_member(doc, entry, "config");
-        RW_CHECK_MSG(build_config(doc, cfg_obj, &cfg), "%s: could not build the config", name);
+        build_config(doc, cfg_obj, &cfg);
 
         uint8_t actual[RW_CFG_RECORD_LEN];
         size_t  written = rw_config_encode(&cfg, actual, sizeof(actual));
@@ -223,12 +181,20 @@ static void test_vectors(const rw_doc_t *doc) {
                      "%s: a wrong magic was accepted", name);
 
         memcpy(corrupt, expected, sizeof(corrupt));
-        corrupt[4] = 2; /* version 2 */
+        corrupt[4] = RW_CFG_VERSION + 1;
         RW_CHECK_MSG(!rw_config_decode(corrupt, sizeof(corrupt), &scratch),
-                     "%s: a future version was accepted rather than refused", name);
+                     "%s: a later version was accepted rather than refused", name);
+
+        /* config-format.md §6: there is no migration, so the version below this one is refused
+         * exactly as firmly as the version above it. A device that reads a layout it does not
+         * know would act on fields it has guessed the position of. */
+        memcpy(corrupt, expected, sizeof(corrupt));
+        corrupt[4] = RW_CFG_VERSION - 1;
+        RW_CHECK_MSG(!rw_config_decode(corrupt, sizeof(corrupt), &scratch),
+                     "%s: an earlier version was accepted rather than refused", name);
 
         memcpy(corrupt, expected, sizeof(corrupt));
-        corrupt[12] = 0x00; /* payload_len 580 -> 512 */
+        corrupt[12] = 0x00; /* payload_len 443 -> 512 */
         corrupt[13] = 0x02;
         RW_CHECK_MSG(!rw_config_decode(corrupt, sizeof(corrupt), &scratch),
                      "%s: a wrong payload_len was accepted", name);
@@ -320,7 +286,7 @@ static void test_slot_selection(void) {
 }
 
 static void test_encode_limits(void) {
-    rw_test_begin("encoder rejects over-long fields");
+    rw_test_begin("encoder fills a field to its last byte and refuses a short buffer");
 
     rw_config_t cfg;
     uint8_t     out[RW_CFG_RECORD_LEN];
@@ -333,15 +299,14 @@ static void test_encode_limits(void) {
     cfg.ssid[32] = '\0';
     RW_CHECK_EQ_INT(rw_config_encode(&cfg, out, sizeof(out)), RW_CFG_RECORD_LEN);
 
-    /* Too many targets is refused rather than silently truncated. */
+    /* The account address at exactly its documented maximum, 128 bytes of text plus the NUL.
+     * A value that overflows a field cannot be built through this struct at all — each array is
+     * its own field width — so what a hand-written encoder gets wrong here is the terminator,
+     * and a `put_str` that reserved one byte too few fails on this case and no other. */
     rw_config_init(&cfg);
-    cfg.target_count = RW_CFG_MAX_TARGETS + 1;
-    RW_CHECK_EQ_INT(rw_config_encode(&cfg, out, sizeof(out)), 0);
-
-    /* A target with no name would round-trip to something no dashboard can label. */
-    rw_config_init(&cfg);
-    cfg.target_count = 1;
-    RW_CHECK_EQ_INT(rw_config_encode(&cfg, out, sizeof(out)), 0);
+    memset(cfg.owner_email, 'a', RW_CFG_OWNER_EMAIL_LEN - 1);
+    cfg.owner_email[RW_CFG_OWNER_EMAIL_LEN - 1] = 0;
+    RW_CHECK_EQ_INT(rw_config_encode(&cfg, out, sizeof(out)), RW_CFG_RECORD_LEN);
 
     /* A buffer that cannot hold a record is refused, not partially filled. */
     rw_config_init(&cfg);
@@ -399,7 +364,6 @@ static void test_restart_decision(void) {
     /* The things setup writes at step 4. None of them touches the radio. */
     snprintf(after.relay_url, sizeof(after.relay_url), "wss://relay.roosterwake.com/ws");
     snprintf(after.token, sizeof(after.token), "%064d", 7);
-    after.target_count = 1;
     RW_CHECK(!rw_config_needs_restart(&before, &after));
 
     /* Enrolled after boot, so the staged copy is behind the live one. Not a restart. */
@@ -440,7 +404,7 @@ static void test_restart_decision(void) {
 
 void test_config(void) {
     char path[1024];
-    snprintf(path, sizeof(path), "%s/vectors/config-v1.json", rw_test_data_dir);
+    snprintf(path, sizeof(path), "%s/vectors/config-v2.json", rw_test_data_dir);
 
     rw_doc_t doc;
     if (!rw_doc_load(&doc, path)) {

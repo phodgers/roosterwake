@@ -31,10 +31,10 @@
 #define OUT_MAX RW_WS_MAX_OUTBOUND
 
 /*
- * Token budget for jsmn. The largest frame is `config_push` with eight targets: the outer
- * object, two scalar members, the targets array, and eight three-token objects with two
- * members each — about fifty. 128 leaves room for unknown fields a future relay adds, which
- * §2 requires us to tolerate rather than fail on.
+ * Token budget for jsmn. Every relay→device frame is a flat object of a handful of scalar
+ * members — the largest, `ota_offer`, is two, one of them a 256-character hex string that costs
+ * a single token. 128 leaves room for unknown fields a future relay adds, which §2 requires us
+ * to tolerate rather than fail on.
  */
 #define MAX_TOKENS 128
 
@@ -50,7 +50,6 @@ typedef enum {
     PENDING_PROBE,
     PENDING_SCAN,
     PENDING_OTA_BEGIN,
-    PENDING_CONFIG,
 } pending_kind_t;
 
 #define REQ_ID_MAX 37 /* 36 characters plus NUL (PROTOCOL.md §2) */
@@ -75,7 +74,6 @@ static struct {
     uint8_t        mac[6];
     int            repeat;
     uint32_t       timeout_s;
-    rw_config_t    staged; /* config_push target list, applied on the main loop */
 
     char probe_req_id[REQ_ID_MAX];
     bool probe_owned; /* a probe belonging to the current connection is running */
@@ -141,27 +139,6 @@ static void make_nonce(char *out_hex) {
     rw_hex_encode(bytes, sizeof(bytes), out_hex);
 }
 
-/* Write `"targets":[{"name":…,"mac":…},…]` from the live config. */
-static void write_targets(rw_jw_t *w) {
-    rw_jw_key(w, "targets");
-    rw_jw_raw(w, "[");
-    for (uint8_t i = 0; i < s.cfg->target_count; i++) {
-        if (i > 0) {
-            rw_jw_raw(w, ",");
-        }
-        char mac[18];
-        rw_mac_format(s.cfg->targets[i].mac, mac);
-        rw_jw_raw(w, "{");
-        rw_jw_key(w, "name");
-        rw_jw_str(w, s.cfg->targets[i].name);
-        rw_jw_raw(w, ",");
-        rw_jw_key(w, "mac");
-        rw_jw_str(w, mac);
-        rw_jw_raw(w, "}");
-    }
-    rw_jw_raw(w, "]");
-}
-
 /* ── Outbound frames ───────────────────────────────────────────────────────── */
 
 static bool send_hello(void) {
@@ -199,10 +176,12 @@ static bool send_hello(void) {
     rw_jw_raw(&w, ",");
     rw_jw_key(&w, "caps");
     rw_jw_raw(&w, RW_CAPS_JSON);
-    rw_jw_raw(&w, ",");
-    write_targets(&w);
     /*
-     * No account information here. An earlier build carried a claim code on every `hello`, which
+     * No list of machines here, and no frame by which the relay could send one back: the caller
+     * names the MAC in every `wake` and every `probe`, so there is nothing for a device to
+     * declare and nothing for it to be told (PROTOCOL.md §4).
+     *
+     * No account information either. An earlier build carried a claim code on every `hello`, which
      * PROTOCOL.md never defined and no relay ever read. Binding is now its own frame, sent after
      * the handshake and acknowledged — which is what the claim field could not do, and why it
      * would have gone on being re-offered for the life of the device.
@@ -364,8 +343,6 @@ static void send_status_result(const char *req_id) {
     rw_jw_raw(&w, ",");
     rw_jw_key(&w, "reset_reason");
     rw_jw_str(&w, rw_sys_reset_reason());
-    rw_jw_raw(&w, ",");
-    write_targets(&w);
     rw_jw_raw(&w, "}");
     rw_jw_finish(&w);
     send_json(&w);
@@ -414,31 +391,6 @@ static void send_probe_result_err(const char *req_id, const char *err) {
     rw_jw_raw(&w, ",");
     rw_jw_key(&w, "err");
     rw_jw_str(&w, err);
-    rw_jw_raw(&w, "}");
-    rw_jw_finish(&w);
-    send_json(&w);
-}
-
-static void send_config_ack(const char *req_id, bool ok, const char *err, int targets) {
-    rw_jw_t w;
-    rw_jw_init(&w, s.out, sizeof(s.out));
-    rw_jw_raw(&w, "{");
-    rw_jw_key(&w, "t");
-    rw_jw_str(&w, "config_ack");
-    rw_jw_raw(&w, ",");
-    rw_jw_key(&w, "req_id");
-    rw_jw_str(&w, req_id);
-    rw_jw_raw(&w, ",");
-    rw_jw_key(&w, "ok");
-    rw_jw_raw(&w, ok ? "true" : "false");
-    if (!ok && err != NULL) {
-        rw_jw_raw(&w, ",");
-        rw_jw_key(&w, "err");
-        rw_jw_str(&w, err);
-    }
-    rw_jw_raw(&w, ",");
-    rw_jw_key(&w, "targets");
-    rw_jw_int(&w, targets);
     rw_jw_raw(&w, "}");
     rw_jw_finish(&w);
     send_json(&w);
@@ -680,16 +632,6 @@ static void run_pending(void) {
         case PENDING_OTA_BEGIN:
             run_ota_begin();
             break;
-
-        case PENDING_CONFIG: {
-            uint8_t count = s.staged.target_count;
-            memcpy(s.cfg->targets, s.staged.targets, sizeof(s.cfg->targets));
-            s.cfg->target_count = count;
-
-            bool saved = s.hooks.save_config != NULL && s.hooks.save_config(s.cfg);
-            send_config_ack(s.req_id, saved, saved ? NULL : "internal", count);
-            break;
-        }
     }
     s.kind = PENDING_NONE;
 }
@@ -886,20 +828,28 @@ static void handle_adopt_ack(const char *js, const jsmntok_t *tok, int count) {
     s.persist_pending     = true;
 }
 
+/*
+ * PROTOCOL.md §5: `mac` is required. There is no stored list to fall back to and no way to
+ * guess which machine was meant, so a frame without one is a missing required field — which §6
+ * spells `bad_frame` — rather than a request to be interpreted.
+ *
+ * The frame is also the only place a MAC now enters the device, so §2's wakeable-address rule
+ * is enforced here. A group or broadcast address is not an interface: sending to one succeeds
+ * at every layer and wakes nothing, which reports `ok:true, sent:12` for a wake that could
+ * never have worked — the least debuggable answer available.
+ */
 static void handle_wake(const char *js, const jsmntok_t *tok, int count, const char *req_id) {
     uint8_t mac[6];
     int     mac_idx = rw_json_find(js, tok, count, "mac");
 
-    if (mac_idx >= 0) {
-        char text[32];
-        if (!rw_json_str(js, &tok[mac_idx], text, sizeof(text)) || !rw_mac_parse(text, mac)) {
-            send_wake_result(req_id, false, "bad_mac", NULL);
-            return;
-        }
-    } else if (s.cfg->target_count > 0) {
-        memcpy(mac, s.cfg->targets[0].mac, 6);
-    } else {
-        send_wake_result(req_id, false, "no_target", NULL);
+    if (mac_idx < 0) {
+        send_wake_result(req_id, false, "bad_frame", NULL);
+        return;
+    }
+    char text[32];
+    if (!rw_json_str(js, &tok[mac_idx], text, sizeof(text)) || !rw_mac_parse(text, mac) ||
+        !rw_mac_wakeable(mac)) {
+        send_wake_result(req_id, false, "bad_mac", NULL);
         return;
     }
 
@@ -927,19 +877,22 @@ static void handle_wake(const char *js, const jsmntok_t *tok, int count, const c
     s.repeat = (int)repeat;
 }
 
+/*
+ * `mac` is required here on the same terms as `wake`, and is held to §2's wakeable-address rule
+ * for a further reason: a probe resolves the address by ARP, and no group address is ever an
+ * ARP result, so watching for one is watching for something that cannot arrive.
+ */
 static void handle_probe(const char *js, const jsmntok_t *tok, int count, const char *req_id) {
-    int mac_idx = rw_json_find(js, tok, count, "mac");
+    int     mac_idx = rw_json_find(js, tok, count, "mac");
     uint8_t mac[6];
-    if (mac_idx >= 0) {
-        char text[32];
-        if (!rw_json_str(js, &tok[mac_idx], text, sizeof(text)) || !rw_mac_parse(text, mac)) {
-            send_probe_result_err(req_id, "bad_mac");
-            return;
-        }
-    } else if (s.cfg->target_count > 0) {
-        memcpy(mac, s.cfg->targets[0].mac, 6);
-    } else {
-        send_probe_result_err(req_id, "no_target");
+    if (mac_idx < 0) {
+        send_probe_result_err(req_id, "bad_frame");
+        return;
+    }
+    char text[32];
+    if (!rw_json_str(js, &tok[mac_idx], text, sizeof(text)) || !rw_mac_parse(text, mac) ||
+        !rw_mac_wakeable(mac)) {
+        send_probe_result_err(req_id, "bad_mac");
         return;
     }
 
@@ -955,85 +908,6 @@ static void handle_probe(const char *js, const jsmntok_t *tok, int count, const 
     }
     memcpy(s.mac, mac, 6);
     s.timeout_s = (uint32_t)(timeout_s < 0 ? 0 : timeout_s);
-}
-
-static void handle_config_push(const char *js, const jsmntok_t *tok, int count,
-                               const char *req_id) {
-    /*
-     * PROTOCOL.md §5 and §11: a relay must never push Wi-Fi credentials or a relay URL, and a
-     * device must reject any attempt. Enforced by looking for the fields rather than by
-     * trusting that they are absent — the point of the rule is that compromising a relay must
-     * not let it reconfigure where devices connect or harvest what they connect to.
-     */
-    if (rw_json_find(js, tok, count, "ssid") >= 0 ||
-        rw_json_find(js, tok, count, "psk") >= 0 ||
-        rw_json_find(js, tok, count, "relay_url") >= 0 ||
-        rw_json_find(js, tok, count, "token") >= 0) {
-        RW_LOG_ERROR("proto: config_push tried to set local-only fields; rejected");
-        send_config_ack(req_id, false, "bad_frame", s.cfg->target_count);
-        return;
-    }
-
-    int arr = rw_json_find(js, tok, count, "targets");
-    if (arr < 0 || tok[arr].type != JSMN_ARRAY) {
-        send_config_ack(req_id, false, "bad_frame", s.cfg->target_count);
-        return;
-    }
-    if (tok[arr].size > RW_CFG_MAX_TARGETS) {
-        send_config_ack(req_id, false, "too_many", s.cfg->target_count);
-        return;
-    }
-
-    rw_config_t staged = *s.cfg;
-    memset(staged.targets, 0, sizeof(staged.targets));
-    staged.target_count = 0;
-
-    int idx = arr + 1;
-    for (int i = 0; i < tok[arr].size; i++) {
-        if (idx >= count || tok[idx].type != JSMN_OBJECT) {
-            send_config_ack(req_id, false, "bad_frame", s.cfg->target_count);
-            return;
-        }
-        /* The entry is a nested object, so rw_json_find (top-level only) cannot be used. Its
-         * members are walked directly. */
-        char name[RW_CFG_TARGET_NAME_LEN] = {0};
-        char mac_text[32]                 = {0};
-        int  member                       = idx + 1;
-        for (int m = 0; m < tok[idx].size && member + 1 < count; m++) {
-            const jsmntok_t *key = &tok[member];
-            const jsmntok_t *val = &tok[member + 1];
-            if (rw_json_eq(js, key, "name")) {
-                if (!rw_json_str(js, val, name, sizeof(name))) {
-                    send_config_ack(req_id, false, "bad_frame", s.cfg->target_count);
-                    return;
-                }
-            } else if (rw_json_eq(js, key, "mac")) {
-                if (!rw_json_str(js, val, mac_text, sizeof(mac_text))) {
-                    send_config_ack(req_id, false, "bad_mac", s.cfg->target_count);
-                    return;
-                }
-            }
-            member = rw_json_skip(tok, count, member + 1);
-        }
-
-        if (name[0] == '\0') {
-            send_config_ack(req_id, false, "bad_frame", s.cfg->target_count);
-            return;
-        }
-        if (!rw_mac_parse(mac_text, staged.targets[i].mac)) {
-            send_config_ack(req_id, false, "bad_mac", s.cfg->target_count);
-            return;
-        }
-        snprintf(staged.targets[i].name, sizeof(staged.targets[i].name), "%s", name);
-        staged.target_count++;
-        idx = rw_json_skip(tok, count, idx);
-    }
-
-    if (!queue(PENDING_CONFIG, req_id)) {
-        send_config_ack(req_id, false, "busy", s.cfg->target_count);
-        return;
-    }
-    s.staged = staged;
 }
 
 /* ── Updates ───────────────────────────────────────────────────────────────── */
@@ -1305,11 +1179,6 @@ static void on_text(rw_ws_client_t *ws, void *ctx, char *text, size_t len) {
         if (!queue(PENDING_SCAN, req_id)) {
             send_scan_result_err(req_id, "busy");
         }
-    } else if (rw_json_eq(text, &tokens[t_idx], "config_push")) {
-        if (req_id[0] == '\0') {
-            return;
-        }
-        handle_config_push(text, tokens, count, req_id);
     } else if (rw_json_eq(text, &tokens[t_idx], "ota_offer")) {
         /* Carries `id` rather than `req_id`: a transfer outlives the exchange that started it,
          * and the frames that follow are not answers to a request. */
@@ -1420,7 +1289,7 @@ void rw_relay_task(void) {
     /*
      * Enrolment and adoption both change the stored configuration, and both are decided inside a
      * network callback where a flash write would stall the stack mid-frame. So the callback sets
-     * a flag and the write happens here, exactly as `config_push` already does.
+     * a flag and the write happens here, on the main loop, where blocking is safe.
      *
      * A failure is logged and dropped rather than retried. Losing the enrolled flag costs one
      * redundant `enrol` on the next connection, which the relay accepts because the token still

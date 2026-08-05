@@ -1,6 +1,6 @@
 # Rooster Wake wire protocol
 
-**Version 1** · Status: **stable** · Last changed: 2026-07-29
+**Version 2** · Status: **stable** · Last changed: 2026-08-05
 
 This document specifies the protocol between a Rooster Wake device (the "dongle") and a relay.
 It is the public contract. Our hosted service implements it, the reference relay in
@@ -28,6 +28,12 @@ subtly wrong.
   client MUST then close the connection — this is how a device detects that it has been
   pointed at something that is not a Rooster Wake relay (a captive portal, a misconfigured
   reverse proxy, someone's Home Assistant) instead of hanging.
+  **The token names the protocol family, not its major version, and does not change when the
+  major version does.** Version negotiation is `v` in `hello` answered by close `4000` (§10),
+  and it has to happen there: a relay that refused the upgrade over a version it does not speak
+  would tell the device it had been pointed at something that is not a relay at all, which is a
+  different fault with a different fix. The token stays `roosterwake.v1` for the life of the
+  protocol.
   Symmetrically, a relay MUST **refuse the upgrade** (HTTP 400) when the client does not offer
   `roosterwake.v1`, rather than accepting the socket and waiting for a `hello` that will never
   come. Both halves are specified because leaving either undefined lets two conforming relays
@@ -38,12 +44,13 @@ subtly wrong.
 - **Size limits.** **No frame in either direction may exceed 2048 bytes.** A receiver MUST
   reject a larger frame with close code `1009`. Devices are memory-constrained; this limit is
   a hard part of the contract, not a suggestion.
-  Most frames are nowhere near it: `hello` with eight targets is under 800 bytes all told.
-  The one frame that can reach the ceiling is `scan_result`, whose host list is as long as the
-  segment is busy — which is why it is specified to drop hosts and say so rather than to grow.
-  A single symmetric bound is easier to implement correctly than two, and lets both sides size
-  one receive buffer.
-- **Encoding** is UTF-8. Target names may contain any UTF-8; relays MUST NOT assume ASCII.
+  Most frames are nowhere near it: every frame that carries a fixed set of fields is a few
+  hundred bytes. The one frame that can reach the ceiling is `scan_result`, whose host list is
+  as long as the segment is busy — which is why it is specified to drop hosts and say so rather
+  than to grow. A single symmetric bound is easier to implement correctly than two, and lets
+  both sides size one receive buffer.
+- **Encoding** is UTF-8. Relays MUST NOT assume ASCII: the account address in `adopt` is text a
+  person typed into a captive portal.
 
 ### 1.1 TLS requirements
 
@@ -68,7 +75,6 @@ subtly wrong.
 | `token` | 32 random bytes, 64 lower-case hex characters. Generated at provisioning. **Never transmitted** — see §3. |
 | `mac` | Six octets, upper-case hex, colon-separated: `AA:BB:CC:DD:EE:FF`. Relays MUST accept lower-case and `-` separators on input and MUST normalise to this form on output. MUST be a unicast address — see below. |
 | `req_id` | Opaque string, 1–36 characters, unique per in-flight request from a given relay. UUIDv4 recommended. Devices echo it verbatim and MUST NOT parse it. |
-| `name` | Target display name, 1–24 UTF-8 characters after trimming. |
 | `nonce` | 16 random bytes, 32 lower-case hex characters. |
 
 Unknown fields in any frame MUST be ignored. Unknown `t` values MUST be ignored silently —
@@ -87,9 +93,12 @@ SHOULD reject them at its own edge with `bad_mac` (§6) rather than forwarding t
 * **Broadcast** — `FF:FF:FF:FF:FF:FF`. Also multicast by the rule above, but named separately
   because it is typed deliberately, by someone expecting it to wake every machine at once.
 
-This is stated because the constraint is enforced in practice and an unstated constraint is how
-independent implementations diverge: a device that refuses these while a relay forwards them
-produces a wake that fails at the far end with nothing useful to report. Note that a
+A **device MUST refuse them too**, answering `bad_mac`, and since v2 the frame is the only way a
+MAC reaches one — there is no stored list any more, so this is the single place the rule can be
+applied on that side. Both halves are specified because an unstated constraint is how independent
+implementations diverge, and because the failure is silent in the worst way: a magic packet to a
+group address is accepted by every layer that touches it, so the device would report `ok:true`
+with a full `sent` count for a wake that could never have worked. Note that a
 locally-administered address (bit 1 of the first octet) is perfectly wakeable and MUST NOT be
 rejected — though a dashboard may reasonably warn that Windows and mobile privacy features
 rotate such addresses, which will silently invalidate a saved target.
@@ -141,7 +150,7 @@ the device. Every subsequent connection is the challenge-response above.
 ```
  device                                                    relay
    │                                                         │
-   │─ hello {v, device_id, nonce_c, fw, board, caps, targets}►│
+   │─ hello {v, device_id, nonce_c, fw, board, caps} ───────►│
    │                                                         │  look up device_id,
    │                                                         │  load token
    │◄─────────── challenge  {nonce_s} ───────────────────────│
@@ -256,16 +265,13 @@ normal arrangement for a self-hosted deployment.
 ```json
 {
   "t": "hello",
-  "v": 1,
+  "v": 2,
   "device_id": "a1b2c3d4e5f60718",
   "nonce_c": "9f86d081884c7d659a2feaa0c55ad015",
-  "fw": "1.0.0",
+  "fw": "2.0.0",
   "board": "pico2_w",
   "slot": 0,
-  "caps": ["wake", "status", "probe"],
-  "targets": [
-    { "name": "Desktop", "mac": "AA:BB:CC:DD:EE:FF" }
-  ]
+  "caps": ["wake", "status", "probe"]
 }
 ```
 
@@ -287,7 +293,6 @@ Defined capabilities, each naming the relay→device command it gates:
 | `status` | `status` |
 | `probe` | `probe` |
 | `scan` | `scan` |
-| `config` | `config_push` |
 | `ota` | `ota_offer`, and the binary frames that follow it |
 | `sched` | reserved for device-side scheduling; no command yet |
 
@@ -298,8 +303,9 @@ operator and there is no frame by which a relay could turn it on, so advertising
 a relay something it cannot act on. Log frames may arrive from any device whose owner has
 enabled diagnostics, and relays MAY discard them.
 
-`targets` is the device's local view. On a claimed device the relay's view is authoritative
-and is pushed back with `config_push` (§5).
+**A device holds no list of the machines it can wake.** There is nothing here for it to
+declare and no frame by which a relay could give it one: every `wake` and every `probe` names
+its MAC, and the caller is the side that knows which machines exist. §13 records why.
 
 ### `auth`
 
@@ -383,11 +389,14 @@ On failure: `{"t":"wake_result","req_id":"…","ok":false,"err":"no_link","sent"
   "uptime_s": 84321,
   "ip": "192.168.1.42",
   "netmask": "255.255.255.0",
-  "fw": "1.0.0",
-  "reset_reason": "power_on",
-  "targets": [{ "name": "Desktop", "mac": "AA:BB:CC:DD:EE:FF" }]
+  "fw": "2.0.0",
+  "reset_reason": "power_on"
 }
 ```
+
+`ip` and `netmask` are the two fields worth reading together: the subnet broadcast a wake goes
+to is computed from them, so a target on a different subnet is visible here before anybody
+sends a packet.
 
 ### `probe_result`
 
@@ -444,12 +453,6 @@ joined to a network, `busy` when another operation holds the radio.
 
 ```json
 { "t": "scan_result", "req_id": "…", "ok": false, "err": "no_link" }
-```
-
-### `config_ack`
-
-```json
-{ "t": "config_ack", "req_id": "…", "ok": true, "targets": 2 }
 ```
 
 ### `ota_accept` / `ota_reject`
@@ -560,8 +563,11 @@ end of the connection.
 `repeat` is optional, 1–5, default 3 — the number of bursts. Devices MUST clamp out-of-range
 values rather than rejecting the request.
 
-If `mac` is omitted, the device wakes its **first configured target**. A device with no
-configured targets replies `ok:false, err:"no_target"`.
+**`mac` is required.** A `wake` without one is answered `ok:false, err:"bad_frame"` (§6) —
+it is a missing required field, not a request to be interpreted. The caller is the only side
+that knows which machines exist, so a device asked to wake nothing in particular has nothing
+to fall back to and no way to guess; a relay that lets a caller omit the MAC must resolve one
+itself before the frame leaves.
 
 ### `status`
 
@@ -578,6 +584,9 @@ configured targets replies `ok:false, err:"no_target"`.
 Asks the device to watch for the target coming up, by ARP resolution and optionally ICMP.
 `timeout_s` is 10–300. The device sends `probe_result` on each state change and a final one
 at resolution or timeout. Only sent to devices advertising the `probe` capability.
+
+**`mac` is required**, on the same terms as `wake`. A `probe` without one is answered
+`ok:false, err:"bad_frame"`.
 
 ### `scan`
 
@@ -601,26 +610,6 @@ answer be collected separately, as it does for `probe`. Only sent to devices adv
 A device MUST answer a second `scan` that arrives while one is running with `busy` rather than
 queueing it: the sweep already bounds itself in time, and queueing turns one slow command into
 an unbounded backlog of them.
-
-### `config_push`
-
-```json
-{
-  "t": "config_push",
-  "req_id": "…",
-  "targets": [
-    { "name": "Desktop", "mac": "AA:BB:CC:DD:EE:FF" },
-    { "name": "NAS", "mac": "10:22:33:44:55:66" }
-  ]
-}
-```
-
-Replaces the device's target list wholesale — it is not a merge. Maximum 8 targets. The
-device persists them to flash and replies `config_ack`. This is how a dashboard edit reaches
-a device that was provisioned months ago.
-
-Relays MUST NOT push Wi-Fi credentials or a relay URL. Those are local-only by design
-(see §11) and a device MUST reject any attempt.
 
 ### `ota_offer`
 
@@ -685,19 +674,18 @@ is the less important direction.
 
 ## 6. Error codes
 
-Returned in `err` on `wake_result`, `hello_ack`, `config_ack`, `ota_reject` and `ota_result`.
+Returned in `err` on `wake_result`, `probe_result`, `scan_result`, `hello_ack`, `adopt_ack`,
+`ota_reject` and `ota_result`.
 
 | Code | Meaning |
 |---|---|
 | `auth` | Authentication failed, or `device_id` unknown |
-| `bad_frame` | Malformed JSON, missing required field, or frame too large |
+| `bad_frame` | Malformed JSON, missing required field, or frame too large. A `wake` or `probe` with no `mac` is this |
 | `bad_mac` | MAC address failed to parse |
-| `no_target` | Wake requested with no MAC and no configured targets |
 | `no_link` | Wi-Fi link down at the moment of the request |
 | `send_failed` | The network stack refused the datagram |
 | `busy` | A conflicting operation is already running |
 | `unsupported` | Command names a capability this device did not advertise |
-| `too_many` | `config_push` exceeded the target limit |
 | `internal` | Anything else; the device or relay SHOULD log detail locally |
 
 Update-specific codes, on `ota_reject` and `ota_result` only:
@@ -715,7 +703,7 @@ Update-specific codes, on `ota_reject` and `ota_result` only:
 | `too_long` | More payload arrived than the header declared |
 | `stage_failed` | Written and verified, but the state record could not be updated |
 
-Error codes are a closed set for v1. New codes require a minor version bump, and receivers
+Error codes are a closed set for v2. New codes require a minor version bump, and receivers
 MUST treat an unrecognised code as `internal` rather than failing.
 
 ---
@@ -811,13 +799,16 @@ proxies and the reference relay use them.
 
 ## 10. Versioning and compatibility
 
-`v` in the `hello` frame is the **major** protocol version. It is `1`.
+`v` in the `hello` frame is the **major** protocol version. It is `2`.
 
 **Additive changes do not bump the major version.** New frame types, new optional fields, new
-capability strings and new error codes may all be added within v1. This is safe precisely
+capability strings and new error codes may all be added within v2. This is safe precisely
 because §2 requires unknown frames and unknown fields to be ignored silently. If your
-implementation logs an error or closes the connection on an unknown `t`, it is not v1
+implementation logs an error or closes the connection on an unknown `t`, it is not v2
 compliant, and it will break the first time we ship a feature.
+
+**The subprotocol token does not carry the major version** and stayed `roosterwake.v1` across
+this bump — §1 says why. Version negotiation happens at `hello`, where a relay can answer.
 
 **Breaking changes bump the major version**, and are announced in the repository at least 90
 days ahead. Our hosted relay supports the previous major version for at least 12 months after
@@ -890,19 +881,19 @@ LAN with broadcast traffic.
 
 ## 12. Minimal conformance
 
-A relay is v1-conformant if it:
+A relay is v2-conformant if it:
 
 1. Echoes the `roosterwake.v1` subprotocol.
 2. Implements the §3.2 handshake, including constant-time proof comparison, fresh nonces, and
    sending `challenge` even for unknown device IDs.
 3. Answers `{"t":"ping"}` with exactly `{"t":"pong"}`.
-4. Sends `wake` and handles `wake_result`, preserving `req_id`.
+4. Sends `wake` **with a `mac`** and handles `wake_result`, preserving `req_id`.
 5. Ignores unknown `t` values and unknown fields without erroring.
 6. Never sends a frame larger than 2048 bytes.
 7. Enforces one live connection per `device_id`, closing the displaced one with `4001`.
 
-Everything else — `status`, `probe`, `scan`, `config_push`, `log`, `enrol`, `adopt`,
-`ota_offer` — is optional.
+Everything else — `status`, `probe`, `scan`, `log`, `enrol`, `adopt`, `ota_offer` — is
+optional.
 
 **`enrol` and `adopt` are optional on purpose.** A self-hosted relay whose operator adds tokens
 to a list by hand needs neither, and requiring them would mean every minimal implementation had
@@ -921,6 +912,7 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 
 | Version | Date | Change |
 |---|---|---|
+| **2** | 2026-08-05 | **The device stops holding a list of the machines it can wake.** The first breaking change, and the whole of it: `config_push` and `config_ack` are **removed from the protocol**, `hello` and `status_result` no longer carry `targets`, the `config` capability is gone, and **`mac` is now required on `wake` and `probe`** — a frame without one is answered `bad_frame`, which §6 already defined as a missing required field. The device stored up to eight addresses and consulted them in exactly one case: a `wake` that named none, where it fell back to the first entry. Every caller — dashboard, API, setup page — already knew the MAC it meant, so the fallback was reachable only by a caller that had thrown that knowledge away, and the fix is for the caller to resolve it before the frame leaves. What the list cost was not the eight entries: it was `config_push` on every dashboard edit, the reconciliation that repaired a push a dongle missed while unplugged, the "which eight get sent" subset logic, a config-format field and a flash write per change — and a dongle carrying the names and addresses of the machines in somebody's house, which matters the day one is stolen, resold or returned. **Removing it also removes the one frame in which a relay writes to a device's persistent configuration**, so the rule in §11 that a relay cannot reconfigure a device is now a property of the frame set rather than a promise the firmware keeps. Two error codes retire with it: `no_target` described a state that can no longer exist, and `too_many` had exactly one producer. The subprotocol token stays `roosterwake.v1` — §1 and §10 say why a major bump does not move it. **§2's wakeable-address rule moved with the MAC**: a device used to apply it where a target was stored, and that path is gone, so it is now applied where the address arrives — a `wake` or `probe` naming a group, broadcast or all-zero address is answered `bad_mac` instead of being sent and reported as a success nothing came of. `firmware/docs/config-format.md` goes to **format version 2** in the same change; the target block is deleted rather than reserved and images of the previous version are not migrated. |
 | 1 | 2026-08-03 | **Asking a device who else is on its segment.** One new capability, `scan`, and the frame pair it gates — `scan` and `scan_result`. Adding a target to a device meant reading a MAC address off the machine to be woken and typing it in, which is the least popular thing this product asks of anyone; the device is already on that segment and can go and ask. The capability is separate from `probe` even though both resolve addresses by ARP, because `probe` watches one address the caller already knows and `scan` enumerates ones it does not — a device may reasonably implement either without the other. `scan_result` is the first frame in the protocol whose natural size can reach §1's 2048-byte ceiling, so it is specified to drop hosts and set `truncated` rather than to grow, and to drop unnamed hosts first: the list exists to find one machine, and a host that answered a name query is likelier to be it. Names are carried but explicitly untrusted — they come from an unauthenticated peer on the local network — and §4 forbids matching anything against them. |
 | 1 | 2026-07-31 | **Firmware updates over the relay connection.** Four new frames — `ota_offer`, `ota_accept`, `ota_reject`, `ota_result` — and the one exception to §1's "frames are text": the payload of an update the device has agreed to receive arrives as unfragmented binary frames. There is no second connection because there is no room for one; a TLS session costs 44 KB of a 64 KB heap on the reference device, so an image either shares this socket or does not arrive. The offer carries the image's signed header and **nothing else**, which is the whole of the security argument: board, length, version and payload digest are all inside the signature, so there is no unsigned restatement of them for a relay to lie in. A device with two slots writes the inactive one and restarts; the update proves itself by reconnecting, and a failure announces itself by the previous version reappearing rather than by silence. Binary frames outside a transfer close the connection with `1008`. |
 | 1 | 2026-07-29 | Initial specification. |

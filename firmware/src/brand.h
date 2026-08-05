@@ -56,15 +56,22 @@ _Static_assert(sizeof(RW_USB_PRODUCT) <= 20,
 _Static_assert(sizeof(RW_SETUP_SSID_PREFIX) - 1 + RW_SETUP_SSID_SUFFIX_LEN <= 32,
                "setup SSID prefix leaves no room for the -XXXX suffix within 32 bytes");
 
-/* WebSocket subprotocol (PROTOCOL.md §1). A relay that does not echo this is not a relay. */
+/*
+ * WebSocket subprotocol (PROTOCOL.md §1). A relay that does not echo this is not a relay.
+ *
+ * The token names the protocol family and does not track RW_PROTO_VERSION: a relay too old to
+ * speak the version below has to be able to answer the socket and say so with close 4000, and
+ * refusing the upgrade instead would tell the device it had reached something that is not a
+ * Rooster Wake relay at all.
+ */
 #define RW_WS_SUBPROTOCOL "roosterwake.v1"
 
 /* Wire protocol major version (PROTOCOL.md §10) and usbcfg protocol version (usbcfg.md §8). */
-#define RW_PROTO_VERSION  1
-#define RW_USBCFG_VERSION 1
+#define RW_PROTO_VERSION  2
+#define RW_USBCFG_VERSION 2
 
 /* Firmware version reported in `hello`, `status_result` and `INFO`. */
-#define RW_FW_VERSION "1.11.1"
+#define RW_FW_VERSION "2.0.0"
 
 /*
  * Board identifier reported in `hello` (PROTOCOL.md §4) and `INFO` (usbcfg.md §4).
@@ -86,12 +93,12 @@ _Static_assert(sizeof(RW_SETUP_SSID_PREFIX) - 1 + RW_SETUP_SSID_SUFFIX_LEN <= 32
  * place that decides what this build will be asked to do:
  *
  *   wake   -> `wake`          status -> `status`
- *   probe  -> `probe`         config -> `config_push`
+ *   probe  -> `probe`         scan   -> `scan`
  *   ota    -> `ota_offer`
  *
  * `sched` is reserved by the protocol and has no command yet, so it is not advertised. There
  * is no `log` capability: diagnostics are enabled locally and no frame can turn them on.
  */
-#define RW_CAPS_JSON "[\"wake\",\"status\",\"probe\",\"scan\",\"config\",\"ota\"]"
+#define RW_CAPS_JSON "[\"wake\",\"status\",\"probe\",\"scan\",\"ota\"]"
 
 #endif /* RW_BRAND_H */

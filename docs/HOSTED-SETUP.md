@@ -50,7 +50,9 @@ the page opens on its own; if it does not, browse to `http://192.168.4.1`.
 3. **Wi-Fi** — pick your network and enter the password. This step commits and waits for the
    radio, so you find out here whether the credentials work rather than at the end.
 4. **Target** — **Find your PC** scans the LAN and lists what it finds by name. Pick the target,
-   or enter its MAC address by hand.
+   or enter its MAC address by hand. The machine is saved to **your account**, not to the dongle:
+   nothing about your PCs is written to the device, and you can add, rename or remove machines
+   later from the dashboard without going near it again.
 5. **Prove it** — checks the target can be woken, then sends a real wake.
 
 Step 5 asks where the PC is, because the answer changes what it can show you. On another machine

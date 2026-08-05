@@ -174,13 +174,12 @@ async function handshake(client, { deviceId, token, nonceC = randomBytes(16).toS
   client.send(
     JSON.stringify({
       t: 'hello',
-      v: 1,
+      v: 2,
       device_id: deviceId,
       nonce_c: nonceC,
       fw: '1.0.0',
       board: 'pico2_w',
       caps: ['wake', 'status'],
-      targets: [],
     }),
   );
   const challenge = await client.nextJson();
@@ -246,7 +245,7 @@ test('§12.2 every connection gets a fresh nonce_s', async () => {
       const client = new RawClient(ctx.ws);
       await client.opened;
       client.send(
-        JSON.stringify({ t: 'hello', v: 1, device_id: ctx.deviceId, nonce_c: 'a'.repeat(32) }),
+        JSON.stringify({ t: 'hello', v: 2, device_id: ctx.deviceId, nonce_c: 'a'.repeat(32) }),
       );
       const challenge = await client.nextJson();
       assert.ok(!seen.has(challenge.nonce_s), 'a reused nonce_s breaks replay protection for all');
@@ -306,7 +305,7 @@ test('§12.2 a malformed proof is rejected like a wrong one', async () => {
     const client = new RawClient(ctx.ws);
     await client.opened;
     client.send(
-      JSON.stringify({ t: 'hello', v: 1, device_id: ctx.deviceId, nonce_c: 'b'.repeat(32) }),
+      JSON.stringify({ t: 'hello', v: 2, device_id: ctx.deviceId, nonce_c: 'b'.repeat(32) }),
     );
     await client.nextJson();
     client.send(JSON.stringify({ t: 'auth', proof_c: 'not hex at all' }));
@@ -359,7 +358,7 @@ test('§12.4 wake is forwarded, req_id is preserved, and wake_result comes back'
         t: 'wake_result',
         req_id: wake.req_id,
         ok: true,
-        sent: 24,
+        sent: 6, // §4: ifaces.length × repeat — two destinations, the default three bursts.
         ifaces: ['255.255.255.255:9', '192.168.1.255:9'],
       }),
     );
@@ -367,7 +366,7 @@ test('§12.4 wake is forwarded, req_id is preserved, and wake_result comes back'
     const res = await wakePromise;
     assert.equal(res.status, 200);
     assert.equal(res.json.ok, true);
-    assert.equal(res.json.sent, 24);
+    assert.equal(res.json.sent, 6);
     assert.equal(res.json.req_id, wake.req_id, 'the relay must return the device answer verbatim');
     client.close();
   });
@@ -382,7 +381,7 @@ test('§12.5 unknown frame types and unknown fields are ignored silently', async
     client.send(
       JSON.stringify({
         t: 'hello',
-        v: 1,
+        v: 2,
         device_id: ctx.deviceId,
         nonce_c: 'c'.repeat(32),
         fw: '9.9.9',
@@ -424,17 +423,17 @@ test('§12.6 no frame the relay emits exceeds 2048 bytes', async () => {
     device.start();
     await device.waitForAuth();
 
-    // Push the largest thing this relay will ever send: eight targets with 24-character names,
-    // every character a 4-byte astral one, plus a UUID req_id.
-    const targets = Array.from({ length: 8 }, (_, i) => ({
-      name: '𝔚'.repeat(24),
-      mac: `AA:BB:CC:DD:EE:${i.toString(16).padStart(2, '0').toUpperCase()}`,
-    }));
-    const res = await api(ctx, 'POST', '/config', { body: { device_id: ctx.deviceId, targets } });
-    assert.equal(res.status, 200);
-    assert.equal(res.json.ok, true);
+    // Drive every command this relay can send, each carrying its widest payload: a UUID req_id
+    // in both, plus a normalised MAC and a repeat in the wake. The cap is on what reaches the
+    // wire, so it is measured there rather than argued from the shape of the code.
+    const wake = await api(ctx, 'POST', '/wake', {
+      body: { device_id: ctx.deviceId, mac: 'AA:BB:CC:DD:EE:FF', repeat: 5 },
+    });
+    assert.equal(wake.status, 200);
+    const status = await api(ctx, 'POST', '/status', { body: { device_id: ctx.deviceId } });
+    assert.equal(status.status, 200);
 
-    assert.ok(sizes.length >= 2, 'expected to have observed several relay frames');
+    assert.ok(sizes.length >= 4, 'expected the challenge, the ack, the wake and the status');
     assert.ok(
       Math.max(...sizes) <= 2048,
       `largest relay frame was ${Math.max(...sizes)} bytes; §1 caps it at 2048`,
@@ -444,8 +443,7 @@ test('§12.6 no frame the relay emits exceeds 2048 bytes', async () => {
 
 test('§12.7 a second connection displaces the first with close code 4001', async () => {
   await withRelay({}, async (ctx) => {
-    const targets = [{ name: 'Desktop', mac: 'AA:BB:CC:DD:EE:FF' }];
-    const first = ctx.device({ targets });
+    const first = ctx.device();
     const firstClose = new Promise((resolve) => first.once('close', resolve));
     first.start();
     await first.waitForAuth();
@@ -453,7 +451,7 @@ test('§12.7 a second connection displaces the first with close code 4001', asyn
     const before = await api(ctx, 'GET', '/devices');
     assert.equal(before.json.devices[0].online, true);
 
-    const second = ctx.device({ targets });
+    const second = ctx.device();
     second.start();
     await second.waitForAuth();
 
@@ -462,7 +460,9 @@ test('§12.7 a second connection displaces the first with close code 4001', asyn
     assert.equal(reason, 'superseded');
 
     // And the survivor is the new one: it can still be commanded.
-    const wake = await api(ctx, 'POST', '/wake', { body: { device_id: ctx.deviceId } });
+    const wake = await api(ctx, 'POST', '/wake', {
+      body: { device_id: ctx.deviceId, mac: 'AA:BB:CC:DD:EE:FF' },
+    });
     assert.equal(wake.status, 200);
     assert.equal(wake.json.ok, true);
   });
@@ -472,10 +472,30 @@ test('§12.7 a second connection displaces the first with close code 4001', asyn
 
 test('a hello offering an unsupported protocol version is closed with 4000', async () => {
   await withRelay({}, async (ctx) => {
+    // Both directions matter. The subprotocol token is the same for every major version, so
+    // 4000 is the only signal that tells a device "this is one of ours, and we cannot talk" —
+    // for firmware older than the relay and for firmware newer than it alike.
+    for (const v of [1, 3]) {
+      const client = new RawClient(ctx.ws);
+      await client.opened;
+      client.send(
+        JSON.stringify({ t: 'hello', v, device_id: ctx.deviceId, nonce_c: '0'.repeat(32) }),
+      );
+      assert.equal((await client.closed).code, 4000, `a hello offering v${v} must be closed 4000`);
+    }
+  });
+});
+
+test('a device frame over the 2048-byte limit is rejected with 1009', async () => {
+  await withRelay({}, async (ctx) => {
     const client = new RawClient(ctx.ws);
-    await client.opened;
-    client.send(JSON.stringify({ t: 'hello', v: 2, device_id: ctx.deviceId, nonce_c: '0'.repeat(32) }));
-    assert.equal((await client.closed).code, 4000);
+    await handshake(client, { deviceId: ctx.deviceId, token: ctx.token });
+
+    // §1: the size bound is symmetric and applies to what the relay accepts, not only to what
+    // it emits. The frame below is well-formed and would otherwise be acted on, so what closes
+    // the connection is its size and nothing else.
+    client.send(JSON.stringify({ t: 'log', level: 'info', msg: 'x'.repeat(3000) }));
+    assert.equal((await client.closed).code, 1009);
   });
 });
 
@@ -483,7 +503,7 @@ test('a malformed hello is answered bad_frame and closed', async () => {
   await withRelay({}, async (ctx) => {
     const client = new RawClient(ctx.ws);
     await client.opened;
-    client.send(JSON.stringify({ t: 'hello', v: 1, device_id: 'NOT-A-DEVICE-ID' }));
+    client.send(JSON.stringify({ t: 'hello', v: 2, device_id: 'NOT-A-DEVICE-ID' }));
     assert.deepEqual(await client.nextJson(), { t: 'hello_ack', ok: false, err: 'bad_frame' });
     assert.equal((await client.closed).code, 1008);
   });
@@ -494,7 +514,7 @@ test('frames that arrive before authentication are not acted on', async () => {
     const client = new RawClient(ctx.ws);
     await client.opened;
     // A wake_result for a request nobody made, before hello. Must not crash or authenticate.
-    client.send('{"t":"wake_result","req_id":"none","ok":true,"sent":24,"ifaces":[]}');
+    client.send('{"t":"wake_result","req_id":"none","ok":true,"sent":0,"ifaces":[]}');
     client.send('{"t":"auth","proof_c":"' + 'a'.repeat(32) + '"}');
     await handshake(client, { deviceId: ctx.deviceId, token: ctx.token });
     client.send('{"t":"ping"}');
@@ -520,8 +540,8 @@ test('the fake device reports sent and ifaces the way §4 describes', async () =
       '255.255.255.255:7',
       '192.168.1.255:7',
     ]);
-    // Four destinations, three bursts, two datagrams each — the `sent: 24` from PROTOCOL.md §4.
-    assert.equal(res.json.sent, 24);
+    // Four destinations, three bursts, one datagram each — the `sent: 12` from PROTOCOL.md §4.
+    assert.equal(res.json.sent, 12);
   });
 });
 
@@ -539,7 +559,6 @@ test('an out-of-range repeat is clamped by the device, not rejected', async () =
       log: silentLogger,
       reconnect: false,
       burstGapMs: 0,
-      targets: [{ name: 'Desktop', mac: 'AA:BB:CC:DD:EE:FF' }],
     });
     const results = [];
     device.on('wake', (r) => results.push(r));
@@ -557,25 +576,29 @@ test('an out-of-range repeat is clamped by the device, not rejected', async () =
   });
 });
 
-test('the device refuses a config_push that carries Wi-Fi credentials', async () => {
+test('a relay that tries to set Wi-Fi credentials gets nothing back', async () => {
   await withRelay({}, async (ctx) => {
     const device = ctx.device();
     device.start();
     await device.waitForAuth();
 
-    // §11: Wi-Fi credentials never leave the device, and a device MUST reject any attempt by a
-    // relay to set them. Driven directly, because this relay will never send such a frame.
+    // §11: no frame in this protocol carries Wi-Fi credentials or a relay URL, in either
+    // direction, and a device MUST reject any attempt by a relay to set them. Since no frame
+    // carries them, such an attempt arrives as a type the device does not know, and §2 requires
+    // that to be ignored silently — nothing stored, nothing answered, link still up. That is
+    // the property that makes compromising a relay, ours or anyone's, not yield anyone's PSK.
+    // Fed in directly, because this relay will never emit such a frame.
     const sent = [];
     device.on('frame', ({ dir, frame }) => dir === 'out' && sent.push(frame));
-    device.onConfigPush({
-      t: 'config_push',
-      req_id: 'hostile',
-      targets: [],
-      ssid: 'Sarahs Wi-Fi',
-      psk: 'hunter2',
-    });
-    const ack = sent.find((f) => f.t === 'config_ack');
-    assert.deepEqual(ack, { t: 'config_ack', req_id: 'hostile', ok: false, err: 'bad_frame', targets: 0 });
+    device.onMessage(
+      Buffer.from(
+        JSON.stringify({ t: 'set_wifi', req_id: 'hostile', ssid: 'Sarahs Wi-Fi', psk: 'hunter2' }),
+        'utf8',
+      ),
+      false,
+    );
+    assert.deepEqual(sent, [], 'an attempt to set credentials must not even be answered');
+    assert.equal(device.state, 'open', 'and it must not take the link down');
   });
 });
 
@@ -612,7 +635,10 @@ test('a bad, missing or malformed API key is rejected with 401', async () => {
       const devices = await api(ctx, 'GET', '/devices', options);
       assert.equal(devices.status, 401, `GET /devices with ${label}`);
       assert.equal(devices.json.err, 'unauthorised');
-      const wake = await api(ctx, 'POST', '/wake', { ...options, body: { device_id: ctx.deviceId } });
+      const wake = await api(ctx, 'POST', '/wake', {
+        ...options,
+        body: { device_id: ctx.deviceId, mac: 'AA:BB:CC:DD:EE:FF' },
+      });
       assert.equal(wake.status, 401, `POST /wake with ${label}`);
     }
 
@@ -631,10 +657,7 @@ test('GET /devices reports state and never leaks a token', async () => {
     );
     assert.equal(offline.json.devices[0].last_seen, null);
 
-    const device = ctx.device({
-      fw: '1.2.3',
-      targets: [{ name: 'Desktop', mac: 'AA:BB:CC:DD:EE:FF' }],
-    });
+    const device = ctx.device({ fw: '1.2.3' });
     device.start();
     await device.waitForAuth();
 
@@ -644,8 +667,10 @@ test('GET /devices reports state and never leaks a token', async () => {
     assert.equal(record.fw, '1.2.3');
     assert.equal(record.board, 'pico2_w');
     assert.deepEqual(record.caps, ['wake', 'status']);
-    assert.deepEqual(record.targets, [{ name: 'Desktop', mac: 'AA:BB:CC:DD:EE:FF' }]);
     assert.ok(Date.now() - Date.parse(record.last_seen) < 5_000, 'last_seen must be recent');
+    // A caller names the MAC in every wake, so a device holds no target list and the relay has
+    // none to report. A field here would be a claim about the dongle that nothing established.
+    assert.ok(!('targets' in record), '/devices must not report a target list');
 
     // §11: the token store is secret material. It must not appear anywhere in the API surface.
     assert.equal(online.text.includes(ctx.token), false, 'the device token leaked into /devices');
@@ -654,21 +679,23 @@ test('GET /devices reports state and never leaks a token', async () => {
 
 test('POST /wake maps failures to the right status codes', async () => {
   await withRelay({ wake_timeout_ms: 400 }, async (ctx) => {
+    const mac = 'AA:BB:CC:DD:EE:FF';
+
     // 404: a device_id this relay has never heard of.
-    const unknown = await api(ctx, 'POST', '/wake', { body: { device_id: OTHER_ID } });
+    const unknown = await api(ctx, 'POST', '/wake', { body: { device_id: OTHER_ID, mac } });
     assert.equal(unknown.status, 404);
     assert.equal(unknown.json.err, 'unknown_device');
 
-    // 400: not a device_id at all, and a MAC that does not parse.
-    assert.equal((await api(ctx, 'POST', '/wake', { body: { device_id: 'nope' } })).status, 400);
+    // 400: not a device_id at all.
+    assert.equal((await api(ctx, 'POST', '/wake', { body: { device_id: 'nope', mac } })).status, 400);
 
     // 503: provisioned, but nothing is connected.
-    const offline = await api(ctx, 'POST', '/wake', { body: { device_id: ctx.deviceId } });
+    const offline = await api(ctx, 'POST', '/wake', { body: { device_id: ctx.deviceId, mac } });
     assert.equal(offline.status, 503);
     assert.equal(offline.json.err, 'offline');
 
     // 504: connected, but the device never answers. `--simulate silent` exists for exactly this.
-    const mute = ctx.device({ simulate: 'silent', targets: [{ name: 'PC', mac: 'AA:BB:CC:DD:EE:FF' }] });
+    const mute = ctx.device({ simulate: 'silent' });
     mute.start();
     await mute.waitForAuth();
 
@@ -678,7 +705,30 @@ test('POST /wake maps failures to the right status codes', async () => {
     assert.equal(badMac.status, 400);
     assert.equal(badMac.json.err, 'bad_mac');
 
-    const timedOut = await api(ctx, 'POST', '/wake', { body: { device_id: ctx.deviceId } });
+    // 400: §2's three excluded addresses, refused at this edge rather than forwarded. Each one
+    // parses perfectly, which is the point — a group address sends without error and wakes
+    // nothing, so a relay that forwarded it would collect `ok:true` for a wake that never was.
+    for (const mac of ['01:00:5E:00:00:01', 'FF:FF:FF:FF:FF:FF', '00:00:00:00:00:00']) {
+      const res = await api(ctx, 'POST', '/wake', { body: { device_id: ctx.deviceId, mac } });
+      assert.equal(res.status, 400, `${mac} must be refused`);
+      assert.equal(res.json.err, 'bad_mac');
+    }
+
+    // ...and a locally-administered address is not one of them. Bit 1 of the first octet is set
+    // here; §2 says such an address is perfectly wakeable and MUST NOT be rejected.
+    const local = await api(ctx, 'POST', '/wake', {
+      body: { device_id: ctx.deviceId, mac: '02:00:00:00:00:01' },
+    });
+    assert.notEqual(local.status, 400, 'a locally-administered address must not be rejected');
+
+    // 400: a MAC that never arrived. §6 separates the two — a field that did not parse is
+    // `bad_mac`, a required field that is absent is `bad_frame` — and a caller debugging an
+    // integration needs to know which of the two mistakes it made.
+    const noMac = await api(ctx, 'POST', '/wake', { body: { device_id: ctx.deviceId } });
+    assert.equal(noMac.status, 400);
+    assert.equal(noMac.json.err, 'bad_frame');
+
+    const timedOut = await api(ctx, 'POST', '/wake', { body: { device_id: ctx.deviceId, mac } });
     assert.equal(timedOut.status, 504);
     assert.equal(timedOut.json.err, 'timeout');
   });
@@ -686,14 +736,13 @@ test('POST /wake maps failures to the right status codes', async () => {
 
 test('a device-reported failure is 200 with ok:false, not a 5xx', async () => {
   await withRelay({}, async (ctx) => {
-    const device = ctx.device({
-      simulate: 'no_link',
-      targets: [{ name: 'PC', mac: 'AA:BB:CC:DD:EE:FF' }],
-    });
+    const device = ctx.device({ simulate: 'no_link' });
     device.start();
     await device.waitForAuth();
 
-    const res = await api(ctx, 'POST', '/wake', { body: { device_id: ctx.deviceId } });
+    const res = await api(ctx, 'POST', '/wake', {
+      body: { device_id: ctx.deviceId, mac: 'AA:BB:CC:DD:EE:FF' },
+    });
     // The relay reached the device and the device answered. Collapsing that into a 502 would
     // hide `err` and `sent`, which are the fields that actually diagnose a failed wake.
     assert.equal(res.status, 200);
@@ -704,32 +753,77 @@ test('a device-reported failure is 200 with ok:false, not a 5xx', async () => {
   });
 });
 
-test('a wake with no MAC falls through to the first configured target', async () => {
+test('a wake with no MAC is refused by the relay and never reaches the device', async () => {
   await withRelay({}, async (ctx) => {
-    const device = ctx.device({
-      targets: [
-        { name: 'Desktop', mac: 'AA:BB:CC:DD:EE:FF' },
-        { name: 'NAS', mac: '11:22:33:44:55:66' },
-      ],
-    });
-    const woken = [];
-    device.on('wake', (w) => woken.push(w.mac));
+    const device = ctx.device();
+    const received = [];
+    device.on('frame', ({ dir, frame }) => dir === 'in' && received.push(frame));
     device.start();
     await device.waitForAuth();
 
-    assert.equal((await api(ctx, 'POST', '/wake', { body: { device_id: ctx.deviceId } })).status, 200);
-    assert.deepEqual(woken, ['AA:BB:CC:DD:EE:FF']);
+    const res = await api(ctx, 'POST', '/wake', { body: { device_id: ctx.deviceId } });
+    assert.equal(res.status, 400);
+    assert.equal(res.json.err, 'bad_frame');
+    assert.equal(
+      received.some((f) => f.t === 'wake'),
+      false,
+      'a relay must not spend a round trip on a frame it already knows the device will refuse',
+    );
   });
 });
 
-test('a device with no targets answers no_target', async () => {
+test('a wake that carries no MAC is answered bad_frame by the device', async () => {
   await withRelay({}, async (ctx) => {
-    const device = ctx.device({ targets: [] });
+    const device = ctx.device();
+    const sent = [];
+    device.on('frame', ({ dir, frame }) => dir === 'out' && sent.push(frame));
     device.start();
     await device.waitForAuth();
-    const res = await api(ctx, 'POST', '/wake', { body: { device_id: ctx.deviceId } });
-    assert.equal(res.status, 200);
-    assert.equal(res.json.err, 'no_target');
+
+    // Fed in directly: this relay refuses such a wake at its own edge, so the device's answer
+    // is only reachable from here. A device keeps no target list, so there is nothing to fall
+    // back on and the frame is missing a required field — `bad_frame` per §6.
+    device.onWake({ t: 'wake', req_id: 'no-mac' });
+    assert.deepEqual(sent.find((f) => f.req_id === 'no-mac'), {
+      t: 'wake_result',
+      req_id: 'no-mac',
+      ok: false,
+      err: 'bad_frame',
+      sent: 0,
+      ifaces: [],
+    });
+  });
+});
+
+test('a device refuses a wake naming an address no interface can have', async () => {
+  await withRelay({}, async (ctx) => {
+    const device = ctx.device();
+    const sent = [];
+    device.on('frame', ({ dir, frame }) => dir === 'out' && sent.push(frame));
+    device.start();
+    await device.waitForAuth();
+
+    // §2, from the device side. Fed in directly for the same reason as above: this relay refuses
+    // these at its own edge, and a hostile or merely buggy one would not. The address parses, so
+    // nothing downstream would object — the packet would go out and no machine would wake.
+    for (const [i, mac] of ['01:00:5E:00:00:01', 'FF:FF:FF:FF:FF:FF', '00:00:00:00:00:00'].entries()) {
+      device.onWake({ t: 'wake', req_id: `bad-${i}`, mac });
+      assert.deepEqual(sent.find((f) => f.req_id === `bad-${i}`), {
+        t: 'wake_result',
+        req_id: `bad-${i}`,
+        ok: false,
+        err: 'bad_mac',
+        sent: 0,
+        ifaces: [],
+      }, `${mac} must be refused`);
+    }
+
+    // A locally-administered address is a real adapter — VMs and randomised Wi-Fi MACs use them
+    // — and §2 requires it to be accepted.
+    device.onWake({ t: 'wake', req_id: 'local', mac: '02:00:00:00:00:01' });
+    const local = sent.find((f) => f.req_id === 'local');
+    assert.equal(local.ok, true, 'a locally-administered address must not be rejected');
+    assert.ok(local.sent > 0);
   });
 });
 
@@ -750,51 +844,6 @@ test('POST /status round-trips and updates the cached device record', async () =
     const listed = (await api(ctx, 'GET', '/devices')).json.devices[0];
     assert.equal(listed.ip, '10.0.5.17');
     assert.equal(listed.rssi, res.json.rssi);
-  });
-});
-
-test('POST /config pushes targets, and the cached list only moves on a successful ack', async () => {
-  await withRelay({}, async (ctx) => {
-    const device = ctx.device({ targets: [{ name: 'Old', mac: '00:00:00:00:00:01' }] });
-    device.start();
-    await device.waitForAuth();
-
-    const ok = await api(ctx, 'POST', '/config', {
-      body: {
-        device_id: ctx.deviceId,
-        targets: [
-          { name: 'Desktop', mac: 'aa-bb-cc-dd-ee-ff' },
-          { name: '  NAS  ', mac: '112233445566' },
-        ],
-      },
-    });
-    assert.equal(ok.status, 200);
-    assert.equal(ok.json.ok, true);
-    assert.equal(ok.json.targets, 2);
-    assert.deepEqual(device.targets, [
-      { name: 'Desktop', mac: 'AA:BB:CC:DD:EE:FF' },
-      { name: 'NAS', mac: '11:22:33:44:55:66' },
-    ]);
-    assert.deepEqual((await api(ctx, 'GET', '/devices')).json.devices[0].targets, device.targets);
-
-    // §5 caps the list at eight, and the relay refuses before bothering the device.
-    const tooMany = await api(ctx, 'POST', '/config', {
-      body: {
-        device_id: ctx.deviceId,
-        targets: Array.from({ length: 9 }, (_, i) => ({ name: `T${i}`, mac: '00:00:00:00:00:00' })),
-      },
-    });
-    assert.equal(tooMany.status, 400);
-    assert.equal(tooMany.json.err, 'too_many');
-
-    const badMac = await api(ctx, 'POST', '/config', {
-      body: { device_id: ctx.deviceId, targets: [{ name: 'X', mac: 'oops' }] },
-    });
-    assert.equal(badMac.status, 400);
-    assert.equal(badMac.json.err, 'bad_mac');
-
-    // The device still holds what it acked, and so does the relay's cached view.
-    assert.equal(device.targets.length, 2);
   });
 });
 
@@ -819,18 +868,19 @@ test('the relay never sends a command the device did not advertise', async () =>
 
 test('wake requests are rate limited to 30 a minute per device', async () => {
   await withRelay({}, async (ctx) => {
-    const device = ctx.device({ targets: [{ name: 'PC', mac: 'AA:BB:CC:DD:EE:FF' }] });
+    const device = ctx.device();
     device.start();
     await device.waitForAuth();
 
+    const body = { device_id: ctx.deviceId, mac: 'AA:BB:CC:DD:EE:FF' };
     const statuses = [];
     for (let i = 0; i < 31; i++) {
-      statuses.push((await api(ctx, 'POST', '/wake', { body: { device_id: ctx.deviceId } })).status);
+      statuses.push((await api(ctx, 'POST', '/wake', { body })).status);
     }
     assert.equal(statuses.filter((s) => s === 200).length, 30, '§11: 30 wakes per minute');
     assert.equal(statuses[30], 429);
 
-    const limited = await api(ctx, 'POST', '/wake', { body: { device_id: ctx.deviceId } });
+    const limited = await api(ctx, 'POST', '/wake', { body });
     assert.equal(limited.status, 429);
     assert.equal(limited.headers.get('retry-after'), '60');
   });
@@ -840,6 +890,14 @@ test('unknown routes, bad bodies and the AGPL source offer', async () => {
   await withRelay({}, async (ctx) => {
     assert.equal((await api(ctx, 'GET', '/nope')).status, 404);
     assert.equal((await api(ctx, 'GET', '/ws')).status, 404, 'GET on the WS path is not an upgrade');
+
+    // A caller names the MAC in every wake, so no device holds a target list and nothing can
+    // replace one. The route is absent rather than quietly accepting and discarding a list.
+    const config = await api(ctx, 'POST', '/config', {
+      body: { device_id: ctx.deviceId, targets: [{ name: 'Desktop', mac: 'AA:BB:CC:DD:EE:FF' }] },
+    });
+    assert.equal(config.status, 404);
+    assert.equal(config.json.err, 'not_found');
 
     const badJson = await fetch(`${ctx.http}/wake`, {
       method: 'POST',

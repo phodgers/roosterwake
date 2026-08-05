@@ -34,14 +34,27 @@ import { WebSocketServer } from 'ws';
 
 // ── Protocol constants (PROTOCOL.md §1, §2, §9) ─────────────────────────────
 
+/**
+ * §1: the subprotocol token names the protocol *family*, not the major version, and it stays
+ * `roosterwake.v1` across major versions on purpose. It is the only thing either side can check
+ * before a frame has been sent, and the question it answers is "is there a Rooster Wake relay
+ * at this URL at all" — a captive portal, a misrouted proxy and somebody's Home Assistant all
+ * fail it. Version negotiation is `hello.v` plus close code 4000 (§10), which is the only
+ * mechanism that can tell "an older relay" apart from "not a relay of ours".
+ */
 export const SUBPROTOCOL = 'roosterwake.v1';
 export const WS_PATH = '/ws';
-export const PROTOCOL_VERSION = 1;
+/** §10: the major version this relay speaks. Any other `v` in a hello is closed with 4000. */
+export const PROTOCOL_VERSION = 2;
 
-/** §1: a relay MUST NOT send a frame larger than this. Hard contract, not a suggestion. */
-const MAX_RELAY_FRAME_BYTES = 2048;
-/** §1: device→relay frames MUST NOT exceed this. `ws` closes with 1009 on its own when hit. */
-const MAX_DEVICE_FRAME_BYTES = 8192;
+/**
+ * §1: no frame in either direction may exceed this, and a receiver MUST reject a larger one
+ * with close code 1009. Hard contract, not a suggestion — devices are memory-constrained and
+ * will close rather than truncate. One symmetric bound rather than two, because two numbers
+ * that must stay equal are two numbers that eventually do not, and it lets both sides size a
+ * single receive buffer.
+ */
+const MAX_FRAME_BYTES = 2048;
 
 /**
  * §9: the keepalive frames are specified literally, byte for byte, because serverless
@@ -62,9 +75,6 @@ const HANDSHAKE_TIMEOUT_MS = 10_000;
 /** §11: reference rate limit. Far above legitimate use, low enough to stop a LAN being flooded. */
 const WAKE_RATE_LIMIT = 30;
 const WAKE_RATE_WINDOW_MS = 60_000;
-
-/** §5: config_push replaces the target list wholesale and is capped at eight entries. */
-const MAX_TARGETS = 8;
 
 const SERVER_ID = 'remotewake-relay-reference/1.0.0';
 const DEFAULT_SOURCE_URL = 'https://github.com/phodgers/roosterwake';
@@ -130,29 +140,18 @@ export function normaliseMac(mac) {
 }
 
 /**
- * §2: a target name is 1–24 UTF-8 characters after trimming. Counted in code points rather
- * than UTF-16 units, because the flash record counts bytes and the display limit counts
- * characters, and "Björn's Büro" must mean the same thing to both.
+ * §2: a wake target must be a unicast address, and a relay should reject the three excluded
+ * cases at its own edge rather than forwarding them. This is the one class of bad MAC that
+ * fails silently: a magic packet to a group address is accepted by every layer that handles it,
+ * so a device that sent it would answer `ok:true` with a full `sent` count having woken nothing.
+ * A locally-administered address (bit 1) is perfectly wakeable and MUST NOT be rejected.
  */
-function validateTargets(input) {
-  if (!Array.isArray(input)) return { err: 'bad_frame', detail: 'targets must be an array' };
-  if (input.length > MAX_TARGETS) {
-    return { err: 'too_many', detail: `at most ${MAX_TARGETS} targets (got ${input.length})` };
-  }
-  const targets = [];
-  for (const [i, t] of input.entries()) {
-    if (!t || typeof t !== 'object') {
-      return { err: 'bad_frame', detail: `targets[${i}] must be an object` };
-    }
-    const name = typeof t.name === 'string' ? t.name.trim() : '';
-    if ([...name].length < 1 || [...name].length > 24) {
-      return { err: 'bad_frame', detail: `targets[${i}].name must be 1–24 characters` };
-    }
-    const mac = normaliseMac(t.mac);
-    if (!mac) return { err: 'bad_mac', detail: `targets[${i}].mac is not a MAC address` };
-    targets.push({ name, mac });
-  }
-  return { targets };
+export function isWakeable(mac) {
+  const octets = (mac ?? '').split(':').map((o) => parseInt(o, 16));
+  if (octets.length !== 6 || octets.some(Number.isNaN)) return false;
+  if (octets[0] & 0x01) return false; // multicast/group, and broadcast with it
+  if (octets.every((o) => o === 0x00)) return false; // "unspecified"
+  return true;
 }
 
 // ── Proofs (§3.2) ───────────────────────────────────────────────────────────
@@ -310,7 +309,6 @@ class DeviceRecord {
     this.conn = null;
     this.last_seen = null;
     this.connected_at = null;
-    this.targets = [];
     this.caps = [];
     this.fw = null;
     this.board = null;
@@ -344,7 +342,6 @@ class DeviceRecord {
       rssi: this.rssi,
       ip: this.ip,
       remote_addr: this.remote_addr,
-      targets: this.targets,
     };
   }
 }
@@ -412,9 +409,9 @@ class Connection {
     if (this.ws.readyState !== this.ws.OPEN) return false;
     const json = JSON.stringify(frame);
     const bytes = Buffer.byteLength(json, 'utf8');
-    if (bytes > MAX_RELAY_FRAME_BYTES) {
+    if (bytes > MAX_FRAME_BYTES) {
       this.relay.log.error(
-        `${this.label} refusing to send ${frame.t}: ${bytes} bytes exceeds the ${MAX_RELAY_FRAME_BYTES}-byte limit`,
+        `${this.label} refusing to send ${frame.t}: ${bytes} bytes exceeds the ${MAX_FRAME_BYTES}-byte limit`,
       );
       return false;
     }
@@ -446,7 +443,7 @@ class Connection {
 
     if (isBinary) {
       // §1: frames are WebSocket text frames containing a single JSON object. A binary frame
-      // is not a v1 frame we failed to understand, it is a peer speaking something else.
+      // is not a frame of ours we failed to understand, it is a peer speaking something else.
       this.relay.log.warn(`${this.label} sent a binary frame`);
       this.close(1008, 'text frames only');
       return;
@@ -503,7 +500,9 @@ class Connection {
     if (frame.v !== PROTOCOL_VERSION) {
       // §10: a relay that does not support the offered version closes with 4000. Answering
       // with hello_ack first would be a frame the device's version may not even parse.
-      this.relay.log.warn(`${this.id} offered protocol v${frame.v}; this relay speaks v1`);
+      this.relay.log.warn(
+        `${this.id} offered protocol v${frame.v}; this relay speaks v${PROTOCOL_VERSION}`,
+      );
       this.close(4000, 'protocol version');
       return;
     }
@@ -520,8 +519,6 @@ class Connection {
     this.helloFw = typeof frame.fw === 'string' ? frame.fw.slice(0, 32) : null;
     this.helloBoard = typeof frame.board === 'string' ? frame.board.slice(0, 32) : null;
     this.caps = Array.isArray(frame.caps) ? frame.caps.filter((c) => typeof c === 'string') : [];
-    const declared = validateTargets(Array.isArray(frame.targets) ? frame.targets : []);
-    this.helloTargets = declared.targets ?? [];
 
     // §3.3: send a challenge even when device_id is unknown. The relay must not be an oracle
     // for which device IDs exist, so the unknown case is given a random throwaway token and
@@ -582,11 +579,6 @@ class Connection {
     record.remote_addr = this.remoteAddr;
     if (this.helloFw) record.fw = this.helloFw;
     if (this.helloBoard) record.board = this.helloBoard;
-    // §4: `targets` in hello is the device's local view. With no dashboard to be authoritative,
-    // this relay adopts it — until an operator pushes a different list with POST /config.
-    if (this.helloTargets.length > 0 || record.targets.length === 0) {
-      record.targets = this.helloTargets;
-    }
 
     this.send({
       t: 'hello_ack',
@@ -599,7 +591,7 @@ class Connection {
     });
 
     this.relay.log.info(
-      `${this.label} authenticated from ${this.remoteAddr} fw=${record.fw ?? '?'} caps=[${this.caps.join(',')}] targets=${record.targets.length}`,
+      `${this.label} authenticated from ${this.remoteAddr} fw=${record.fw ?? '?'} caps=[${this.caps.join(',')}]`,
     );
   }
 
@@ -630,10 +622,6 @@ class Connection {
       if (typeof frame.rssi === 'number') this.record.rssi = frame.rssi;
       if (typeof frame.ip === 'string') this.record.ip = frame.ip;
       if (typeof frame.fw === 'string') this.record.fw = frame.fw.slice(0, 32);
-      if (Array.isArray(frame.targets)) {
-        const v = validateTargets(frame.targets);
-        if (v.targets) this.record.targets = v.targets;
-      }
     }
 
     if (frame.t === pending.expect) {
@@ -786,7 +774,8 @@ export function createRelay(rawConfig, options = {}) {
 
   const wss = new WebSocketServer({
     noServer: true,
-    maxPayload: MAX_DEVICE_FRAME_BYTES,
+    // §1: a frame over the limit is rejected with 1009, which `ws` does for us at this setting.
+    maxPayload: MAX_FRAME_BYTES,
     // §1 and §12.1: echo `roosterwake.v1`. `ws` calls this with the set of protocols the client
     // offered; returning the string adds the response header.
     handleProtocols: (protocols) => (protocols.has(SUBPROTOCOL) ? SUBPROTOCOL : false),
@@ -947,14 +936,18 @@ export function createRelay(rawConfig, options = {}) {
       const record = resolveDevice(res, body.device_id, 'wake');
       if (!record) return;
 
-      // §5: `mac` is optional — without it the device wakes its first configured target.
-      let mac;
-      if (body.mac !== undefined && body.mac !== null) {
-        mac = normaliseMac(body.mac);
-        if (!mac) {
-          sendJson(res, 400, { ok: false, err: 'bad_mac' });
-          return;
-        }
+      // §5: `mac` names the machine to wake and is required. The device holds no target list to
+      // fall back on, so a `wake` without one is a frame it can only answer `bad_frame` (§6) —
+      // and a relay that forwards a frame it already knows is invalid turns a caller's mistake
+      // into a round trip, a device-side error and a 200 with `ok:false` to read carefully.
+      if (body.mac === undefined || body.mac === null) {
+        sendJson(res, 400, { ok: false, err: 'bad_frame', detail: 'mac is required' });
+        return;
+      }
+      const mac = normaliseMac(body.mac);
+      if (!mac || !isWakeable(mac)) {
+        sendJson(res, 400, { ok: false, err: 'bad_mac' });
+        return;
       }
       let repeat;
       if (body.repeat !== undefined) {
@@ -972,12 +965,11 @@ export function createRelay(rawConfig, options = {}) {
         return;
       }
 
-      const frame = { t: 'wake' };
-      if (mac) frame.mac = mac;
+      const frame = { t: 'wake', mac };
       if (repeat) frame.repeat = repeat;
       const outcome = await record.conn.request(frame, 'wake_result', config.wake_timeout_ms);
       log.info(
-        `wake ${record.device_id} ${mac ?? '(first target)'} -> ${describeOutcome(outcome, (f) => `ok sent=${f.sent} ifaces=${(f.ifaces ?? []).length}`)}`,
+        `wake ${record.device_id} ${mac} -> ${describeOutcome(outcome, (f) => `ok sent=${f.sent} ifaces=${(f.ifaces ?? []).length}`)}`,
       );
       replyToOutcome(res, record, outcome, 'wake_result');
       return;
@@ -994,33 +986,6 @@ export function createRelay(rawConfig, options = {}) {
         config.request_timeout_ms,
       );
       replyToOutcome(res, record, outcome, 'status_result');
-      return;
-    }
-
-    if (route === 'POST /config') {
-      if (!requireAuth(req, res)) return;
-      const body = await readJsonBody(req);
-      const record = resolveDevice(res, body.device_id);
-      if (!record) return;
-
-      const validated = validateTargets(body.targets);
-      if (validated.err) {
-        sendJson(res, 400, { ok: false, err: validated.err, detail: validated.detail });
-        return;
-      }
-
-      const outcome = await record.conn.request(
-        { t: 'config_push', targets: validated.targets },
-        'config_ack',
-        config.request_timeout_ms,
-      );
-      // Only adopt the pushed list once the device has confirmed it persisted it. Recording it
-      // optimistically would leave /devices claiming a configuration the dongle never stored.
-      if (outcome.frame?.ok === true) record.targets = validated.targets;
-      log.info(
-        `config_push ${record.device_id} ${validated.targets.length} target(s) -> ${describeOutcome(outcome, () => 'ok')}`,
-      );
-      replyToOutcome(res, record, outcome, 'config_ack');
       return;
     }
 

@@ -3,7 +3,7 @@
  *
  * Implements firmware/docs/config-format.md exactly. The JavaScript twin is
  * tools/mkconfig/lib/config.mjs and the two are held together by the golden vectors in
- * firmware/test/vectors/config-v1.json, which both test suites consume.
+ * firmware/test/vectors/config-v2.json, which both test suites consume.
  *
  * This translation unit deliberately touches no hardware and no SDK header: it is compiled
  * unchanged into the native host test binary. Everything that knows about flash sectors lives
@@ -25,22 +25,18 @@
 #define RW_CFG_MAGIC2 0x43 /* 'C' */
 #define RW_CFG_MAGIC3 0x46 /* 'F' */
 
-#define RW_CFG_VERSION     1
+#define RW_CFG_VERSION     2
 #define RW_CFG_HEADER_LEN  32
-#define RW_CFG_PAYLOAD_LEN 692
-#define RW_CFG_RECORD_LEN  (RW_CFG_HEADER_LEN + RW_CFG_PAYLOAD_LEN) /* 724 */
+#define RW_CFG_PAYLOAD_LEN 443
+#define RW_CFG_RECORD_LEN  (RW_CFG_HEADER_LEN + RW_CFG_PAYLOAD_LEN) /* 475 */
 #define RW_CFG_SECTOR_SIZE 4096
 
-#define RW_CFG_MAX_TARGETS      8
-#define RW_CFG_TARGET_ENTRY_LEN 31
-
 /* Field widths, including the mandatory NUL terminator. */
-#define RW_CFG_SSID_LEN        33
-#define RW_CFG_PSK_LEN         65
-#define RW_CFG_RELAY_URL_LEN   129
-#define RW_CFG_DEVICE_ID_LEN   17
-#define RW_CFG_TOKEN_LEN       65
-#define RW_CFG_TARGET_NAME_LEN 25
+#define RW_CFG_SSID_LEN      33
+#define RW_CFG_PSK_LEN       65
+#define RW_CFG_RELAY_URL_LEN 129
+#define RW_CFG_DEVICE_ID_LEN 17
+#define RW_CFG_TOKEN_LEN     65
 
 /*
  * 128 bytes plus a terminator. RFC 5321 caps an address at 254 octets, but the local part at 64
@@ -50,16 +46,14 @@
 #define RW_CFG_OWNER_EMAIL_LEN 129
 
 /* Payload offsets. These never move; new fields are appended (config-format.md §6). */
-#define RW_CFG_OFF_SSID         0
-#define RW_CFG_OFF_PSK          33
-#define RW_CFG_OFF_WIFI_AUTH    98
-#define RW_CFG_OFF_RELAY_URL    99
-#define RW_CFG_OFF_DEVICE_ID    228
-#define RW_CFG_OFF_TOKEN        245
-#define RW_CFG_OFF_OWNER_EMAIL  310
-#define RW_CFG_OFF_FLAGS        439
-#define RW_CFG_OFF_TARGET_COUNT 443
-#define RW_CFG_OFF_TARGETS      444
+#define RW_CFG_OFF_SSID        0
+#define RW_CFG_OFF_PSK         33
+#define RW_CFG_OFF_WIFI_AUTH   98
+#define RW_CFG_OFF_RELAY_URL   99
+#define RW_CFG_OFF_DEVICE_ID   228
+#define RW_CFG_OFF_TOKEN       245
+#define RW_CFG_OFF_OWNER_EMAIL 310
+#define RW_CFG_OFF_FLAGS       439
 
 /* wifi_auth values (config-format.md §2.2). */
 #define RW_WIFI_AUTH_OPEN 0
@@ -97,27 +91,25 @@
 /* Sequence number a generated (mkconfig / dashboard) image carries; see config-format.md §5. */
 #define RW_CFG_GENERATED_SEQ 0x40000000u
 
+/*
+ * No list of machines to wake. Every `wake` and every `probe` names its MAC (PROTOCOL.md §5),
+ * so a device-side copy would have no reader — and a dongle that changes hands would carry the
+ * addresses of the previous owner's machines with it.
+ */
 typedef struct {
-    char    name[RW_CFG_TARGET_NAME_LEN]; /* NUL-terminated UTF-8, at most 24 bytes of text */
-    uint8_t mac[6];                       /* six raw octets, not the ASCII form */
-} rw_target_t;
-
-typedef struct {
-    uint16_t    version;
-    uint32_t    seq;
-    char        ssid[RW_CFG_SSID_LEN];
-    char        psk[RW_CFG_PSK_LEN];
-    uint8_t     wifi_auth;
-    char        relay_url[RW_CFG_RELAY_URL_LEN];
-    char        device_id[RW_CFG_DEVICE_ID_LEN];
-    char        token[RW_CFG_TOKEN_LEN];
+    uint16_t version;
+    uint32_t seq;
+    char     ssid[RW_CFG_SSID_LEN];
+    char     psk[RW_CFG_PSK_LEN];
+    uint8_t  wifi_auth;
+    char     relay_url[RW_CFG_RELAY_URL_LEN];
+    char     device_id[RW_CFG_DEVICE_ID_LEN];
+    char     token[RW_CFG_TOKEN_LEN];
     /* Typed into the setup page, offered to the relay with `adopt`, and erased as soon as the
      * relay acknowledges it — a routing hint for one connection, not a stored property of the
      * device, and a dongle that changes hands must not carry it to its next owner. */
-    char        owner_email[RW_CFG_OWNER_EMAIL_LEN];
-    uint32_t    flags;
-    uint8_t     target_count;
-    rw_target_t targets[RW_CFG_MAX_TARGETS];
+    char     owner_email[RW_CFG_OWNER_EMAIL_LEN];
+    uint32_t flags;
 } rw_config_t;
 
 /* CRC-32/ISO-HDLC — zlib/PNG. crc32("123456789") == 0xCBF43926 (config-format.md §4). */
@@ -137,8 +129,8 @@ bool rw_seq_newer(uint32_t a, uint32_t b);
  *
  * The radio is associated with the credentials it booted on and TLS is configured from the
  * boot-time flags at startup, so a change to either only takes effect after a restart. Everything
- * else — relay URL, token, owner email, the target list — is read from the live configuration at
- * the point of use, so reopening the relay session is enough to pick it up.
+ * else — relay URL, token, owner email — is read from the live configuration at the point of
+ * use, so reopening the relay session is enough to pick it up.
  *
  * `device_id` is derived from the board and cannot be staged, but a mismatch would invalidate
  * every proof a session computes, so it counts rather than being trusted.
@@ -153,22 +145,23 @@ bool rw_config_needs_restart(const rw_config_t *before, const rw_config_t *after
  */
 void rw_config_carry_runtime_flags(rw_config_t *next, const rw_config_t *live);
 
-/* Zero a config to the unprovisioned state: no Wi-Fi, no targets, auth auto, seq 0. */
+/* Zero a config to the unprovisioned state: no Wi-Fi, auth auto, seq 0. */
 void rw_config_init(rw_config_t *cfg);
 
 /*
  * Encode into a full record. `out_len` must be at least RW_CFG_RECORD_LEN.
  *
- * Returns RW_CFG_RECORD_LEN on success, 0 if any string exceeds its field or target_count
- * exceeds RW_CFG_MAX_TARGETS. Over-long strings are rejected rather than truncated: field
- * limits are in bytes, and truncating UTF-8 at a byte boundary produces an invalid sequence
- * that then travels to the relay and into somebody's dashboard.
+ * Returns RW_CFG_RECORD_LEN on success, 0 if any string exceeds its field. Over-long strings
+ * are rejected rather than truncated: field limits are in bytes, and truncating UTF-8 at a byte
+ * boundary produces an invalid sequence that then travels to the relay and into somebody's
+ * dashboard.
  */
 size_t rw_config_encode(const rw_config_t *cfg, uint8_t *out, size_t out_len);
 
 /*
- * Decode a record. Returns false for anything that is not a valid v1 record, so callers treat
- * "no config" and "corrupt config" identically, which is what slot selection needs.
+ * Decode a record. Returns false for anything that is not a valid record of exactly
+ * RW_CFG_VERSION, so callers treat "no config", "corrupt config" and "a layout this build does
+ * not know" identically, which is what slot selection needs.
  *
  * Applies config-format.md §3 steps 1–4: magic, version, payload_len, CRC.
  */

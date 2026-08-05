@@ -1,6 +1,6 @@
 # Flash configuration format
 
-**Version 1** · Status: **stable**
+**Version 2** · Status: **stable**
 
 This document specifies the on-flash layout of a Rooster Wake device's configuration. It is a
 **public, versioned contract**, because three independent implementations must agree on it
@@ -60,14 +60,14 @@ A record is a 32-byte header followed by a payload. All multi-byte integers are
 | Offset | Size | Field | Notes |
 |---|---|---|---|
 | 0 | 4 | `magic` | ASCII `RWCF` — bytes `52 57 43 46` |
-| 4 | 2 | `version` | `1` |
+| 4 | 2 | `version` | `2` |
 | 6 | 2 | `reserved0` | Must be `0` |
 | 8 | 4 | `seq` | Monotonic. Higher valid slot wins. See §3 |
-| 12 | 4 | `payload_len` | Bytes of payload after the header. `580` in v1 |
+| 12 | 4 | `payload_len` | Bytes of payload after the header. `443` in v2 |
 | 16 | 4 | `crc32` | Over the **payload only**, not the header. See §4 |
 | 20 | 12 | `reserved1` | Must be all `0` |
 
-### 2.2 Payload (580 bytes in v1)
+### 2.2 Payload (443 bytes in v2)
 
 All strings are UTF-8, NUL-terminated, and **NUL-padded to their full field width**. Padding
 with `0xFF` (the erased-flash value) is invalid — the CRC would not be reproducible across
@@ -84,10 +84,15 @@ it is zero.
 | 245 | 65 | `token` | 64 lower-case hex chars + NUL |
 | 310 | 129 | `owner_email` | Max 128 bytes + NUL. Empty unless an adoption is pending |
 | 439 | 4 | `flags` | See §2.3 |
-| 443 | 1 | `target_count` | `0`–8 |
-| 444 | 248 | `targets` | 8 × 31-byte entries, see §2.4 |
 
-Total: **692 bytes**. Record total: 724 bytes, comfortably inside one 4096-byte sector.
+Total: **443 bytes**. Record total: 475 bytes, comfortably inside one 4096-byte sector.
+
+**There is no list of machines to wake here.** A device is told which MAC to wake in the frame
+that asks (PROTOCOL.md §5), so a stored copy would have no reader. The 249 bytes it occupied
+were the last field in the payload and are simply gone rather than held as reserved padding:
+they sat at the tail, so removing them moves no other offset, and reserving space against a
+field this format has deliberately stopped having would be a lie in a table that exists to be
+read byte for byte.
 
 `owner_email` is the address typed into the setup page, carried out to the relay by PROTOCOL.md's
 `adopt` frame and erased as soon as it is acknowledged. It is a routing hint for one connection
@@ -112,19 +117,6 @@ as `0x00` by writers.
 knows — `tools/mkconfig` pointed at a self-hosted relay, for instance — SHOULD set it, so the
 device authenticates straight away rather than offering a token that endpoint may not want.
 
-### 2.4 Target entry (31 bytes each)
-
-| Offset | Size | Field |
-|---|---|---|
-| 0 | 25 | `name` — max 24 bytes + NUL, UTF-8 |
-| 25 | 6 | `mac` — six raw octets, **not** the ASCII form |
-
-Entries beyond `target_count` MUST be written as all-zero and MUST be ignored by readers.
-
-Storing the MAC as six raw bytes rather than the 18-character ASCII string is deliberate: it
-removes every parsing and normalisation question from the flash layer. Case, separators and
-validation are handled once, at the input boundary.
-
 ---
 
 ## 3. Slot selection
@@ -132,9 +124,9 @@ validation are handled once, at the input boundary.
 At boot the firmware reads both slots and picks a winner:
 
 1. Discard any slot whose `magic` is not `RWCF`.
-2. Discard any slot whose `version` is greater than the firmware understands. (A *lower*
-   version is migrated forward, see §6.)
-3. Discard any slot whose `payload_len` does not match the expected length for its version, or
+2. Discard any slot whose `version` is not the one the firmware writes. Higher and lower are
+   both discarded, and §6 says why there is no migration.
+3. Discard any slot whose `payload_len` does not match the expected length for that version, or
    which would run past the end of the sector.
 4. Discard any slot whose `crc32` does not match the payload.
 5. Of what remains, take the **highest `seq`**.
@@ -210,19 +202,35 @@ piece of this that is verified against the chip, hence the `--family` escape hat
 
 `version` is the payload layout version, independent of firmware version and of PROTOCOL.md.
 
-- Firmware MUST read any `version` less than or equal to its own, migrating older layouts
-  forward in memory and rewriting at the current version on the next save.
-- Firmware MUST refuse a `version` greater than its own and treat that slot as invalid, rather
-  than misparsing it. Downgrading firmware therefore falls back to the older slot, which is
-  exactly the desired behaviour.
-- New fields are appended and `payload_len` grows. Existing offsets never move. Removed fields
-  become reserved padding and are never reused for a different purpose.
+- **Firmware reads exactly one `version`: its own.** Anything else — higher or lower — is
+  treated as an invalid slot, indistinguishable from a bad CRC. A device holding nothing but
+  records of another version is unprovisioned by §3 step 6 and raises its setup hotspot.
+- **There is no migration.** A version bump is a re-provision, and it is stated here rather
+  than discovered because the alternative is worse: a migration path is code that reads a
+  layout no test fixture exercises after the first release, running against flash written by a
+  build nobody has any more. A device that comes up asking to be set up again is an obvious,
+  recoverable state; a device that came up having misread a field is not.
+- New fields are appended within a version and `payload_len` grows. Existing offsets never
+  move, so a reader that knows the version knows where everything is.
+
+### From version 1
+
+**Version 1 records are not migrated and are not read.** v1 carried a `target_count` byte and
+eight 31-byte target entries in the 249 bytes after `flags`; v2 has no such field, because
+nothing on the device reads a target list any more (PROTOCOL.md §13). Every other field kept
+its offset and its width, so the difference between the two layouts is entirely the tail —
+which is why the removal is a shrink from 692 payload bytes to 443 rather than a hole.
+
+A device flashed with v2 firmware over a v1 provision therefore starts its setup hotspot and
+has to be set up again. That is the intended outcome, not a casualty of one: the machines it
+was carrying now live with whoever sends the wake, and re-provisioning is the shortest path to
+a device whose flash matches what its firmware believes.
 
 ---
 
 ## 7. Golden vectors
 
-[`firmware/test/vectors/config-v1.json`](../test/vectors/config-v1.json) holds canonical
+[`firmware/test/vectors/config-v2.json`](../test/vectors/config-v2.json) holds canonical
 configurations paired with their exact expected encodings (hex) and CRC values.
 
 Both test suites consume this same file:
@@ -234,9 +242,10 @@ A change to the encoder on either side that is not matched on the other fails CI
 This is the mechanism that keeps a format used by three separate codebases honest, and it is
 the reason this file exists rather than a prose description alone.
 
-Vectors cover: a fully-unprovisioned record; a minimal one-target record; a maximal record
-with eight targets, a 32-byte SSID, a 64-byte PSK and multi-byte UTF-8 target names; and a
-record with every defined flag set.
+Vectors cover: a fully-unprovisioned record; an ordinary provisioned one; a maximal record
+with every string field at exactly its documented limit; a record whose SSID and password are
+multi-byte UTF-8; and one whose `seq` sits on the signed-32-bit boundary that §3's wrap-safe
+comparison exists for.
 
 ---
 
@@ -250,7 +259,6 @@ and keep the device's identity:
 |---|---|
 | `ssid`, `psk`, `wifi_auth` | `device_id` |
 | `relay_url` | `token` |
-| `targets`, `target_count` | |
 | `owner_email` | |
 | `flags`, including `ENROLLED` | |
 
@@ -302,7 +310,7 @@ What this means practically:
 - Treat a lost or stolen dongle as a Wi-Fi credential compromise. Rotate the network password
   and revoke the device token.
 - RP2350 does support flash protection features that would raise the bar against casual
-  extraction. They are not used in v1, because the threat they address — an attacker with the
+  extraction. They are not used, because the threat they address — an attacker with the
   physical device — is one where the Wi-Fi password is only as safe as the router it is
   written on the back of.
 - The `usbcfg` command channel never reads back the PSK or the token
@@ -319,10 +327,3 @@ build `firmware/tools/wipe` and drop its UF2 on the board in BOOTSEL. It erases 
 returns to the bootloader. The `device_id` survives either way: it is derived from the board's
 unique flash ID rather than stored, so a wiped board reports the same identity and the account it
 belongs to still recognises it.
-
-> **The BOOTSEL hold does not work.** `check_factory_reset()` in main.c reads the button once at
-> start-up, and holding BOOTSEL through a power-on is exactly what makes the ROM bootloader take
-> over instead — so the firmware never runs to see it. The button is the only physical input the
-> enclosure has and it should be the reset, but making that true means polling it from the main
-> loop, which has not been done. Until it is, do not document it as a route: someone will try it,
-> nothing will happen, and they will conclude the reset does not work at all.

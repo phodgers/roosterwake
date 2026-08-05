@@ -25,15 +25,15 @@
 #define RW_USBCFG_MAX_LINE 512
 
 /*
- * Argument slots, including the command word. The longest command in version 1 is
- * `ADD_TARGET <name> <mac>` at three, so six is headroom rather than a limit anyone meets; a
+ * Argument slots, including the command word. The longest command in version 2 is
+ * `SET_WIFI <ssid> <psk>` at three, so six is headroom rather than a limit anyone meets; a
  * line with more is answered `bad_args` rather than silently truncated.
  */
 #define RW_USBCFG_MAX_ARGS 6
 
 /* ── Error codes (usbcfg.md §6) ───────────────────────────────────────────────
  *
- * A closed set for protocol version 1. Adding one is a version bump, which is why this is an
+ * A closed set for protocol version 2. Adding one is a version bump, which is why this is an
  * enum with a string table rather than free-form text at each call site.
  */
 typedef enum {
@@ -43,7 +43,6 @@ typedef enum {
     RW_UERR_BAD_ARG,
     RW_UERR_BAD_FRAME,
     RW_UERR_TOO_LONG,
-    RW_UERR_TOO_MANY,
     RW_UERR_NOTHING_STAGED,
     RW_UERR_NEEDS_CONFIRM,
     RW_UERR_NOT_JOINED,
@@ -71,8 +70,6 @@ typedef enum {
     RW_CMD_LAN_SCAN,
     RW_CMD_SET_WIFI,
     RW_CMD_SET_RELAY,
-    RW_CMD_ADD_TARGET,
-    RW_CMD_CLEAR_TARGETS,
     RW_CMD_SET_EMAIL,
     RW_CMD_SET_TOKEN,
     RW_CMD_GET_CONFIG,
@@ -132,9 +129,9 @@ bool rw_utf8_valid(const char *s);
 
 /* ── Staged configuration (usbcfg.md §4) ─────────────────────────────────────
  *
- * Every SET_* / ADD_TARGET / CLEAR_TARGETS command mutates a working copy and nothing else.
- * COMMIT validates and writes it; anything else discards it at reboot. That is what lets a
- * half-finished provisioning session leave a running device exactly as it was.
+ * Every SET_* command mutates a working copy and nothing else. COMMIT validates and writes it;
+ * anything else discards it at reboot. That is what lets a half-finished provisioning session
+ * leave a running device exactly as it was.
  */
 typedef struct {
     rw_config_t cfg;
@@ -150,8 +147,6 @@ rw_uerr_t rw_stage_set_wifi(rw_stage_t *stage, const char *ssid, const char *psk
 /* Enforces the ws://-only-for-private-addresses policy from usbcfg.md §4 via rw_url_*. */
 rw_uerr_t rw_stage_set_relay(rw_stage_t *stage, const char *url);
 
-rw_uerr_t rw_stage_add_target(rw_stage_t *stage, const char *name, const char *mac);
-rw_uerr_t rw_stage_clear_targets(rw_stage_t *stage);
 /*
  * Stage the account address the device offers with PROTOCOL.md's `adopt` frame.
  *

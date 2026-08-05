@@ -38,8 +38,6 @@ static void test_command_lookup(void) {
     rw_test_begin("every documented command resolves");
     RW_CHECK(rw_cmd_lookup("SCAN") == RW_CMD_SCAN);
     RW_CHECK(rw_cmd_lookup("SET_RELAY") == RW_CMD_SET_RELAY);
-    RW_CHECK(rw_cmd_lookup("ADD_TARGET") == RW_CMD_ADD_TARGET);
-    RW_CHECK(rw_cmd_lookup("CLEAR_TARGETS") == RW_CMD_CLEAR_TARGETS);
     RW_CHECK(rw_cmd_lookup("SET_EMAIL") == RW_CMD_SET_EMAIL);
     RW_CHECK(rw_cmd_lookup("SET_TOKEN") == RW_CMD_SET_TOKEN);
     RW_CHECK(rw_cmd_lookup("GET_CONFIG") == RW_CMD_GET_CONFIG);
@@ -69,7 +67,6 @@ static void test_error_codes(void) {
     RW_CHECK_EQ_STR(rw_uerr_code(RW_UERR_BAD_ARG), "bad_arg");
     RW_CHECK_EQ_STR(rw_uerr_code(RW_UERR_BAD_FRAME), "bad_frame");
     RW_CHECK_EQ_STR(rw_uerr_code(RW_UERR_TOO_LONG), "too_long");
-    RW_CHECK_EQ_STR(rw_uerr_code(RW_UERR_TOO_MANY), "too_many");
     RW_CHECK_EQ_STR(rw_uerr_code(RW_UERR_NOTHING_STAGED), "nothing_staged");
     RW_CHECK_EQ_STR(rw_uerr_code(RW_UERR_NEEDS_CONFIRM), "needs_confirm");
     RW_CHECK_EQ_STR(rw_uerr_code(RW_UERR_NOT_JOINED), "not_joined");
@@ -80,7 +77,7 @@ static void test_error_codes(void) {
     rw_test_begin("codes carry no spaces, so `ERR <code> <message>` stays parseable");
     static const rw_uerr_t all[] = {
         RW_UERR_UNKNOWN_CMD, RW_UERR_BAD_ARGS,      RW_UERR_BAD_ARG,   RW_UERR_BAD_FRAME,
-        RW_UERR_TOO_LONG,    RW_UERR_TOO_MANY,      RW_UERR_NOTHING_STAGED,
+        RW_UERR_TOO_LONG,    RW_UERR_NOTHING_STAGED,
         RW_UERR_NEEDS_CONFIRM, RW_UERR_NOT_JOINED,  RW_UERR_BUSY,      RW_UERR_FLASH_ERROR,
         RW_UERR_INTERNAL,
     };
@@ -104,9 +101,9 @@ static void test_tokeniser(void) {
     rw_test_begin("leading, trailing and repeated spaces collapse");
     parse_ok(&cl, "   INFO   ", 1);
     RW_CHECK_EQ_STR(cl.argv[0], "INFO");
-    parse_ok(&cl, "ADD_TARGET    PC     AA:BB:CC:DD:EE:FF", 3);
-    RW_CHECK_EQ_STR(cl.argv[1], "PC");
-    RW_CHECK_EQ_STR(cl.argv[2], "AA:BB:CC:DD:EE:FF");
+    parse_ok(&cl, "SET_WIFI    HomeNet     hunter2", 3);
+    RW_CHECK_EQ_STR(cl.argv[1], "HomeNet");
+    RW_CHECK_EQ_STR(cl.argv[2], "hunter2");
 
     rw_test_begin("an empty line yields no tokens and no error");
     parse_ok(&cl, "", 0);
@@ -162,9 +159,9 @@ static void test_tokeniser(void) {
     parse_fails("SET_WIFI \xF5\x80\x80\x80", RW_UERR_BAD_FRAME); /* beyond U+10FFFF */
 
     rw_test_begin("valid multi-byte UTF-8 passes through unchanged");
-    parse_ok(&cl, "ADD_TARGET \"Bj\xC3\xB6rns B\xC3\xBCro\" AABBCCDDEEFF", 3);
+    parse_ok(&cl, "SET_WIFI \"Bj\xC3\xB6rns B\xC3\xBCro\" hunter2", 3);
     RW_CHECK_EQ_STR(cl.argv[1], "Bj\xC3\xB6rns B\xC3\xBCro");
-    parse_ok(&cl, "ADD_TARGET \"\xF0\x9F\x8F\xA0\" AABBCCDDEEFF", 3);
+    parse_ok(&cl, "SET_WIFI \"\xF0\x9F\x8F\xA0\" hunter2", 3);
     RW_CHECK_EQ_STR(cl.argv[1], "\xF0\x9F\x8F\xA0");
 }
 
@@ -258,47 +255,6 @@ static void test_staging(void) {
     RW_CHECK(rw_stage_set_relay(&st, "") == RW_UERR_BAD_ARG);
     RW_CHECK(rw_stage_set_relay(&st, NULL) == RW_UERR_BAD_ARG);
 
-    rw_test_begin("ADD_TARGET accepts every documented MAC spelling");
-    rw_stage_init(&st, &base);
-    RW_CHECK(rw_stage_add_target(&st, "Desk", "AA:BB:CC:DD:EE:FF") == RW_UERR_NONE);
-    RW_CHECK(rw_stage_add_target(&st, "Desk2", "aa-bb-cc-dd-ee-ff") == RW_UERR_NONE);
-    RW_CHECK(rw_stage_add_target(&st, "Desk3", "aabbccddeeff") == RW_UERR_NONE);
-    RW_CHECK_EQ_INT(st.cfg.target_count, 3);
-    static const uint8_t expect[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
-    RW_CHECK_EQ_MEM(st.cfg.targets[0].mac, expect, 6);
-    RW_CHECK_EQ_MEM(st.cfg.targets[1].mac, expect, 6);
-    RW_CHECK_EQ_MEM(st.cfg.targets[2].mac, expect, 6);
-
-    rw_test_begin("ADD_TARGET refuses a bad MAC or an empty name");
-    RW_CHECK(rw_stage_add_target(&st, "Bad", "not-a-mac") == RW_UERR_BAD_ARG);
-    RW_CHECK(rw_stage_add_target(&st, "Bad", "AA:BB:CC:DD:EE") == RW_UERR_BAD_ARG);
-    RW_CHECK(rw_stage_add_target(&st, "", "AABBCCDDEEFF") == RW_UERR_BAD_ARG);
-    RW_CHECK_EQ_INT(st.cfg.target_count, 3); /* a rejected target is not half-added */
-
-    rw_test_begin("the ninth target is too_many, not a silent overwrite");
-    rw_stage_init(&st, &base);
-    for (int i = 0; i < RW_CFG_MAX_TARGETS; i++) {
-        RW_CHECK(rw_stage_add_target(&st, "T", "AABBCCDDEEFF") == RW_UERR_NONE);
-    }
-    RW_CHECK(rw_stage_add_target(&st, "T", "AABBCCDDEEFF") == RW_UERR_TOO_MANY);
-    RW_CHECK_EQ_INT(st.cfg.target_count, RW_CFG_MAX_TARGETS);
-
-    rw_test_begin("CLEAR_TARGETS empties the list");
-    RW_CHECK(rw_stage_clear_targets(&st) == RW_UERR_NONE);
-    RW_CHECK_EQ_INT(st.cfg.target_count, 0);
-    RW_CHECK(rw_stage_add_target(&st, "T", "AABBCCDDEEFF") == RW_UERR_NONE);
-
-    rw_test_begin("a 24-byte target name fits, 25 does not");
-    rw_stage_init(&st, &base);
-    char name24[25];
-    memset(name24, 'n', 24);
-    name24[24] = '\0';
-    RW_CHECK(rw_stage_add_target(&st, name24, "AABBCCDDEEFF") == RW_UERR_NONE);
-    char name25[26];
-    memset(name25, 'n', 25);
-    name25[25] = '\0';
-    RW_CHECK(rw_stage_add_target(&st, name25, "AABBCCDDEEFF") == RW_UERR_BAD_ARG);
-
     rw_test_begin("SET_EMAIL takes an address and refuses what is obviously not one");
     rw_stage_init(&st, &base);
     RW_CHECK(rw_stage_set_email(&st, "philip@example.com") == RW_UERR_NONE);
@@ -359,7 +315,7 @@ static void test_staging(void) {
 
     rw_test_begin("COMMIT without an ssid is refused rather than writing a dead config");
     rw_stage_init(&st, &base);
-    RW_CHECK(rw_stage_add_target(&st, "Desk", "AABBCCDDEEFF") == RW_UERR_NONE);
+    RW_CHECK(rw_stage_set_email(&st, "philip@example.com") == RW_UERR_NONE);
     RW_CHECK(rw_stage_validate(&st) == RW_UERR_BAD_ARG);
     RW_CHECK(rw_stage_set_wifi(&st, "HomeNet", "pw") == RW_UERR_NONE);
     RW_CHECK(rw_stage_validate(&st) == RW_UERR_NONE);
@@ -380,7 +336,7 @@ static void test_response_encoders(void) {
     };
     size_t n = rw_usbcfg_info_json(&view, buf, sizeof(buf));
     RW_CHECK(n > 0);
-    RW_CHECK(strstr(buf, "\"proto\":1") != NULL);
+    RW_CHECK(strstr(buf, "\"proto\":2") != NULL);
     /* Against RW_BOARD_NAME, not a literal: the firmware supports two boards and the value is
      * derived from the target, so pinning one here would fail the other's build for no reason.
      * What matters is that INFO reports the board it was actually compiled for. */
@@ -403,11 +359,7 @@ static void test_response_encoders(void) {
     snprintf(cfg.owner_email, sizeof(cfg.owner_email), "philip@example.com");
     snprintf(cfg.relay_url, sizeof(cfg.relay_url), "wss://relay.roosterwake.com/ws");
     snprintf(cfg.device_id, sizeof(cfg.device_id), "a1b2c3d4e5f60718");
-    cfg.wifi_auth       = RW_WIFI_AUTH_WPA2;
-    cfg.target_count    = 1;
-    snprintf(cfg.targets[0].name, sizeof(cfg.targets[0].name), "Office Desktop");
-    static const uint8_t mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
-    memcpy(cfg.targets[0].mac, mac, 6);
+    cfg.wifi_auth = RW_WIFI_AUTH_WPA2;
 
     n = rw_usbcfg_config_json(&cfg, buf, sizeof(buf));
     RW_CHECK(n > 0);
@@ -416,8 +368,6 @@ static void test_response_encoders(void) {
     RW_CHECK(strstr(buf, "\"psk_set\":true") != NULL);
     RW_CHECK(strstr(buf, "\"token_set\":true") != NULL);
     RW_CHECK(strstr(buf, "\"email_set\":true") != NULL);
-    RW_CHECK(strstr(buf, "\"name\":\"Office Desktop\"") != NULL);
-    RW_CHECK(strstr(buf, "\"mac\":\"AA:BB:CC:DD:EE:FF\"") != NULL);
 
     /*
      * The guarantee in §4, asserted rather than assumed. A dongle plugged into an untrusted
@@ -438,7 +388,11 @@ static void test_response_encoders(void) {
     RW_CHECK(strstr(buf, "\"psk_set\":false") != NULL);
     RW_CHECK(strstr(buf, "\"token_set\":false") != NULL);
     RW_CHECK(strstr(buf, "\"email_set\":false") != NULL);
-    RW_CHECK(strstr(buf, "\"targets\":[]") != NULL);
+
+    rw_test_begin("GET_CONFIG carries no target list at all");
+    /* The device stores no machines to wake, so a host reading a list out of this response
+     * would be reading something no command can ever have written. */
+    RW_CHECK(strstr(buf, "\"targets\"") == NULL);
 
     rw_test_begin("an unset relay reports the default rather than an empty string");
     /* A setup tool showing "" here would suggest the device has nowhere to connect, when in

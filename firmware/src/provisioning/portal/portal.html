@@ -148,27 +148,11 @@ details[open] summary::before{transform:rotate(90deg)}
   <button class="ghost" id="back-net">Back</button>
 </section>
 
-<!-- 3: target -->
-<section class="card hide" id="v-tgt">
-  <h1>Which PC should it wake?</h1>
-  <p class="sub">Wake-on-LAN identifies a machine by its network adapter's MAC address.</p>
-  <label for="tname">Name</label>
-  <input type="text" id="tname" value="My PC" maxlength="24">
-  <label for="tmac">MAC address</label>
-  <input type="text" id="tmac" inputmode="latin" autocapitalize="characters" autocorrect="off"
-         spellcheck="false" placeholder="AA:BB:CC:DD:EE:FF">
-  <div class="msg" id="m-tgt"></div>
-
-  <details>
-    <summary>Where do I find it?</summary>
-    <p class="hint"><b>Windows</b> — Settings › Network &amp; internet › your adapter, then read
-      <code>Physical address (MAC)</code>. Use the <b>wired</b> adapter if the PC has one; Wi-Fi
-      wake is unreliable by design.</p>
-    <p class="hint"><b>macOS</b> — System Settings › Network › your adapter › Details ›
-      Hardware.</p>
-    <p class="hint"><b>Linux</b> — <code>ip link</code>, and read the
-      <code>link/ether</code> line.</p>
-  </details>
+<!-- 3: account -->
+<section class="card hide" id="v-acct">
+  <h1>Whose dongle is this?</h1>
+  <p class="sub">The machines you want to wake are added to your account, not to the dongle —
+    so you can change them later without coming back here.</p>
 
   <div class="block">
     <label for="email">Your email address</label>
@@ -187,6 +171,7 @@ details[open] summary::before{transform:rotate(90deg)}
            placeholder="wss://relay.roosterwake.com/ws">
   </details>
 
+  <div class="msg" id="m-acct"></div>
   <button class="primary" id="save">Save and finish</button>
 </section>
 
@@ -201,12 +186,12 @@ details[open] summary::before{transform:rotate(90deg)}
 
 <script>
 const $=s=>document.querySelector(s),
-      views=["v-net","v-pw","v-tgt","v-done"];
+      views=["v-net","v-pw","v-acct","v-done"];
 let net=null, info={}, busy=false;
 
 function show(id){
   views.forEach(v=>$("#"+v).classList.toggle("hide",v!==id));
-  const n={"v-net":1,"v-pw":2,"v-tgt":3,"v-done":3}[id];
+  const n={"v-net":1,"v-pw":2,"v-acct":3,"v-done":3}[id];
   [1,2,3].forEach(i=>$("#s"+i).classList.toggle("on",i<=n));
   window.scrollTo(0,0);
 }
@@ -321,7 +306,7 @@ async function join(){
       busy=false;b.disabled=false;b.textContent="Connect";
       if(state==="ok"){
         msg("#m-pw","Connected"+(s.ip?" — got "+esc(s.ip):"")+".","ok");
-        setTimeout(()=>show("v-tgt"),700);
+        setTimeout(()=>show("v-acct"),700);
       }else{
         msg("#m-pw",JOIN_ERR[state]||("Couldn't connect ("+esc(state)+")."));
       }
@@ -333,57 +318,8 @@ async function join(){
     "dongle remembers what happened.");
 }
 
-/* Format as the user types, but never fight the caret: only reformat when they are typing at
-   the end, which is what people actually do with a MAC. */
-function fixMac(e){
-  const el=e.target, atEnd=el.selectionStart===el.value.length;
-  let v=el.value.toUpperCase().replace(/[^0-9A-F]/g,"").slice(0,12);
-  v=v.replace(/(.{2})(?=.)/g,"$1:");
-  if(atEnd){el.value=v}
-}
-function macOk(v){return /^[0-9A-F]{2}(:[0-9A-F]{2}){5}$/.test(v.toUpperCase())}
-
-/* Only what is impossible, never what is merely unreachable. A sleeping PC cannot be probed —
-   that is the whole point of this device — so there is no honest way to check the machine
-   exists. What can be checked is that the address could belong to an adapter at all. */
-function macProblem(v){
-  const b=v.split(":").map(x=>parseInt(x,16));
-  if(b[0]&1) return "That's a multicast address, not a single PC. Check you copied the "+
-    "adapter's own address and not one from a packet capture.";
-  if(b.every(x=>x===0)) return "That's all zeroes, which isn't a real adapter.";
-  if(b.every(x=>x===255)) return "That's the broadcast address, not a single PC.";
-  return null;
-}
-/* Locally-administered addresses are legal and do occur - VMs, some laptops with MAC
-   randomisation - so this warns and lets you continue rather than refusing. */
-function macWarning(v){
-  const b=v.split(":").map(x=>parseInt(x,16));
-  if(b[0]&2) return "This looks like a randomised or virtual adapter address. If your PC has "+
-    "Wi-Fi privacy or random hardware addresses turned on, it changes and the wake will stop "+
-    "working - use the wired adapter's address if you can.";
-  return null;
-}
-
 async function save(){
   if(busy)return;
-  const mac=$("#tmac").value.toUpperCase(), name=$("#tname").value.trim();
-  if(!name){msg("#m-tgt","Give the PC a name.");return}
-  if(!macOk(mac)){msg("#m-tgt","That MAC address doesn't look right — it should be six pairs "+
-    "like <code>AA:BB:CC:DD:EE:FF</code>.");return}
-  const problem=macProblem(mac);
-  if(problem){msg("#m-tgt",problem);return}
-  /* Shown once, then the next press goes through: it is advice, not a rule. */
-  const warn=macWarning(mac);
-  if(warn&&!$("#tmac").dataset.warned){
-    $("#tmac").dataset.warned="1";
-    msg("#m-tgt",warn+" Press Save again to use it anyway.","warn");
-    return;
-  }
-  /*
-   * Read the address back before committing. Every other field on this page is fixable later
-   * from the dashboard; this one is not, because it is the thing that gets you to the dashboard.
-   * Getting it wrong means a factory reset, so it is worth one press to confirm.
-   */
   const email=$("#email").value.trim();
   /*
    * Required, unless the relay has been pointed somewhere else. A dongle set up against our
@@ -406,21 +342,20 @@ async function save(){
   }
   busy=true;
   const b=$("#save"); b.disabled=true; b.innerHTML='<span class="spin"></span>Saving…';
-  msg("#m-tgt","");
+  msg("#m-acct","");
   let j=await api("/api/config",{
-    targets:[{name:name,mac:mac}],
     relay:$("#relay").value.trim(),
     email:$("#email").value.trim()
   });
   if(j.err){
     busy=false;b.disabled=false;b.textContent="Save and finish";
-    msg("#m-tgt","Couldn't save that ("+esc(j.err)+").");return;
+    msg("#m-acct","Couldn't save that ("+esc(j.err)+").");return;
   }
   j=await api("/api/commit",{});
   busy=false;
   if(j.err){
     b.disabled=false;b.textContent="Save and finish";
-    msg("#m-tgt","Couldn't write the configuration ("+esc(j.err)+").");return;
+    msg("#m-acct","Couldn't write the configuration ("+esc(j.err)+").");return;
   }
   done(j);
 }
@@ -465,7 +400,6 @@ $("#reveal").onclick=()=>{
 };
 $("#join").onclick=join;
 $("#psk").onkeydown=e=>{if(e.key==="Enter")join()};
-$("#tmac").oninput=fixMac;
 $("#save").onclick=save;
 $("#email").oninput=()=>{delete $("#email").dataset.confirmed;msg("#m-email","")};
 

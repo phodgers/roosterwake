@@ -93,7 +93,7 @@ cmake --build ../build-test
 ctest --test-dir ../build-test --output-on-failure
 ```
 
-`test/vectors/config-v1.json` is the golden vector file for the flash format. Both this suite
+`test/vectors/config-v2.json` is the golden vector file for the flash format. Both this suite
 and [`tools/mkconfig`](../tools/mkconfig) consume it, which is what stops the two
 implementations drifting apart and bricking a device's configuration.
 
@@ -134,5 +134,5 @@ under `firmware/` is MIT.
 for it, so there is nothing to implement against and it is not advertised. Scheduled wakes are a
 relay-side feature.
 
-Everything else in the capability list is built: `wake`, `status`, `probe`, `scan`, `config` and
-`ota`. See §12 of [`docs/architecture.md`](docs/architecture.md) for what each covers.
+Everything else in the capability list is built: `wake`, `status`, `probe`, `scan` and `ota`.
+See §12 of [`docs/architecture.md`](docs/architecture.md) for what each covers.

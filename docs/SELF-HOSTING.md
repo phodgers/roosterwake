@@ -41,6 +41,10 @@ SET_TOKEN <your 32 random bytes, hex>
 COMMIT
 ```
 
+Nothing here names a machine to wake, and there is no command that would: the dongle stores no
+such list, and every `wake` your relay sends carries the MAC it means ([`PROTOCOL.md`](../PROTOCOL.md)
+§5). Which machines exist is your relay's business, in whatever form you keep it.
+
 `SET_*` commands stage; only `COMMIT` writes. Read `reboot_in_ms` in the reply rather than
 assuming — a relay URL and token are applied in place without a restart, whereas Wi-Fi changes
 force one. The full command set is in
@@ -83,7 +87,7 @@ Two failures worth knowing in advance:
 
 [`PROTOCOL.md`](../PROTOCOL.md), [`../firmware/docs/usbcfg.md`](../firmware/docs/usbcfg.md) and
 [`../firmware/docs/config-format.md`](../firmware/docs/config-format.md) are versioned and treated
-as public API. A relay is v1-conformant if it satisfies the §12 list; the reference relay's smoke
+as public API. A relay is v2-conformant if it satisfies the §12 list; the reference relay's smoke
 suite maps onto those points one-to-one, so you can point it at your own implementation and use it
 as an acceptance test.
 

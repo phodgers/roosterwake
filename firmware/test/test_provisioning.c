@@ -641,17 +641,6 @@ static void test_mac_wakeable(void) {
     RW_CHECK(!rw_mac_wakeable(broadcast));
     RW_CHECK(!rw_mac_wakeable(zero));
     RW_CHECK(!rw_mac_wakeable(NULL));
-
-    rw_test_begin("staging refuses an unwakeable target rather than storing it");
-    rw_config_t base;
-    rw_config_init(&base);
-    rw_stage_t st;
-    rw_stage_init(&st, &base);
-    RW_CHECK(rw_stage_add_target(&st, "Group", "01:00:5E:00:00:01") == RW_UERR_BAD_ARG);
-    RW_CHECK(rw_stage_add_target(&st, "All", "FF:FF:FF:FF:FF:FF") == RW_UERR_BAD_ARG);
-    RW_CHECK_EQ_INT(st.cfg.target_count, 0);
-    RW_CHECK(rw_stage_add_target(&st, "PC", "88:AE:DD:83:DB:62") == RW_UERR_NONE);
-    RW_CHECK_EQ_INT(st.cfg.target_count, 1);
 }
 
 void test_provisioning(void) {

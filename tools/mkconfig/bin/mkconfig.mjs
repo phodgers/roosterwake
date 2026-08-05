@@ -43,10 +43,6 @@ RELAY
   --token <hex64>          Device token, 64 lower-case hex chars. Generated if omitted.
   --email <address>        Account address to adopt to (hosted service only)
 
-TARGETS
-  --target "<name>=<mac>"  A PC to wake. Repeatable, up to 8.
-                           e.g. --target "Office Desktop=AA:BB:CC:DD:EE:FF"
-
 FLAGS
   --insecure-tls           Skip TLS certificate verification. For homelab self-signed certs
                            only. The device flashes its error pattern continuously while set.
@@ -63,32 +59,34 @@ OUTPUT
   --verify <file>          Decode an existing UF2 and print what it contains
 
 EXAMPLES
-  # Typical: provision for a home network and one desktop
+  # Typical: put the dongle on a home network
   mkconfig --ssid "HomeNet" --psk "hunter2" \\
-           --target "Desktop=AA:BB:CC:DD:EE:FF" \\
            --out remotewake-config.uf2
 
   # Self-hosted relay, credentials you chose yourself
   mkconfig --ssid "HomeNet" --psk "hunter2" \\
            --relay "wss://wake.example.com/ws" \\
            --device-id a1b2c3d4e5f60718 --token $(openssl rand -hex 32) \\
-           --target "NAS=11:22:33:44:55:66" \\
            --out remotewake-config.uf2
 
   # Inspect a file someone sent you before trusting it
   mkconfig --verify remotewake-config.uf2
 
 NOTE
+  There is no option here for the machines you want to wake. A device is told which MAC to
+  wake in the frame that asks (PROTOCOL.md section 5), so the list lives with whoever sends
+  the wakes — your account, or your own relay's records.
+
   The generated file contains your Wi-Fi password and device token in PLAIN TEXT. Treat it
   like a password file: do not commit it, do not email it, delete it once the device is
   provisioned. See firmware/docs/config-format.md section 8.
 `;
 
 function parseArgs(argv) {
-  const out = { targets: [], flags: 0 };
+  const out = { flags: 0 };
   const wantsValue = new Set([
     'ssid', 'psk', 'auth', 'relay', 'device-id', 'token', 'email',
-    'target', 'out', 'slot', 'seq', 'family', 'verify', 'board',
+    'out', 'slot', 'seq', 'family', 'verify', 'board',
   ]);
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -99,8 +97,7 @@ function parseArgs(argv) {
     if (wantsValue.has(key)) {
       const value = argv[++i];
       if (value === undefined) throw new Error(`--${key} needs a value`);
-      if (key === 'target') out.targets.push(value);
-      else out[key.replace(/-/g, '_')] = value;
+      out[key.replace(/-/g, '_')] = value;
       continue;
     }
     switch (key) {
@@ -112,12 +109,6 @@ function parseArgs(argv) {
     }
   }
   return out;
-}
-
-function parseTarget(spec) {
-  const eq = spec.indexOf('=');
-  if (eq < 1) throw new Error(`--target must be "<name>=<mac>", got: ${spec}`);
-  return { name: spec.slice(0, eq).trim(), mac: spec.slice(eq + 1).trim() };
 }
 
 /* Returns null when unspecified, so the caller can fall back to the board's own family rather
@@ -161,8 +152,6 @@ function doVerify(path) {
   console.log(`  Token:     ${cfg.token ? '(set — not shown)' : '(unset)'}`);
   console.log(`  Email:     ${cfg.owner_email || '(none)'}`);
   console.log(`  Flags:     0x${cfg.flags.toString(16).padStart(8, '0')}`);
-  console.log(`  Targets:   ${cfg.targets.length}`);
-  for (const t of cfg.targets) console.log(`    - ${t.name} -> ${t.mac}`);
 }
 
 function main() {
@@ -194,7 +183,6 @@ function main() {
       (args.insecure_tls ? 1 : 0) |
       (args.diag_log ? 2 : 0) |
       (args.wol_unicast ? 4 : 0),
-    targets: args.targets.map(parseTarget),
     seq: args.seq !== undefined ? Number(args.seq) : GENERATED_SEQ,
   };
 
@@ -252,7 +240,6 @@ function main() {
     console.log('\n  A token was generated for you. If you are self-hosting, add this device to');
     console.log('  your relay\'s config.json now — you will not be shown it again.');
   }
-  console.log(`  Targets:   ${cfg.targets.length}`);
   console.log('\nHold BOOTSEL while plugging the Pico in, then drag this file onto the drive.');
   if (cfg.psk) {
     console.log('\nThis file contains your Wi-Fi password in plain text. Delete it once the');

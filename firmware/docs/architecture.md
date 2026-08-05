@@ -34,11 +34,11 @@ That is enforced in two ways:
   watchdog while it waits. The WoL burst gap is the only place that uses it. Nothing calls
   `sleep_ms()` for more than a few milliseconds.
 - **Blocking work is deferred out of callbacks.** `proto.c` receives a `wake`, `status`,
-  `probe` or `config_push` inside an lwIP receive callback and does not execute it there. It
-  queues one pending command and runs it from `rw_relay_task()` on the main loop. A wake takes
-  200 ms of bursts, a config save erases a flash sector with interrupts off, and an RSSI read
-  is a round trip to the radio — none of those can safely happen underneath the stack that
-  delivered the request.
+  `probe` or `scan` inside an lwIP receive callback and does not execute it there. It queues
+  one pending command and runs it from `rw_relay_task()` on the main loop. A wake takes 200 ms
+  of bursts, an ARP sweep takes fifteen seconds, a config save erases a flash sector with
+  interrupts off, and an RSSI read is a round trip to the radio — none of those can safely
+  happen underneath the stack that delivered the request.
 
   Only one command runs at a time. A second arriving while one is pending is answered `busy`
   (PROTOCOL.md §6), which is a real answer rather than a queue that can grow.
@@ -304,7 +304,6 @@ relay may ask this build to do. `RW_CAPS_JSON` in `brand.h` is the single place 
 | `status` | `status` | — |
 | `probe` | `probe` | §8 |
 | `scan` | `scan` | — |
-| `config` | `config_push` | §3 |
 | `ota` | `ota_offer` | `src/ota/`, A/B slots behind the loader |
 
 Provisioning is available by three independent routes, none of which needs the hosted service:
