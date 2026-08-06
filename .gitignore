@@ -41,7 +41,7 @@ tmp-screenshots/
 .playwright-mcp/
 
 # Signing keys never live in the repo. The public half is committed as
-# firmware/src/ota/signing_key.c; private keys belong in ~/.remotewake/.
+# firmware/src/ota/signing_key.c; private keys belong in ~/.roosterwake/.
 *.pem
 
 # Python bytecode. Interpreter- and path-specific, so it is never useful to another machine,

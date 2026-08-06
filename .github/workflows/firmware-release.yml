@@ -75,7 +75,7 @@ jobs:
           if [ -z "${FIRMWARE_SIGNING_KEY:-}" ]; then
             echo "::error::FIRMWARE_SIGNING_KEY is not set. Every device checks the signature"
             echo "::error::against a key compiled into it, so unsigned images cannot be installed."
-            echo "::error::Set it with: gh secret set FIRMWARE_SIGNING_KEY < ~/.remotewake/firmware-signing-dev.pem"
+            echo "::error::Set it with: gh secret set FIRMWARE_SIGNING_KEY < ~/.roosterwake/firmware-signing.pem"
             exit 1
           fi
           umask 077

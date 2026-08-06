@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Emit src/ota/signing_key.c from a public key.
 
-    python tools/emit_signing_key.py ~/.remotewake/firmware-signing-dev.pem > src/ota/signing_key.c
+    python tools/emit_signing_key.py ~/.roosterwake/firmware-signing.pem > src/ota/signing_key.c
 
 Takes either half of the pair: a private key file works, and only its public point is used. The
 generated file is committed, because a build must not depend on anyone holding a key — only

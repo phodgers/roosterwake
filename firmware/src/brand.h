@@ -71,7 +71,7 @@ _Static_assert(sizeof(RW_SETUP_SSID_PREFIX) - 1 + RW_SETUP_SSID_SUFFIX_LEN <= 32
 #define RW_USBCFG_VERSION 2
 
 /* Firmware version reported in `hello`, `status_result` and `INFO`. */
-#define RW_FW_VERSION "2.0.0"
+#define RW_FW_VERSION "2.1.0"
 
 /*
  * Board identifier reported in `hello` (PROTOCOL.md §4) and `INFO` (usbcfg.md §4).

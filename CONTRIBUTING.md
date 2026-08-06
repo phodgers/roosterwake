@@ -90,4 +90,4 @@ hardware limit, the protocol requirement, the failure it prevents. "Changed to f
 "previously used X" belong in the commit message.
 
 Never commit a Wi-Fi password, a device token, or a private key. `*.pem` and the local config
-files are gitignored; private keys belong in `~/.remotewake/`.
+files are gitignored; private keys belong in `~/.roosterwake/`.

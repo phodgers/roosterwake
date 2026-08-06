@@ -2,7 +2,7 @@
 """Wrap a firmware binary in the signed image header the device accepts.
 
     python tools/sign_image.py build-pico_w/roosterwake.bin out.rwfw \
-        --key ~/.remotewake/firmware-signing-dev.pem --version 1.6.0 --board PW
+        --key ~/.roosterwake/firmware-signing.pem --version 1.6.0 --board PW
 
 The layout is specified in src/ota/image.h; this is the only thing that writes it and
 src/ota/image.c is the only thing that reads it, so the two are checked against each other by
