@@ -12,14 +12,14 @@ Zero dependencies. Node 20 or newer.
 ## Use it
 
 ```sh
-npx @remotewake/mkconfig \
+npx @roosterwake/mkconfig \
   --ssid "HomeNet" \
   --psk "hunter2" \
-  --out remotewake-config.uf2
+  --out roosterwake-config.uf2
 ```
 
-Then hold BOOTSEL while plugging the Pico in, and drag both `remotewake.uf2` (the firmware,
-if it is not already flashed) and `remotewake-config.uf2` onto the drive that appears.
+Then hold BOOTSEL while plugging the Pico in, and drag both `roosterwake.uf2` (the firmware,
+if it is not already flashed) and `roosterwake-config.uf2` onto the drive that appears.
 
 Run `mkconfig --help` for the full option list.
 
@@ -40,7 +40,7 @@ mkconfig --ssid "HomeNet" --psk "hunter2" \
          --relay "wss://wake.example.com/ws" \
          --device-id "$(openssl rand -hex 8)" \
          --token "$(openssl rand -hex 32)" \
-         --out remotewake-config.uf2
+         --out roosterwake-config.uf2
 ```
 
 If you omit `--device-id` or `--token` they are generated for you and printed once. Copy them
@@ -54,7 +54,7 @@ verifying certificates should not look identical to one that has not.
 ## Inspect a file before trusting it
 
 ```sh
-mkconfig --verify remotewake-config.uf2
+mkconfig --verify roosterwake-config.uf2
 ```
 
 Prints the address, family ID and every field except the password and token. Worth running on
@@ -67,7 +67,7 @@ inherent to what it is — a flash image, decoded by a device with no secure ele
 to decrypt anything with.
 
 Treat it like a password file. Do not commit it. Do not email it. Delete it once the device is
-provisioned. `.gitignore` in this repository already excludes `remotewake-config.uf2` so an
+provisioned. `.gitignore` in this repository already excludes `roosterwake-config.uf2` so an
 accidental `git add -A` cannot catch it, but that only helps inside this repository.
 
 ## For implementers

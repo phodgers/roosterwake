@@ -521,7 +521,7 @@ Devices MUST NOT send `log` frames unless the operator has enabled diagnostics. 
   "t": "hello_ack",
   "ok": true,
   "proof_s": "b1946ac92492d2347c6235b4d2611184",
-  "server": "remotewake-relay/1.0",
+  "server": "roosterwake-relay/1.0",
   "now": 1785283200
 }
 ```

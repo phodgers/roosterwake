@@ -27,7 +27,7 @@ npm-debug.log*
 # and device tokens.
 *.local.json
 relay-reference/config.json
-remotewake-config.uf2
+roosterwake-config.uf2
 secrets.env
 .env
 
@@ -43,3 +43,8 @@ tmp-screenshots/
 # Signing keys never live in the repo. The public half is committed as
 # firmware/src/ota/signing_key.c; private keys belong in ~/.remotewake/.
 *.pem
+
+# Python bytecode. Interpreter- and path-specific, so it is never useful to another machine,
+# and firmware/tools/ is run often enough that it reappears on every invocation.
+__pycache__/
+*.pyc

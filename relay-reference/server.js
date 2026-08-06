@@ -76,7 +76,12 @@ const HANDSHAKE_TIMEOUT_MS = 10_000;
 const WAKE_RATE_LIMIT = 30;
 const WAKE_RATE_WINDOW_MS = 60_000;
 
-const SERVER_ID = 'remotewake-relay-reference/1.0.0';
+/**
+ * Sent to every device as `hello_ack.server` (§3) and printed on startup, so it is the name a
+ * device operator sees for this relay. Free-form by the spec: nothing parses it, and a fork
+ * SHOULD change it — two relays that both claim to be this one make a support thread unreadable.
+ */
+const SERVER_ID = 'roosterwake-relay-reference/1.0.0';
 const DEFAULT_SOURCE_URL = 'https://github.com/phodgers/roosterwake';
 
 /** Defaults for the config knobs an operator may override. */
@@ -846,7 +851,7 @@ export function createRelay(rawConfig, options = {}) {
 
   function requireAuth(req, res) {
     if (authorised(req)) return true;
-    res.setHeader('www-authenticate', 'Bearer realm="remotewake"');
+    res.setHeader('www-authenticate', 'Bearer realm="roosterwake"');
     sendJson(res, 401, { ok: false, err: 'unauthorised' });
     return false;
   }
@@ -1041,7 +1046,7 @@ function parseArgs(argv) {
   return args;
 }
 
-const USAGE = `remotewake reference relay
+const USAGE = `roosterwake reference relay
 
   node server.js [--config <path>]
 

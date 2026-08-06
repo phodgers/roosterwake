@@ -626,7 +626,7 @@ export const silentLogger = {
 
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
-const USAGE = `remotewake fake device — speaks PROTOCOL.md with no hardware
+const USAGE = `roosterwake fake device — speaks PROTOCOL.md with no hardware
 
   node test/fake-device.js --device-id <hex16> --token <hex64> [options]
 

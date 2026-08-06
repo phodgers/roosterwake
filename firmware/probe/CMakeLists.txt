@@ -24,7 +24,7 @@ endif()
 
 include(${CMAKE_CURRENT_LIST_DIR}/../pico_sdk_import.cmake)
 
-project(remotewake_probe C CXX ASM)
+project(roosterwake_probe C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 
 pico_sdk_init()

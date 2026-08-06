@@ -50,7 +50,7 @@ FLAGS
   --wol-unicast            Also send magic packets unicast to the target's last-known IP.
 
 OUTPUT
-  --out <file>             Output path. Conventionally remotewake-config.uf2
+  --out <file>             Output path. Conventionally roosterwake-config.uf2
   --board <name>           Target board: pico2_w or pico_w       [default: pico2_w]
   --slot <a|b>             Which config slot to write            [default: b]
   --seq <n>                Sequence number                       [default: ${GENERATED_SEQ}]
@@ -61,16 +61,16 @@ OUTPUT
 EXAMPLES
   # Typical: put the dongle on a home network
   mkconfig --ssid "HomeNet" --psk "hunter2" \\
-           --out remotewake-config.uf2
+           --out roosterwake-config.uf2
 
   # Self-hosted relay, credentials you chose yourself
   mkconfig --ssid "HomeNet" --psk "hunter2" \\
            --relay "wss://wake.example.com/ws" \\
            --device-id a1b2c3d4e5f60718 --token $(openssl rand -hex 32) \\
-           --out remotewake-config.uf2
+           --out roosterwake-config.uf2
 
   # Inspect a file someone sent you before trusting it
-  mkconfig --verify remotewake-config.uf2
+  mkconfig --verify roosterwake-config.uf2
 
 NOTE
   There is no option here for the machines you want to wake. A device is told which MAC to

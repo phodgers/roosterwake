@@ -323,7 +323,7 @@ locally by the operator and no frame can turn them on.
 ```sh
 export PICO_SDK_PATH=/path/to/pico-sdk        # 2.2.0, submodules checked out
 cmake -S firmware -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build                            # -> build/remotewake.uf2
+cmake --build build                            # -> build/roosterwake.uf2
 ```
 
 The SDK needs `lib/lwip`, `lib/cyw43-driver`, `lib/mbedtls` and `lib/tinyusb`. Without the

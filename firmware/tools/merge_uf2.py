@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Combine UF2 files into one, renumbering the blocks.
 
-    python tools/merge_uf2.py factory.uf2 build-loader/loader.uf2 build-slot-a/remotewake.uf2
+    python tools/merge_uf2.py factory.uf2 build-loader/loader.uf2 build-slot-a/roosterwake.uf2
 
 A factory image is the loader plus an image in slot A, and each is built separately because they
 are linked into different regions. Concatenating the files byte-for-byte very nearly works and is

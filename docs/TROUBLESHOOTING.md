@@ -34,8 +34,13 @@ machine remotely over that adapter, this will disconnect you.**
 **3. The adapter is allowed to wake the computer.** Reading needs no administrator:
 
 ```powershell
-powercfg -devicequery wake_programmable
+powercfg -devicequery wake_armed
 ```
+
+There are two lists and only one of them answers this question. `wake_programmable` is every
+device that *could* be configured to wake the machine; `wake_armed` is the shorter list of those
+that actually will. An adapter that needs the fix below appears in the first and not the second,
+so checking `wake_programmable` shows a device that is already there and tells you nothing.
 
 Enable it:
 
@@ -43,7 +48,7 @@ Enable it:
 powercfg /deviceenablewake "Intel(R) Ethernet Connection I219-V"
 ```
 
-The name must match the one `wake_programmable` printed, exactly.
+The name must match the one the query printed, exactly.
 
 **4. Fast Startup off.** Windows "shutdown" with Fast Startup on is a hibernation, and the adapter
 is powered down in a state that will not wake.
@@ -104,6 +109,53 @@ settings — this is a macOS limitation, not something the dongle can work aroun
 Support varies by adapter and driver. Group-key rekeying interferes with it, and Modern Standby
 complicates it further. We do not promise WoWLAN works, and if a wired connection is available it
 is worth using it just for this.
+
+**A Wi-Fi target can never wake from a full power-off.** The radio is dark, the card is not
+associated with the access point, and there is nothing for the packet to arrive at. Read the Fast
+Startup advice above as being about wired adapters only: no setting makes a powered-off wireless
+machine wakeable. Sleep is the deepest state WoWLAN reaches.
+
+Both fixes below are also **lost at reboot**, exactly like `ethtool -s ... wol g`. Make them
+persistent or expect them to stop working after the next restart.
+
+### Linux
+
+The phy is not always `phy0`, and using the wrong one reports another adapter's capabilities:
+
+```sh
+cat /sys/class/net/wlan0/phy80211/name
+iw phy phy0 info
+```
+
+`iw phy <phy> info` prints an eight-line WoWLAN block. Reading it with `grep -A5` truncates it —
+scroll the whole block instead. Then arm it, and make it survive a reboot:
+
+```sh
+sudo iw phy phy0 wowlan enable magic-packet
+sudo nmcli connection modify "<connection>" 802-11-wireless.wake-on-wlan magic
+```
+
+The `nmcli` line applies only where NetworkManager manages the interface. Other distributions
+persist this differently, and some not at all.
+
+### Windows
+
+`Set-NetAdapterAdvancedProperty -DisplayName "Wake on Magic Packet"` usually errors on a Wi-Fi
+adapter — that property is a wired-NIC driver convention. Read the wireless setting instead:
+
+```powershell
+Get-NetAdapterPowerManagement -Name "Wi-Fi"
+```
+
+`WakeOnMagicPacket` is the one that applies. Check `DeviceSleepOnDisconnect` in the same output
+too: when it is enabled the adapter powers down as soon as it loses the access point, which is a
+wireless-only trap with no wired equivalent. The adapter must also appear in `wake_armed`, as in
+the wired section above.
+
+### macOS
+
+Wake for network access covers both, and is the `womp` setting shown earlier. On a laptop it
+applies **only on mains power** — an unplugged MacBook will not wake.
 
 ---
 

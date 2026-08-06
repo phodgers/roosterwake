@@ -47,7 +47,7 @@ You need Node 20 or newer, and somewhere the dongle can reach over TLS.
 
 ```sh
 git clone https://github.com/phodgers/roosterwake.git
-cd remotewake/relay-reference
+cd roosterwake/relay-reference
 npm install
 ```
 
@@ -88,7 +88,7 @@ npm start
 ```
 
 ```
-2026-07-29T09:41:02.118Z info  remotewake-relay-reference/1.0.0 listening on 0.0.0.0:8080 — ws /ws, 1 device(s) provisioned
+2026-07-29T09:41:02.118Z info  roosterwake-relay-reference/1.0.0 listening on 0.0.0.0:8080 — ws /ws, 1 device(s) provisioned
 ```
 
 ### 4. Prove it works before you go near hardware
@@ -180,7 +180,7 @@ cloudflared tunnel login
 **2. Create the tunnel.** This writes a credentials file under `~/.cloudflared/`.
 
 ```sh
-cloudflared tunnel create remotewake
+cloudflared tunnel create roosterwake
 ```
 
 **3. Write `~/.cloudflared/config.yml`**, substituting the UUID the previous command printed:
@@ -198,13 +198,13 @@ ingress:
 **4. Point DNS at it.** This creates the proxied CNAME for you:
 
 ```sh
-cloudflared tunnel route dns remotewake relay.example.com
+cloudflared tunnel route dns roosterwake relay.example.com
 ```
 
 **5. Run it**, then install it as a service once you are happy:
 
 ```sh
-cloudflared tunnel run remotewake
+cloudflared tunnel run roosterwake
 sudo cloudflared service install
 ```
 
@@ -341,7 +341,7 @@ A transcript looks like this, and reading it is usually faster than reading a st
 09:41:19.423 <- {"t":"challenge","nonce_s":"9d2f…"}
 09:41:19.424 -> {"t":"auth","proof_c":"3f2a9c81b4e05d7602ff1a8c9d3e4b57"}
 09:41:19.426 <- {"t":"hello_ack","ok":true,"proof_s":"b1946ac9…","server":"…","now":1785283279}
-09:41:19.427 . authenticated with remotewake-relay-reference/1.0.0 — link is trusted
+09:41:19.427 . authenticated with roosterwake-relay-reference/1.0.0 — link is trusted
 09:41:24.881 <- {"t":"wake","req_id":"8f14e45f-…","mac":"AA:BB:CC:DD:EE:FF"}
 09:41:24.882 . waking AA:BB:CC:DD:EE:FF: 3 burst(s) to 4 destination(s)
 09:41:25.083 -> {"t":"wake_result","req_id":"8f14e45f-…","ok":true,"sent":12,"ifaces":[…]}

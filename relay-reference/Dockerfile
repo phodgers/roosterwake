@@ -2,8 +2,8 @@
 #
 # Rooster Wake reference relay.
 #
-#   docker build -t remotewake-relay .
-#   docker run --rm -p 8080:8080 -v "$PWD/config.json:/app/config.json:ro" remotewake-relay
+#   docker build -t roosterwake-relay .
+#   docker run --rm -p 8080:8080 -v "$PWD/config.json:/app/config.json:ro" roosterwake-relay
 #
 # config.json is mounted at run time and deliberately NOT copied in (see .dockerignore).
 # It holds every device token this relay knows, and PROTOCOL.md §11 requires that store to be

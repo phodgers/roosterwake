@@ -16,7 +16,7 @@
 cmake_minimum_required(VERSION 3.13)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "Minimum policy version for vendored deps")
 
-project(remotewake_tests C)
+project(roosterwake_tests C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 

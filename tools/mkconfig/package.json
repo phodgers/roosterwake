@@ -29,7 +29,7 @@
     "pico",
     "rp2350",
     "uf2",
-    "remotewake"
+    "roosterwake"
   ],
   "repository": {
     "type": "git",

@@ -12,8 +12,8 @@
 services:
   relay:
     build: .
-    image: remotewake-relay-reference:1.0.0
-    container_name: remotewake-relay
+    image: roosterwake-relay-reference:1.0.0
+    container_name: roosterwake-relay
     restart: unless-stopped
 
     # 127.0.0.1 on purpose. Change it to "8080:8080" only if something else terminates TLS.
