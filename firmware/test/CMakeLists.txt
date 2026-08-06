@@ -83,6 +83,7 @@ endif()
 # the other is either untested or unshipped.
 set(RW_PORTABLE_SOURCES
     ${RW_SRC}/config/config.c
+    ${RW_SRC}/net/mdns.c
     ${RW_SRC}/net/nbns.c
     ${RW_SRC}/net/url.c
     ${RW_SRC}/ota/image.c
@@ -114,6 +115,7 @@ set(TEST_SOURCES
     test_url.c
     test_usbcfg.c
     test_provisioning.c
+    test_mdns.c
     test_nbns.c
     test_scan_json.c
 )

@@ -155,12 +155,16 @@ response would not fit one line, so extras are dropped rather than the JSON trun
 `gateway` is the device's default route, so a caller can label the one host in the list that is
 certainly not a PC.
 
-`name` is present only for hosts that answered a NetBIOS node status query, which Windows and
-Samba do and nothing else does. That is a good filter rather than a limitation: the machines that
-answer are the machines wake-on-LAN is for, and a phone staying silent is a phone correctly not
-being offered as something to wake. The name is the first unique entry with suffix `0x00`, trimmed
-of its padding, and is rejected outright unless every remaining byte is printable ASCII — it comes
-from an unauthenticated device on the same network and ends up rendered in a browser.
+`name` is present for hosts that answered either of two name queries, sent to every host in the
+same wait window. A NetBIOS node status query names Windows and Samba; an mDNS reverse lookup —
+the unicast kind RFC 6762 §6.7 obliges a responder to answer — names macOS, desktop Linux
+(Avahi answers by default) and most phones. A host that answers both is reported under its
+NetBIOS name, which is registered rather than derived. The NetBIOS name is the first unique
+entry with suffix `0x00`, trimmed of its padding; the mDNS name is the first label of the PTR
+target ("study-pc" from `study-pc.local`), truncated to 31 characters. Either is rejected
+outright unless every byte is printable ASCII — a name comes from an unauthenticated device on
+the same network and ends up rendered in a browser, and a non-ASCII hostname stays nameless
+rather than mangled.
 
 **A name is what the host calls itself, not proof of anything.** Whether wake-on-LAN is armed on
 that adapter lives only on the machine, so `getmac` remains the answer when the list is ambiguous

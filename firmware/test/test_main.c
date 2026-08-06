@@ -72,6 +72,7 @@ int main(int argc, char **argv) {
         {"provisioning", test_provisioning},
         {"ota_image", test_ota_image},
         {"ota_state", test_ota_state},
+        {"mdns", test_mdns},
         {"nbns", test_nbns},
         {"scan_json", test_scan_json},
     };

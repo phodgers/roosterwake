@@ -16,12 +16,14 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "net/nbns.h"
 #include "proto/json.h"
 
 /* Matches RW_LAN_SCAN_MAX. Stated here rather than included from lanscan.h, which needs an IP
  * stack; proto.c asserts at compile time that the two have not drifted apart. */
 #define RW_SCAN_JSON_MAX 24
+
+/* Matches RW_LAN_NAME_LEN, under the same arrangement. */
+#define RW_SCAN_JSON_NAME_LEN 32
 
 /* One host, with the address already rendered — the caller owns the conversion so that this
  * file needs no IP stack. */
@@ -29,7 +31,7 @@ typedef struct {
     char    ip[16];
     uint8_t mac[6];
     /* Empty when the host answered no name query. */
-    char    name[RW_NBNS_NAME_LEN];
+    char    name[RW_SCAN_JSON_NAME_LEN];
 } rw_scan_host_t;
 
 /*

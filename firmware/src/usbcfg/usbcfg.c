@@ -127,8 +127,10 @@ static void cmd_scan(void) {
 /* ── LAN_SCAN ────────────────────────────────────────────────────────────── */
 
 static void cmd_lan_scan(void) {
-    rw_lan_host_t hosts[RW_LAN_SCAN_MAX];
-    int           count = rw_lan_scan(hosts, RW_LAN_SCAN_MAX);
+    /* Static for the same reason as proto.c's copy: over a kilobyte with 32-byte names, only one
+     * command runs at a time, and this is the only thing that touches it. */
+    static rw_lan_host_t hosts[RW_LAN_SCAN_MAX];
+    int                  count = rw_lan_scan(hosts, RW_LAN_SCAN_MAX);
     if (count < 0) {
         /* No address of our own means no subnet to sweep, which is the same condition every other
          * network command reports as not_joined. */
@@ -155,10 +157,11 @@ static void cmd_lan_scan(void) {
     for (int i = 0; i < count; i++) {
         /*
          * Stop while the closing brackets still fit rather than let the writer overflow and turn
-         * a good answer into an error. A named host is about seventy bytes and the response is
-         * capped, so a crowded network is reported as far as it fits.
+         * a good answer into an error. A named host runs to about a hundred bytes now that mDNS
+         * names can be thirty-one characters, and the response is capped, so a crowded network
+         * is reported as far as it fits.
          */
-        if (w.cap - w.len < 96) {
+        if (w.cap - w.len < 128) {
             break;
         }
         if (i > 0) {

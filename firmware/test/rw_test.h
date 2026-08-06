@@ -83,6 +83,7 @@ void test_usbcfg(void);
 void test_provisioning(void);
 void test_ota_image(void);
 void test_ota_state(void);
+void test_mdns(void);
 void test_nbns(void);
 void test_scan_json(void);
 

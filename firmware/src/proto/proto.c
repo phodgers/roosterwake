@@ -483,6 +483,9 @@ static void run_scan(const char *req_id) {
      * looks exactly like a quiet network. */
     _Static_assert(RW_SCAN_JSON_MAX == RW_LAN_SCAN_MAX,
                    "scan_json and lanscan disagree about how many hosts a sweep returns");
+    /* And if these disagree, names get silently truncated at the copy below. */
+    _Static_assert(RW_SCAN_JSON_NAME_LEN == RW_LAN_NAME_LEN,
+                   "scan_json and lanscan disagree about how long a host name can be");
 
     const int count = rw_lan_scan(found, RW_LAN_SCAN_MAX);
     if (count < 0) {

@@ -141,6 +141,7 @@ endif()
 # natively. A file that appears in only one of the two is either untested or unshipped.
 set(RW_PORTABLE_SOURCES
     src/config/config.c
+    src/net/mdns.c
     src/net/nbns.c
     src/net/url.c
     src/ota/image.c

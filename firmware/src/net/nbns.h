@@ -6,8 +6,8 @@
  * answered by Windows, and by Samba, with the list of names that host is registered under. The
  * first unique name with suffix 0x00 is the computer name.
  *
- * Only those two answer. macOS, iOS and Android use mDNS instead and stay silent, which suits
- * this purpose: the machines that answer are the machines wake-on-LAN is for.
+ * Only those two answer. macOS, iOS, Android and desktop Linux use mDNS instead and stay
+ * silent here — mdns.h is the other half of the name pass, and covers them.
  *
  * SPDX-License-Identifier: MIT
  */

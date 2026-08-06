@@ -433,10 +433,11 @@ Sent once, in answer to `scan`.
 ```
 
 `hosts` is ordered by address, lowest first. `name` is present only for a host that answered a
-NetBIOS node status query — Windows and Samba answer, most other things stay silent — and is
-omitted otherwise. It is untrusted input from an unauthenticated peer on the local segment: a
-relay or dashboard MUST treat it as text to display, never as an identifier, and MUST NOT match
-a device or account against it.
+name query — a NetBIOS node status query, which Windows and Samba answer, or an mDNS reverse
+lookup, which names macOS, desktop Linux and most phones — and is omitted otherwise. A host
+that answers both is reported under its NetBIOS name. It is untrusted input from an
+unauthenticated peer on the local segment: a relay or dashboard MUST treat it as text to
+display, never as an identifier, and MUST NOT match a device or account against it.
 
 `gateway` is the device's default route where it knows one. It is what lets a caller mark the
 one entry on the list that is a router rather than a candidate to wake.

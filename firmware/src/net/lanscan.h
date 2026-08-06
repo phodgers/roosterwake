@@ -6,10 +6,11 @@
  * the network by that point, so it can go and ask: an ARP request to every address in its own
  * subnet, and whoever answers gets listed.
  *
- * What this cannot do is say which of them is *your* PC. It returns addresses, not names — the
- * friendly name, and whether wake-on-LAN is even armed on that adapter, exist only on the machine
- * itself. This narrows "work out your MAC address" to "pick from this list"; it does not replace
- * reading something off the PC when the list is ambiguous.
+ * What this cannot do is say which of them is *your* PC beyond the name each machine volunteers
+ * (NBNS for Windows and Samba, mDNS for most of the rest) — and whether wake-on-LAN is even
+ * armed on that adapter exists only on the machine itself. This narrows "work out your MAC
+ * address" to "pick from this list"; it does not replace reading something off the PC when the
+ * list is ambiguous.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -21,6 +22,7 @@
 
 #include "lwip/ip_addr.h"
 
+#include "net/mdns.h"
 #include "net/nbns.h"
 
 /*
@@ -28,6 +30,10 @@
  * everything else the channel emits. Extras are dropped rather than the response truncated.
  */
 #define RW_LAN_SCAN_MAX 24
+
+/* Sized for the longer of the two name sources: NBNS names stop at sixteen, mDNS labels are
+ * truncated to this. scan_json.h states the same figure; proto.c asserts they agree. */
+#define RW_LAN_NAME_LEN RW_MDNS_NAME_LEN
 
 /* Addresses probed in one sweep. A /24 is 254 and fits; a /22 like a flat with a big DHCP pool is
  * 1022 and does too. Anything larger is a network this product is not going to be set up on by
@@ -43,9 +49,10 @@
 typedef struct {
     ip4_addr_t ip;
     uint8_t    mac[6];
-    /* The host's own name, empty when it did not answer a node status query. Windows and Samba
-     * answer; everything else stays silent, which is most of what is not a PC. */
-    char       name[RW_NBNS_NAME_LEN];
+    /* The host's own name, empty when it answered neither name query. NBNS names Windows and
+     * Samba; mDNS names macOS, desktop Linux and most phones. What stays nameless is mostly
+     * what is not a computer. */
+    char       name[RW_LAN_NAME_LEN];
 } rw_lan_host_t;
 
 /*
