@@ -160,11 +160,13 @@ same wait window. A NetBIOS node status query names Windows and Samba; an mDNS r
 the unicast kind RFC 6762 §6.7 obliges a responder to answer — names macOS, desktop Linux
 (Avahi answers by default) and most phones. A host that answers both is reported under its
 NetBIOS name, which is registered rather than derived. The NetBIOS name is the first unique
-entry with suffix `0x00`, trimmed of its padding; the mDNS name is the first label of the PTR
-target ("study-pc" from `study-pc.local`), truncated to 31 characters. Either is rejected
-outright unless every byte is printable ASCII — a name comes from an unauthenticated device on
-the same network and ends up rendered in a browser, and a non-ASCII hostname stays nameless
-rather than mangled.
+entry with suffix `0x00`, trimmed of its padding, printable ASCII only. The mDNS name is the
+first label of the PTR target ("study-pc" from `study-pc.local`), truncated to 31 bytes on a
+character boundary, and may be any well-formed UTF-8 — "MacBook Марка" is a name and renders
+as itself. What is rejected, whole, is malformed UTF-8 and the machinery of visual deception:
+control characters, bidi overrides, zero-widths, whitespace lookalikes. A name comes from an
+unauthenticated device on the same network and ends up rendered in a browser; it must render
+as the bytes it is.
 
 **A name is what the host calls itself, not proof of anything.** Whether wake-on-LAN is armed on
 that adapter lives only on the machine, so `getmac` remains the answer when the list is ambiguous

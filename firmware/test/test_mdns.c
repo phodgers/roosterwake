@@ -187,7 +187,7 @@ static void test_parse(void) {
     RW_CHECK(!rw_mdns_parse_name(buf, n, TXID, IP, name, sizeof(name)));
 
     n = build_response(buf, TXID, IP, host, sizeof(host), &at);
-    buf[at.rdata_off + 1] = 0xe9; /* caf\xe9: non-ASCII stays nameless, never mangled */
+    buf[at.rdata_off + 1] = 0xe9; /* a 3-byte lead with no continuations: malformed UTF-8 */
     RW_CHECK(!rw_mdns_parse_name(buf, n, TXID, IP, name, sizeof(name)));
 
     /* A target that is a pointer to a pointer to a pointer... is an attack, not a name. The
@@ -207,7 +207,90 @@ static void test_parse(void) {
     RW_CHECK(!rw_mdns_parse_name(buf, at.rdata_off + 1, TXID, IP, name, sizeof(name)));
 }
 
+/*
+ * The UTF-8 contract: real names in real scripts pass through as themselves; the machinery of
+ * visual deception, and anything malformed, is rejected whole. The label bytes are spelled out
+ * because this is exactly the file where an escape-munching literal already bit once.
+ */
+static void test_utf8(void) {
+    rw_test_begin("mdns utf8");
+
+    uint8_t  buf[512];
+    char     name[RW_MDNS_NAME_LEN];
+    layout_t at;
+
+    /* café: a two-byte character renders as itself. The label length counts bytes, so it is 5. */
+    static const char cafe[] = {5, 'c', 'a', 'f', 0xc3 - 256, 0xa9 - 256, 5, 'l', 'o', 'c', 'a', 'l', 0};
+    size_t n = build_response(buf, TXID, IP, cafe, sizeof(cafe), &at);
+    RW_CHECK(rw_mdns_parse_name(buf, n, TXID, IP, name, sizeof(name)));
+    RW_CHECK_EQ_INT((unsigned char)name[3], 0xc3);
+    RW_CHECK_EQ_INT((unsigned char)name[4], 0xa9);
+    RW_CHECK_EQ_INT((int)strlen(name), 5);
+
+    /* 客廳的電腦 — five three-byte characters. */
+    static const unsigned char cjk_label[] = {0xe5, 0xae, 0xa2, 0xe5, 0xbb, 0xb3, 0xe7, 0x9a,
+                                              0x84, 0xe9, 0x9b, 0xbb, 0xe8, 0x85, 0xa6};
+    uint8_t cjk[1 + sizeof(cjk_label) + 7];
+    cjk[0] = sizeof(cjk_label);
+    memcpy(&cjk[1], cjk_label, sizeof(cjk_label));
+    memcpy(&cjk[1 + sizeof(cjk_label)], "\x05local", 7); /* includes the literal's NUL */
+    n = build_response(buf, TXID, IP, (const char *)cjk, sizeof(cjk), &at);
+    RW_CHECK(rw_mdns_parse_name(buf, n, TXID, IP, name, sizeof(name)));
+    RW_CHECK_EQ_INT((int)strlen(name), (int)sizeof(cjk_label));
+    RW_CHECK(memcmp(name, cjk_label, sizeof(cjk_label)) == 0);
+
+    /* A four-byte character (an emoji) is a character like any other. */
+    static const char emoji[] = {6, 'p', 'c', 0xf0 - 256, 0x9f - 256, 0x92 - 256, 0xbb - 256,
+                                 5, 'l', 'o', 'c', 'a', 'l', 0};
+    n = build_response(buf, TXID, IP, emoji, sizeof(emoji), &at);
+    RW_CHECK(rw_mdns_parse_name(buf, n, TXID, IP, name, sizeof(name)));
+    RW_CHECK_EQ_INT((int)strlen(name), 6);
+
+    /* Truncation lands on a character boundary: sixteen two-byte characters are 32 bytes, and
+     * the 31-byte buffer keeps fifteen whole ones, never half of the sixteenth. */
+    uint8_t wide[1 + 32 + 7];
+    wide[0] = 32;
+    for (int i = 0; i < 16; i++) {
+        wide[1 + i * 2]     = 0xc3;
+        wide[1 + i * 2 + 1] = 0xa9;
+    }
+    memcpy(&wide[33], "\x05local", 7);
+    n = build_response(buf, TXID, IP, (const char *)wide, sizeof(wide), &at);
+    RW_CHECK(rw_mdns_parse_name(buf, n, TXID, IP, name, sizeof(name)));
+    RW_CHECK_EQ_INT((int)strlen(name), 30);
+    RW_CHECK_EQ_INT((unsigned char)name[29], 0xa9); /* ends on a complete character */
+
+    /* An overlong encoding is the classic smuggling vector, not a character. */
+    static const char overlong[] = {4, 'p', 'c', 0xc0 - 256, 0xaf - 256, 5, 'l', 'o', 'c', 'a', 'l', 0};
+    n = build_response(buf, TXID, IP, overlong, sizeof(overlong), &at);
+    RW_CHECK(!rw_mdns_parse_name(buf, n, TXID, IP, name, sizeof(name)));
+
+    /* A surrogate is UTF-16's business and has no place in UTF-8. */
+    static const char surrogate[] = {5, 'p', 'c', 0xed - 256, 0xa0 - 256, 0x80 - 256,
+                                     5, 'l', 'o', 'c', 'a', 'l', 0};
+    n = build_response(buf, TXID, IP, surrogate, sizeof(surrogate), &at);
+    RW_CHECK(!rw_mdns_parse_name(buf, n, TXID, IP, name, sizeof(name)));
+
+    /* A sequence cut off by the end of its label. */
+    static const char cut[] = {3, 'p', 'c', 0xc3 - 256, 5, 'l', 'o', 'c', 'a', 'l', 0};
+    n = build_response(buf, TXID, IP, cut, sizeof(cut), &at);
+    RW_CHECK(!rw_mdns_parse_name(buf, n, TXID, IP, name, sizeof(name)));
+
+    /* A bidi override makes text display as something it is not. Rejected whole. */
+    static const char bidi[] = {5, 'p', 'c', 0xe2 - 256, 0x80 - 256, 0xae - 256,
+                                5, 'l', 'o', 'c', 'a', 'l', 0};
+    n = build_response(buf, TXID, IP, bidi, sizeof(bidi), &at);
+    RW_CHECK(!rw_mdns_parse_name(buf, n, TXID, IP, name, sizeof(name)));
+
+    /* A zero-width space makes two different names look identical. */
+    static const char zwsp[] = {5, 'p', 'c', 0xe2 - 256, 0x80 - 256, 0x8b - 256,
+                                5, 'l', 'o', 'c', 'a', 'l', 0};
+    n = build_response(buf, TXID, IP, zwsp, sizeof(zwsp), &at);
+    RW_CHECK(!rw_mdns_parse_name(buf, n, TXID, IP, name, sizeof(name)));
+}
+
 void test_mdns(void) {
     test_query();
     test_parse();
+    test_utf8();
 }

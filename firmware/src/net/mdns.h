@@ -41,11 +41,15 @@ size_t rw_mdns_build_query(uint8_t *buf, size_t cap, uint16_t txid, const uint8_
  *
  * Returns false for anything that is not a well-formed response to OUR question — a truncated
  * datagram, a wrong transaction id, an answer whose owner is not the reverse name of `ip`, a
- * label that is not printable ASCII. This parses input from an unauthenticated device on the
- * same network and hands the result to a browser, so it rejects rather than repairs; the one
- * repair it performs is truncating a long label to fit `out`, because a machine with a long
- * name is still a machine somebody needs to pick out of the list. Non-ASCII names are rejected
- * outright rather than mangled — that machine simply stays nameless.
+ * label that is not clean UTF-8. This parses input from an unauthenticated device on the same
+ * network and hands the result to a browser, so it rejects rather than repairs; the one repair
+ * it performs is truncating a long label to fit `out` (on a character boundary), because a
+ * machine with a long name is still a machine somebody needs to pick out of the list.
+ *
+ * "Clean" means well-formed UTF-8 with none of the characters whose job is visual deception —
+ * controls, bidi overrides, zero-widths, whitespace lookalikes. "MacBook Марка" and "客廳的電腦"
+ * are names and render as themselves; a name carrying an invisible reordering character is
+ * rejected whole rather than laundered.
  *
  * `out` must be at least RW_MDNS_NAME_LEN bytes.
  */

@@ -131,9 +131,90 @@ static bool name_equals(const uint8_t *pkt, size_t len, size_t at, const uint8_t
 }
 
 /*
- * The first label of the possibly-compressed name at `at`: printable ASCII only, truncated to
- * `out_len - 1`. The whole label is validated even when only a prefix is kept — a name that is
- * partly unprintable is rejected, not trimmed into respectability.
+ * Decode one UTF-8 sequence, strictly: overlong encodings, surrogates, values past U+10FFFF
+ * and truncated sequences are all malformed, not tolerated. Returns the length consumed
+ * (1..4) and writes the code point, or 0.
+ */
+static size_t utf8_decode(const uint8_t *p, size_t avail, uint32_t *cp) {
+    const uint8_t b = p[0];
+    if (b < 0x80) {
+        *cp = b;
+        return 1;
+    }
+    size_t   need;
+    uint32_t v;
+    uint32_t min;
+    if ((b & 0xe0) == 0xc0) {
+        need = 2;
+        v    = b & 0x1fu;
+        min  = 0x80;
+    } else if ((b & 0xf0) == 0xe0) {
+        need = 3;
+        v    = b & 0x0fu;
+        min  = 0x800;
+    } else if ((b & 0xf8) == 0xf0) {
+        need = 4;
+        v    = b & 0x07u;
+        min  = 0x10000;
+    } else {
+        return 0; /* a continuation byte with nothing to continue */
+    }
+    if (avail < need) {
+        return 0;
+    }
+    for (size_t i = 1; i < need; i++) {
+        if ((p[i] & 0xc0) != 0x80) {
+            return 0;
+        }
+        v = (v << 6) | (p[i] & 0x3fu);
+    }
+    if (v < min || v > 0x10ffff || (v >= 0xd800 && v <= 0xdfff)) {
+        return 0;
+    }
+    *cp = v;
+    return need;
+}
+
+/*
+ * Characters that lie to the person doing the read-and-match the name exists for.
+ *
+ * The name is rendered for a human to recognise their own machine, so the alphabet is anything
+ * a hostname can honestly display — "MacBook Марка" and "客廳的電腦" are both real machines
+ * with real names. What is refused is the machinery of visual deception: characters that are
+ * invisible, that reorder the text around them, or that impersonate whitespace. This list
+ * targets those classes; it does not claim to make lookalike names impossible — an attacker on
+ * the same LAN can type PHlL-PC in plain ASCII — it claims a name renders as the bytes it is.
+ */
+static bool deceptive(uint32_t cp) {
+    if (cp < 0x21 || cp == 0x7f) {
+        return true; /* C0 controls, space, DEL */
+    }
+    if (cp >= 0x80 && cp <= 0x9f) {
+        return true; /* C1 controls */
+    }
+    if (cp == 0xa0 || cp == 0xad) {
+        return true; /* no-break space, soft hyphen: whitespace and invisibility lookalikes */
+    }
+    if (cp >= 0x200b && cp <= 0x200f) {
+        return true; /* zero-widths and the LTR/RTL marks */
+    }
+    if (cp >= 0x202a && cp <= 0x202e) {
+        return true; /* bidi embeds and overrides */
+    }
+    if (cp == 0x2028 || cp == 0x2029 || cp == 0x2060 || cp == 0xfeff) {
+        return true; /* line separators, word joiner, zero-width no-break space */
+    }
+    if (cp >= 0x2066 && cp <= 0x2069) {
+        return true; /* bidi isolates */
+    }
+    return false;
+}
+
+/*
+ * The first label of the possibly-compressed name at `at`: well-formed UTF-8 with nothing
+ * deceptive in it, truncated to `out_len - 1` bytes on a character boundary. The whole label
+ * is validated even past the truncation point — a name that is partly malformed is rejected,
+ * not trimmed into respectability.
  */
 static bool first_label(const uint8_t *pkt, size_t len, size_t at, char *out, size_t out_len) {
     int hops = 0;
@@ -150,14 +231,21 @@ static bool first_label(const uint8_t *pkt, size_t len, size_t at, char *out, si
     if (n == 0 || (n & 0xc0) != 0 || at + 1 + n > len) {
         return false;
     }
-    for (size_t i = 0; i < n; i++) {
-        const uint8_t ch = pkt[at + 1 + i];
-        if (ch < 0x21 || ch > 0x7e) {
+
+    const uint8_t *label = &pkt[at + 1];
+    size_t         keep  = 0; /* the longest whole-character prefix that fits `out` */
+    for (size_t i = 0; i < n;) {
+        uint32_t     cp;
+        const size_t step = utf8_decode(&label[i], (size_t)n - i, &cp);
+        if (step == 0 || deceptive(cp)) {
             return false;
         }
+        i += step;
+        if (i <= out_len - 1) {
+            keep = i;
+        }
     }
-    const size_t keep = (n < out_len - 1) ? n : out_len - 1;
-    memcpy(out, &pkt[at + 1], keep);
+    memcpy(out, label, keep);
     out[keep] = '\0';
     return true;
 }
