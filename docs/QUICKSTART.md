@@ -128,7 +128,7 @@ Put the target to sleep or shut it down, then ask your relay to wake it:
 curl -s -X POST https://relay.example.com/wake \
   -H "Authorization: Bearer $API_KEY" \
   -H 'Content-Type: application/json' \
-  -d '{"device_id":"a1b2c3d4e5f60718","mac":"AA:BB:CC:DD:EE:FF"}'
+  -d '{"device_id":"a1b2c3d4e5f60718","mac":"00:00:5E:00:53:01"}'
 ```
 
 A reply with `ok:true` means the dongle sent the packet, and `sent` and `ifaces` say how many went

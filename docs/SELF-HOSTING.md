@@ -54,6 +54,11 @@ force one. The full command set is in
 board, which provisions it with no browser and no serial session. This is the route for flashing
 several devices, or for a device that must be configured off the network entirely.
 
+The [agent](https://roosterwake.com/agent) points at your relay the same way: `--relay` at enrol
+takes any endpoint, held to the same transport rule — `wss://` anywhere, plain `ws://` only to
+loopback and RFC 1918. It is closed source, but the protocol it speaks is this repo's, so what it
+says to your relay is documented to the frame.
+
 ## The two credentials
 
 `device_id` is derived from the board's unique ID at manufacture. It is stable for the life of the

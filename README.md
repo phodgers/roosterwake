@@ -26,14 +26,42 @@ will.
 a Pico 2 W, an official Raspberry Pi power supply, and the case, pre-flashed and ready.
 [roosterwake.com](https://roosterwake.com)
 
-**Subscribe.** Our hosted relay is free for basic remote wake, with a paid tier for voice
-assistants, scheduled wakes, wake confirmation, and multiple devices.
+**Subscribe.** Our hosted relay is free for basic remote wake — one machine, one emitter, and
+voice included: "Alexa, wake my PC" is on every plan, because your own Echo broadcasts the
+packet and it costs us almost nothing to arrange. Paid plans add server-side schedules that
+retry and report, wake confirmation (did it actually come up), power actions through the agent
+(sleep, restart, shutdown), more machines and emitters, account sharing, wake links, webhooks,
+and longer history.
 
 The boundary is a service, not a feature list. Everything the *device* does is open and
 complete — there is no crippled community firmware and no private premium firmware. What we
-charge for is hosted infrastructure: uptime, accounts, apps, voice skills, support.
+charge for is hosted infrastructure: uptime, accounts, apps, support.
 Self-hosting is a first-class supported path, and [`relay-reference/`](relay-reference/) is a
 real implementation of it, not a toy.
+
+---
+
+## No hardware at all: the agent
+
+If a machine in the house already stays on — a Raspberry Pi, a NAS, a home server — you may
+not need the dongle. The **agent** is a free download that turns that machine into an emitter:
+a virtual dongle. It is a Go program for Windows, macOS and Linux, including ARM, and it
+speaks the same wire protocol as the firmware in this repository
+([`PROTOCOL.md`](PROTOCOL.md), including the v2 power extension). On paid plans it also
+carries power actions — sleeping, restarting or shutting down the machine it runs on, which is
+the one thing a dongle sitting *beside* a machine can never do.
+Download: [roosterwake.com/agent](https://roosterwake.com/agent).
+
+To be precise about what is open here: the protocol is public and
+[`relay-reference/`](relay-reference/) is a real implementation of the relay half of it; the
+agent itself is ours — closed source, free. If you want an open software emitter,
+[`PROTOCOL.md`](PROTOCOL.md) is everything you need to write one, and the reference relay's
+fake device is a working example of the device half.
+
+One limit, stated plainly because it is physics rather than pricing: an agent on a sleeping
+machine is asleep. While its host is up it can wake the other machines on the segment; once
+its host sleeps, something else has to send the packet that wakes it — a dongle, or an agent
+on another machine.
 
 ---
 
