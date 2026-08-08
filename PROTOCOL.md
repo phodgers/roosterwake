@@ -278,6 +278,20 @@ normal arrangement for a self-hosted deployment.
 `caps` declares what this firmware can do, so relays feature-detect rather than sniff version
 numbers. A relay MUST NOT send a command whose capability the device did not advertise.
 
+`macs` is optional and lists the hardware addresses of the device's own network interfaces, in
+§2's output form, at most eight. It exists for one purpose: a device that runs **on** a machine
+rather than beside it — a software emitter — is the only thing that can power that machine down,
+and a service has to be able to tell which of the account's machines that is. A device with no
+such relationship omits the field, and a dongle always does: its own address is not one anybody
+would wake.
+
+> **A relay MUST NOT act on `macs` before the handshake completes.** `hello` arrives before
+> anything has been proved, so its contents are a claim, not a fact. Storing them is harmless;
+> binding a power command to them is not, because a peer that merely knows a `device_id` could
+> otherwise name somebody else's machine as its own. The rule is the same one `caps` has always
+> been read under — it is written down here because the consequence of breaking it changed from
+> a wasted frame to a machine being switched off by a stranger.
+
 `slot` is optional and only meaningful on a device that advertises `ota`: it says which of two
 firmware slots the running image occupies, `0` or `1`. An image is linked at the address of the
 slot it lives in, so a relay offering an update has to pick the variant built for the *other*
@@ -290,11 +304,22 @@ Defined capabilities, each naming the relay→device command it gates:
 | Capability | Gates |
 |---|---|
 | `wake` | `wake` |
+| `power` | `power` |
 | `status` | `status` |
 | `probe` | `probe` |
 | `scan` | `scan` |
 | `ota` | `ota_offer`, and the binary frames that follow it |
 | `sched` | reserved for device-side scheduling; no command yet |
+
+`power` is one capability rather than three, and that is deliberate. Sleeping, restarting and
+shutting a machine down are the same privilege exercised three ways — a device that can do one
+can do all three — so splitting them would let a device advertise a subset that a relay then has
+to reason about, for no gain. Where an individual action genuinely is not available (a machine
+with no suspend state), the device answers that action `unsupported` when it is asked, which is
+the honest place to find out.
+
+A device advertising `power` SHOULD also advertise `macs`. Without it a service can dispatch the
+command but cannot tell which machine it would land on.
 
 Unknown entries are ignored.
 
@@ -379,6 +404,29 @@ into a five-second answer.
 
 On failure: `{"t":"wake_result","req_id":"…","ok":false,"err":"no_link","sent":0,"ifaces":[]}`.
 
+### `power_result`
+
+```json
+{ "t": "power_result", "req_id": "…", "ok": true, "action": "sleep" }
+```
+
+Answers `power` (§5). `action` echoes the action the device is carrying out, so a caller reading
+a transcript can see what was accepted rather than inferring it from the request it sent.
+
+**`ok: true` means accepted and about to run — never completed — and no implementation can make
+the stronger claim.** The action being acknowledged tears down the process that would have sent
+the acknowledgement: a suspend stops the machine mid-write, a shutdown ends the program, and a
+restart does both. So a device MUST send `power_result` and give it time to reach the wire
+*before* it acts, and a relay MUST NOT read `ok: true` as evidence that a machine is now asleep.
+
+What actually confirms the outcome is the connection dropping shortly afterwards, which is the
+same evidence a relay already has for every other reason a device goes away. That is weaker than
+an acknowledgement and it is the truth: the alternative is a frame that can only be sent by a
+process that is still running, which is precisely the state the command exists to end.
+
+On failure: `{"t":"power_result","req_id":"…","ok":false,"err":"no_privilege","action":"shutdown"}`.
+A failure is reported before anything is attempted, so it is safe to retry.
+
 ### `status_result`
 
 ```json
@@ -397,6 +445,35 @@ On failure: `{"t":"wake_result","req_id":"…","ok":false,"err":"no_link","sent"
 `ip` and `netmask` are the two fields worth reading together: the subnet broadcast a wake goes
 to is computed from them, so a target on a different subnet is visible here before anybody
 sends a packet.
+
+A device that advertises `power` MAY add a `machine` block describing the host it runs on:
+
+```json
+"machine": { "host": "studio-pc", "os": "windows 10.0.26200", "wake_from_off": "no",
+             "wake_note": "Fast Startup is on", "sessions": 1 }
+```
+
+| Field | Meaning |
+|---|---|
+| `host` | The machine's own name, for display. Untrusted, like every name in §4. |
+| `os` | Operating system and version, one short string. |
+| `wake_from_off` | `yes`, `no` or `unknown` — can this machine be woken again once it is fully off? |
+| `wake_note` | One sentence naming what the device actually found, when it found something. |
+| `sessions` | Interactive user sessions, or absent when the device cannot tell. |
+
+`wake_from_off` is the field this block exists for, and it is a **safety** field rather than a
+diagnostic one. Waking a machine is harmless; shutting one down can make it unwakeable, because
+wake-from-S5 is frequently disabled in firmware and, on Windows, Fast Startup turns a shutdown
+into a hybrid hibernate that most adapters will not wake from. A caller that offers "shut down"
+without reading this is offering to strand somebody's machine somewhere they cannot reach it.
+
+`unknown` is a first-class answer and MUST NOT be rendered as either of the other two. The tools
+that read these settings are not present on every system and do not always answer honestly; a
+device that cannot tell says so, and a caller that guesses on its behalf will eventually guess
+wrong in the direction that costs a journey.
+
+`sessions` is advisory and exists so a caller can say "somebody is logged in" before it shuts a
+machine down. It counts sessions, never people, and never reports who they are.
 
 ### `probe_result`
 
@@ -523,7 +600,8 @@ Devices MUST NOT send `log` frames unless the operator has enabled diagnostics. 
   "ok": true,
   "proof_s": "b1946ac92492d2347c6235b4d2611184",
   "server": "roosterwake-relay/1.0",
-  "now": 1785283200
+  "now": 1785283200,
+  "features": ["wake", "status"]
 }
 ```
 
@@ -531,7 +609,32 @@ Devices MUST NOT send `log` frames unless the operator has enabled diagnostics. 
 result. Devices MUST NOT use it *instead* of SNTP for certificate validation — by the time
 this frame arrives, the certificate has already been accepted.
 
+`features` is optional and lists the subset of this device's capabilities the service will
+currently act on — the intersection of what the device offers with what the operator's
+arrangement with the service includes. It exists so a device can tell somebody standing in front
+of it *why* nothing happens, instead of leaving them to discover it by trying: "shutdown is not
+included on this plan" is an answer, and a command that vanishes silently is not.
+
+**It is advisory and a device MUST NOT enforce it.** A device that refused a command absent from
+`features` would be applying a policy it cannot verify, on a machine its operator controls, on
+the say-so of whatever it is connected to. The service is the only side that can decide what it
+will do, so it decides at the point of sending. A relay that reports no `features` is telling a
+device nothing, which is what a self-hosted relay with no account model should say.
+
 Rejection: `{ "t": "hello_ack", "ok": false, "err": "auth" }` followed by close `1008`.
+
+### `features`
+
+```json
+{ "t": "features", "features": ["wake", "status", "power"] }
+```
+
+Replaces the list last carried by `hello_ack`, for the case where the arrangement changes while
+the device is connected. There is no reply and no `req_id`: nothing depends on it arriving, and
+a device that never receives one simply keeps reporting what it was told at connection time.
+
+Sent whenever the set changes, not on a schedule — a device on a plan nobody has touched in a
+year receives exactly one of these, in its `hello_ack`.
 
 ### `adopt_ack`
 
@@ -569,6 +672,39 @@ it is a missing required field, not a request to be interpreted. The caller is t
 that knows which machines exist, so a device asked to wake nothing in particular has nothing
 to fall back to and no way to guess; a relay that lets a caller omit the MAC must resolve one
 itself before the frame leaves.
+
+### `power`
+
+```json
+{ "t": "power", "req_id": "…", "action": "sleep" }
+```
+
+Asks the device to change the power state of the machine it runs on. Only sent to devices
+advertising the `power` capability.
+
+`action` is **required** and is one of:
+
+| `action` | Meaning |
+|---|---|
+| `sleep` | Suspend to RAM. The machine stays wakeable by the same magic packet that woke it. |
+| `restart` | Reboot. |
+| `shutdown` | Full power off. |
+
+Anything else — a missing `action`, an unknown string, a non-string — is answered
+`ok:false, err:"bad_frame"`. It is not clamped and not defaulted: there is no safe guess between
+"suspend this machine" and "switch it off", and a device that picked one would be choosing on
+behalf of a caller who failed to say.
+
+**`sleep` is the action a caller should reach for first**, and the reason is mechanical rather
+than editorial. A sleeping machine wakes reliably; a machine that has been shut down wakes only
+if its firmware and adapter were configured for it, which frequently they are not (see
+`wake_from_off` in `status_result`). Shutting a machine down can therefore end a caller's ability
+to reach it at all, which no other command in this protocol can do.
+
+There is no `power` command for a machine other than the one the device runs on. A device
+switches off its own host and nothing else — the address in a `wake` names a peer on the
+segment, but powering down a peer would require an agreement with that peer that this protocol
+does not have and should not invent.
 
 ### `status`
 
@@ -675,19 +811,25 @@ is the less important direction.
 
 ## 6. Error codes
 
-Returned in `err` on `wake_result`, `probe_result`, `scan_result`, `hello_ack`, `adopt_ack`,
-`ota_reject` and `ota_result`.
+Returned in `err` on `wake_result`, `power_result`, `probe_result`, `scan_result`, `hello_ack`,
+`adopt_ack`, `ota_reject` and `ota_result`.
 
 | Code | Meaning |
 |---|---|
 | `auth` | Authentication failed, or `device_id` unknown |
-| `bad_frame` | Malformed JSON, missing required field, or frame too large. A `wake` or `probe` with no `mac` is this |
+| `bad_frame` | Malformed JSON, missing required field, or frame too large. A `wake` or `probe` with no `mac` is this, as is a `power` with no valid `action` |
 | `bad_mac` | MAC address failed to parse |
 | `no_link` | Wi-Fi link down at the moment of the request |
 | `send_failed` | The network stack refused the datagram |
+| `no_privilege` | The device is running without the rights the command needs |
 | `busy` | A conflicting operation is already running |
-| `unsupported` | Command names a capability this device did not advertise |
+| `unsupported` | Command names a capability this device did not advertise, or an action its host cannot perform |
 | `internal` | Anything else; the device or relay SHOULD log detail locally |
+
+`no_privilege` is separated from `internal` because it is the one failure here with a remedy the
+person reading it can act on: install the device as a system service, or run it with the rights
+it needs. Folded into `internal` it would read as a defect in the software and be reported as
+one.
 
 Update-specific codes, on `ota_reject` and `ota_result` only:
 
@@ -893,7 +1035,7 @@ A relay is v2-conformant if it:
 6. Never sends a frame larger than 2048 bytes.
 7. Enforces one live connection per `device_id`, closing the displaced one with `4001`.
 
-Everything else — `status`, `probe`, `scan`, `log`, `enrol`, `adopt`, `ota_offer` — is
+Everything else — `status`, `power`, `probe`, `scan`, `log`, `enrol`, `adopt`, `ota_offer` — is
 optional.
 
 **`enrol` and `adopt` are optional on purpose.** A self-hosted relay whose operator adds tokens
@@ -913,6 +1055,7 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 
 | Version | Date | Change |
 |---|---|---|
+| 2 | 2026-08-08 | **The other half of the power button.** One new capability, `power`, and the frames it gates — `power` and `power_result` — plus three additive fields and one push frame. Every wake in this protocol's history could turn a machine on and nothing could turn one off, which is not a gap in the feature list so much as a gap in the idea: a switch with one position. A device that runs *on* a machine can close it, and the whole of the change is about making that safe rather than making it possible. **`power_result` is specified to be sent before the action runs**, because the action destroys the process that would otherwise send it — so `ok:true` means accepted, the connection dropping is the confirmation, and no implementation can honestly do better. **`hello.macs`** lets a service tell which of an account's machines a software emitter is running on, fenced by a rule that a relay MUST NOT act on it before the handshake completes: the field turns a pre-authentication claim into a power command's destination, which is a different order of consequence from the `fw` string beside it. **`status_result.machine`** carries `wake_from_off`, and it exists because shutting a machine down can make it unwakeable — wake-from-S5 is often disabled in firmware, and Windows Fast Startup turns a shutdown into a hybrid hibernate most adapters will not wake from — so a caller that offers the action without reading the field is offering to strand somebody. Its `unknown` is a first-class answer for the systems whose tools will not say. **`hello_ack.features`** and the **`features`** push tell a device which of its capabilities the service will currently act on, explicitly advisory: a device that enforced a list it cannot verify would be applying somebody else's policy to a machine its own operator controls. One new error code, **`no_privilege`**, separated from `internal` because it is the only failure here whose remedy is something the reader can do. `power` is deliberately one capability rather than one per action — the same privilege exercised three ways — and there is deliberately no way to power down a machine other than the device's own host. Additive throughout: `v` stays 2, and §10's rule that unknown `t` values and unknown fields are ignored is what makes that true. |
 | **2** | 2026-08-05 | **The device stops holding a list of the machines it can wake.** The first breaking change, and the whole of it: `config_push` and `config_ack` are **removed from the protocol**, `hello` and `status_result` no longer carry `targets`, the `config` capability is gone, and **`mac` is now required on `wake` and `probe`** — a frame without one is answered `bad_frame`, which §6 already defined as a missing required field. The device stored up to eight addresses and consulted them in exactly one case: a `wake` that named none, where it fell back to the first entry. Every caller — dashboard, API, setup page — already knew the MAC it meant, so the fallback was reachable only by a caller that had thrown that knowledge away, and the fix is for the caller to resolve it before the frame leaves. What the list cost was not the eight entries: it was `config_push` on every dashboard edit, the reconciliation that repaired a push a dongle missed while unplugged, the "which eight get sent" subset logic, a config-format field and a flash write per change — and a dongle carrying the names and addresses of the machines in somebody's house, which matters the day one is stolen, resold or returned. **Removing it also removes the one frame in which a relay writes to a device's persistent configuration**, so the rule in §11 that a relay cannot reconfigure a device is now a property of the frame set rather than a promise the firmware keeps. Two error codes retire with it: `no_target` described a state that can no longer exist, and `too_many` had exactly one producer. The subprotocol token stays `roosterwake.v1` — §1 and §10 say why a major bump does not move it. **§2's wakeable-address rule moved with the MAC**: a device used to apply it where a target was stored, and that path is gone, so it is now applied where the address arrives — a `wake` or `probe` naming a group, broadcast or all-zero address is answered `bad_mac` instead of being sent and reported as a success nothing came of. `firmware/docs/config-format.md` goes to **format version 2** in the same change; the target block is deleted rather than reserved and images of the previous version are not migrated. |
 | 1 | 2026-08-03 | **Asking a device who else is on its segment.** One new capability, `scan`, and the frame pair it gates — `scan` and `scan_result`. Adding a target to a device meant reading a MAC address off the machine to be woken and typing it in, which is the least popular thing this product asks of anyone; the device is already on that segment and can go and ask. The capability is separate from `probe` even though both resolve addresses by ARP, because `probe` watches one address the caller already knows and `scan` enumerates ones it does not — a device may reasonably implement either without the other. `scan_result` is the first frame in the protocol whose natural size can reach §1's 2048-byte ceiling, so it is specified to drop hosts and set `truncated` rather than to grow, and to drop unnamed hosts first: the list exists to find one machine, and a host that answered a name query is likelier to be it. Names are carried but explicitly untrusted — they come from an unauthenticated peer on the local network — and §4 forbids matching anything against them. |
 | 1 | 2026-07-31 | **Firmware updates over the relay connection.** Four new frames — `ota_offer`, `ota_accept`, `ota_reject`, `ota_result` — and the one exception to §1's "frames are text": the payload of an update the device has agreed to receive arrives as unfragmented binary frames. There is no second connection because there is no room for one; a TLS session costs 44 KB of a 64 KB heap on the reference device, so an image either shares this socket or does not arrive. The offer carries the image's signed header and **nothing else**, which is the whole of the security argument: board, length, version and payload digest are all inside the signature, so there is no unsigned restatement of them for a relay to lie in. A device with two slots writes the inactive one and restarts; the update proves itself by reconnecting, and a failure announces itself by the previous version reappearing rather than by silence. Binary frames outside a transfer close the connection with `1008`. |
