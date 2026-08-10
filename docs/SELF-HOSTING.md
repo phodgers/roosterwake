@@ -57,7 +57,8 @@ several devices, or for a device that must be configured off the network entirel
 The [agent](https://roosterwake.com/agent) points at your relay the same way: `--relay` at enrol
 takes any endpoint, held to the same transport rule — `wss://` anywhere, plain `ws://` only to
 loopback and RFC 1918. It is closed source, but the protocol it speaks is this repo's, so what it
-says to your relay is documented to the frame.
+says to your relay is documented to the frame. Its builds need no account to download —
+[`DOWNLOADS.md`](DOWNLOADS.md) lists the URL for every platform and how to verify a checksum.
 
 ## The two credentials
 

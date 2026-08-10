@@ -50,7 +50,9 @@ speaks the same wire protocol as the firmware in this repository
 ([`PROTOCOL.md`](PROTOCOL.md), including the v2 power extension). On paid plans it also
 carries power actions — sleeping, restarting or shutting down the machine it runs on, which is
 the one thing a dongle sitting *beside* a machine can never do.
-Download: [roosterwake.com/agent](https://roosterwake.com/agent).
+[roosterwake.com/agent](https://roosterwake.com/agent) is its page; the direct download URLs,
+platform keys and checksum verification — no account needed, and the builds work against a
+self-hosted relay — are documented in [`docs/DOWNLOADS.md`](docs/DOWNLOADS.md).
 
 To be precise about what is open here: the protocol is public and
 [`relay-reference/`](relay-reference/) is a real implementation of the relay half of it; the
@@ -73,7 +75,7 @@ on another machine.
 | [`relay-reference/`](relay-reference/) | Minimal self-host relay, Node + `ws` | AGPL-3.0 |
 | [`case/`](case/) | Snap case: STL, print notes | MIT, Adafruit Industries |
 | [`tools/mkconfig/`](tools/mkconfig/) | Generate a config UF2 for headless provisioning | MIT |
-| [`docs/`](docs/) | Quickstart, provisioning, self-hosting, guided setup, troubleshooting | — |
+| [`docs/`](docs/) | Quickstart, provisioning, self-hosting, agent downloads, guided setup, troubleshooting | — |
 
 The contracts that keep forks and our hosted service interoperable are
 [`PROTOCOL.md`](PROTOCOL.md) (the dongle↔relay wire protocol),
