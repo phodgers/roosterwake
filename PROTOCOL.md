@@ -1,6 +1,6 @@
 # Rooster Wake wire protocol
 
-**Version 2** · Status: **stable** · Last changed: 2026-08-05
+**Version 2** · Status: **stable** · Last changed: 2026-08-10
 
 This document specifies the protocol between a Rooster Wake device (the "dongle") and a relay.
 It is the public contract. Our hosted service implements it, the reference relay in
@@ -375,6 +375,34 @@ The device repeats it once per connection until acknowledged, and MUST stop and 
 address once it is. Retrying is deliberate: the first connection after setup is also the one
 most likely to be interrupted by a Wi-Fi network still settling.
 
+Two optional fields extend the frame for services that hand out **enrolment tokens** — a
+reusable credential an installer flag carries, so a fleet of software emitters can bind to one
+account with nobody typing an address into each machine:
+
+```json
+{ "t": "adopt", "enrol_token": "rw_enrol_…", "host": "warehouse-07" }
+```
+
+`enrol_token` names an account the way `email` cannot: precisely, and with the account holder's
+prior consent, because the token was minted by them and handed to the installer on purpose. A
+frame carrying **both** a token and an email is a token frame — the token identifies an account
+exactly, and the email would be a guess standing beside it. Like `email`, the token is at most
+64 bytes and MUST NOT be treated as authenticated transport-side; it is a bearer credential,
+and everything about validating it — existence, revocation, what the account's plan permits —
+is the service's business.
+
+`host` is advisory naming and nothing more: the machine's own idea of its name, offered so a
+service that saves the machine can label it something better than a hardware address. It is
+untrusted, like every name in §4 — display text, never an identifier, never matched against
+anything.
+
+**Relays without accounts ignore both fields.** They ride §10's rule that unknown fields are
+ignored silently: a relay that has no account concept — or one that implements the email path
+and nothing more — sees an `adopt` frame it already understands, ignores what it does not, and
+answers exactly as it always did. A device offering a token to such a relay simply never
+becomes adopted by it, which is the same correct outcome §12 records for `enrol` and `adopt`
+as a whole.
+
 ### `wake_result`
 
 ```json
@@ -653,8 +681,29 @@ Both are `ok: true` and both mean the same thing to the device: stop offering, e
 address. `pending` is reported separately only so a device can say something more useful than
 "done" on a local status page.
 
+An `adopt` that carried an `enrol_token` (§4) is answered `bound` and never `pending` — the
+token was minted by an account holder, so the account exists by construction. The ack MAY then
+carry one optional field, `machine`, reporting what the service did about saving the device's
+host as a wakeable machine:
+
+```json
+{ "t": "adopt_ack", "ok": true, "state": "bound", "machine": "created" }
+```
+
+| `machine` | Meaning |
+|---|---|
+| `created` | The host was saved to the account's machine list, named from `host` or its first hardware address. |
+| `exists` | A machine with that address was already on the list. Its stored name is untouched — the owner's words, not the installer's. |
+| `quota` | The account's machine allowance is full. The bind stands; the machine was not saved. |
+| `none` | The device reported no hardware addresses, so there was nothing to save by. |
+
+All four are advisory: the device's part ended at `bound`, and the field exists so an installer
+log can say which machines arrived wake-ready. A device that does not understand it ignores it,
+per §10.
+
 A refusal is `{ "t": "adopt_ack", "ok": false, "err": "bad_frame" }` for an address that is not
-plausibly one, or `"internal"`. A device MUST NOT retry a refusal on the same connection; a
+plausibly one, or `"internal"`. The token path adds three refusals of its own — `bad_token`,
+`not_entitled`, `device_limit` (§6). A device MUST NOT retry a refusal on the same connection; a
 relay that does not implement adoption simply never answers, and the device gives up at the
 end of the connection.
 
@@ -830,6 +879,19 @@ Returned in `err` on `wake_result`, `power_result`, `probe_result`, `scan_result
 person reading it can act on: install the device as a system service, or run it with the rights
 it needs. Folded into `internal` it would read as a defect in the software and be reported as
 one.
+
+Adoption-specific codes, on `adopt_ack` only, and only from a relay that implements the §4
+token path:
+
+| Code | Meaning |
+|---|---|
+| `bad_token` | The presented enrolment token binds nothing. One code for every reason — unknown, revoked, malformed — because the presenter is unauthenticated and a distinguishable refusal would let a token be probed for "valid but revoked" |
+| `not_entitled` | The account behind the token no longer has a plan that includes enrolment tokens |
+| `device_limit` | The account is at its device ceiling |
+
+None of them invites a retry: the device's recovery is a person minting or fixing something at
+the service, and a device MUST treat all three exactly as it treats any other `adopt_ack`
+refusal.
 
 Update-specific codes, on `ota_reject` and `ota_result` only:
 
@@ -1055,6 +1117,7 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 
 | Version | Date | Change |
 |---|---|---|
+| 2 | 2026-08-10 | **Token adoption.** Two optional fields on `adopt` — `enrol_token` and `host` — one optional field on `adopt_ack` — `machine` — and three `adopt_ack`-only error codes: `bad_token`, `not_entitled`, `device_limit`. The email path binds one machine per typed address, which is the right shape for a person and the wrong one for a fleet: twenty installs mean twenty addresses typed and twenty invitations answered. An enrolment token is the account holder's own consent made portable — minted at the service, carried by an installer flag, presented in the frame the device already sends — so a fleet binds with nobody at a desk. A frame carrying both a token and an email is a token frame, because the token names an account precisely and the email would be a guess beside it. `host` is advisory display naming, untrusted like every name in §4; `machine` reports what the service did about saving the host as a wakeable machine (`created`/`exists`/`quota`/`none`), advisory too — the device's part ended at `bound`. The refusal codes are deliberately unhelpful to a probe: `bad_token` is one answer for unknown, revoked and malformed alike, because the presenter is unauthenticated and "valid but revoked" is a fact about somebody's account that a stranger should not be able to enumerate. Everything rides §10's unknown-field rule: a relay without accounts ignores the new fields and answers `adopt` exactly as it always did, and a device offered none of this behaves exactly as before. Additive throughout; `v` stays 2. |
 | 2 | 2026-08-08 | **The other half of the power button.** One new capability, `power`, and the frames it gates — `power` and `power_result` — plus three additive fields and one push frame. Every wake in this protocol's history could turn a machine on and nothing could turn one off, which is not a gap in the feature list so much as a gap in the idea: a switch with one position. A device that runs *on* a machine can close it, and the whole of the change is about making that safe rather than making it possible. **`power_result` is specified to be sent before the action runs**, because the action destroys the process that would otherwise send it — so `ok:true` means accepted, the connection dropping is the confirmation, and no implementation can honestly do better. **`hello.macs`** lets a service tell which of an account's machines a software emitter is running on, fenced by a rule that a relay MUST NOT act on it before the handshake completes: the field turns a pre-authentication claim into a power command's destination, which is a different order of consequence from the `fw` string beside it. **`status_result.machine`** carries `wake_from_off`, and it exists because shutting a machine down can make it unwakeable — wake-from-S5 is often disabled in firmware, and Windows Fast Startup turns a shutdown into a hybrid hibernate most adapters will not wake from — so a caller that offers the action without reading the field is offering to strand somebody. Its `unknown` is a first-class answer for the systems whose tools will not say. **`hello_ack.features`** and the **`features`** push tell a device which of its capabilities the service will currently act on, explicitly advisory: a device that enforced a list it cannot verify would be applying somebody else's policy to a machine its own operator controls. One new error code, **`no_privilege`**, separated from `internal` because it is the only failure here whose remedy is something the reader can do. `power` is deliberately one capability rather than one per action — the same privilege exercised three ways — and there is deliberately no way to power down a machine other than the device's own host. Additive throughout: `v` stays 2, and §10's rule that unknown `t` values and unknown fields are ignored is what makes that true. |
 | **2** | 2026-08-05 | **The device stops holding a list of the machines it can wake.** The first breaking change, and the whole of it: `config_push` and `config_ack` are **removed from the protocol**, `hello` and `status_result` no longer carry `targets`, the `config` capability is gone, and **`mac` is now required on `wake` and `probe`** — a frame without one is answered `bad_frame`, which §6 already defined as a missing required field. The device stored up to eight addresses and consulted them in exactly one case: a `wake` that named none, where it fell back to the first entry. Every caller — dashboard, API, setup page — already knew the MAC it meant, so the fallback was reachable only by a caller that had thrown that knowledge away, and the fix is for the caller to resolve it before the frame leaves. What the list cost was not the eight entries: it was `config_push` on every dashboard edit, the reconciliation that repaired a push a dongle missed while unplugged, the "which eight get sent" subset logic, a config-format field and a flash write per change — and a dongle carrying the names and addresses of the machines in somebody's house, which matters the day one is stolen, resold or returned. **Removing it also removes the one frame in which a relay writes to a device's persistent configuration**, so the rule in §11 that a relay cannot reconfigure a device is now a property of the frame set rather than a promise the firmware keeps. Two error codes retire with it: `no_target` described a state that can no longer exist, and `too_many` had exactly one producer. The subprotocol token stays `roosterwake.v1` — §1 and §10 say why a major bump does not move it. **§2's wakeable-address rule moved with the MAC**: a device used to apply it where a target was stored, and that path is gone, so it is now applied where the address arrives — a `wake` or `probe` naming a group, broadcast or all-zero address is answered `bad_mac` instead of being sent and reported as a success nothing came of. `firmware/docs/config-format.md` goes to **format version 2** in the same change; the target block is deleted rather than reserved and images of the previous version are not migrated. |
 | 1 | 2026-08-03 | **Asking a device who else is on its segment.** One new capability, `scan`, and the frame pair it gates — `scan` and `scan_result`. Adding a target to a device meant reading a MAC address off the machine to be woken and typing it in, which is the least popular thing this product asks of anyone; the device is already on that segment and can go and ask. The capability is separate from `probe` even though both resolve addresses by ARP, because `probe` watches one address the caller already knows and `scan` enumerates ones it does not — a device may reasonably implement either without the other. `scan_result` is the first frame in the protocol whose natural size can reach §1's 2048-byte ceiling, so it is specified to drop hosts and set `truncated` rather than to grow, and to drop unnamed hosts first: the list exists to find one machine, and a host that answered a name query is likelier to be it. Names are carried but explicitly untrusted — they come from an unauthenticated peer on the local network — and §4 forbids matching anything against them. |
