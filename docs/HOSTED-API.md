@@ -39,7 +39,83 @@ actions can grant it at all.
 | `GET /wake/{id}` | read | One wake's outcome by the id the wake response returned |
 | `POST /power` | power | `{"mac": "…", "action": "sleep" \| "restart" \| "shutdown"}` |
 | `GET /devices/{id}/history` | read | One emitter's attempt history, `before` cursor pagination |
-| `GET /activity` | read | The whole account's history, `before` cursor pagination |
+| `GET /activity` | read | The whole account's history, `before` cursor pagination; `?format=csv` downloads it as a file (Pro) |
+
+## Audit export
+
+`GET /activity` answers the account's full event history — every wake and power command,
+whoever asked for it and whatever carried it. Both formats page the same rows with the same
+`limit` and `before` parameters; the JSON shape is available to every key with `read`, and
+`?format=csv` — a stable, documented, SIEM-ready file a compliance pipeline can ingest without
+a human in the loop — is a Pro feature. A non-Pro key asking for CSV is refused with
+`402 tier_limit`; any `format` other than `csv` or absent is refused with `400 bad_format`.
+
+### The JSON row
+
+Each entry in `activity` carries:
+
+| Field | Meaning |
+|---|---|
+| `id` | The row's id — also the `before` cursor value |
+| `at` | When, as Unix seconds |
+| `deviceId` | The emitter that carried it, or `null` when none did (an Echo wake, a refused command) |
+| `targetName` | The machine's name as it was saved when the event happened |
+| `targetMac` | The machine's MAC |
+| `requestedBy` | Who asked — `null` for a schedule, which has nobody to name |
+| `source` | Which surface asked: the dashboard, the API, voice, a schedule, a wake link |
+| `via` | What carried the packet: a dongle, an agent, or the user's own Echo |
+| `linkLabel` | Which wake link, when `source` is `link`; otherwise `null` |
+| `action` | `wake`, `sleep`, `restart` or `shutdown` |
+| `ok` | Whether it worked |
+| `err` | The machine-readable failure code when it did not |
+| `sent` | How many magic packets went out |
+| `ifaces` | The broadcast destinations they went to |
+| `latencyMs` | Round trip to the emitter, milliseconds |
+| `probeState` | The confirmation outcome (`up` or `timeout`), `null` when confirmation was not asked for or not settled |
+| `probeMs` | How long confirmation took, milliseconds |
+| `connectUrl` | The machine's connect link, on confirmed-up rows only |
+| `diagnosis` | The same plain-English explanation the dashboard shows, recomputed on read |
+
+### The CSV columns
+
+The CSV flattens the same rows into these columns, in this order:
+
+| Column | Meaning |
+|---|---|
+| `at_utc` | When, ISO 8601 UTC |
+| `action` | `wake`, `sleep`, `restart` or `shutdown` |
+| `machine` | The machine's name as it was saved when the event happened |
+| `mac` | The machine's MAC |
+| `requested_by` | Who asked; empty for a schedule, `link: <label>` for a wake link |
+| `source` | Which surface asked for it |
+| `via` | What carried the packet |
+| `ok` | `yes` or `no` |
+| `error` | The machine-readable failure code when `ok` is `no` |
+| `packets_sent` | How many magic packets went out |
+| `destinations` | The broadcast addresses they went to, space separated |
+| `delivered_by_device` | The emitter's device id; empty when no device carried it |
+| `latency_ms` | Round trip to the emitter, milliseconds |
+| `confirmation` | The confirmation outcome (`up` or `timeout`); empty when not asked for |
+
+`diagnosis` is deliberately not a column: it is prose that improves over time, and exporting it
+would make two exports of the same rows differ. The columns are the facts.
+
+The schema is stable and additive: existing columns and fields keep their names and meanings,
+and anything new is appended, so an ingest pipeline written against this table keeps working.
+
+### Paging
+
+Both formats default to 50 rows and cap at 200. JSON carries the next page's cursor in the body
+as `nextBefore` (`null` at the end). A CSV body cannot carry a cursor, so the CSV response
+carries it as an `X-Next-Before` header instead, present exactly when another page exists —
+pass its value back as `?before=` to fetch older rows.
+
+### Retention
+
+How far back the history goes is the plan's retention window: Pro keeps twelve months, Plus
+keeps 30 days. The numbers mirror the plan matrix (`shared/tiers.js` in the hosted service),
+and rows past the window are deleted nightly — a page that comes back short is the policy
+speaking, not a gap.
 
 ## The contract
 
