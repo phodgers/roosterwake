@@ -33,7 +33,8 @@ actions can grant it at all.
 
 | Method and path | Scope | What it answers |
 |---|---|---|
-| `GET /devices` | read | Your emitters: id, name, online, last seen, board, firmware |
+| `GET /me` | any | What the presented key is: name, scopes, device binding, and the account and plan behind it. Any valid key may ask — it is the smoke test |
+| `GET /devices` | read | Your emitters: id, name, online, **entitled** (whether the plan covers the device — an over-quota emitter can be online yet refused by `/wake`), last seen, board, firmware |
 | `GET /machines` | read | Your stored machines: name, MAC, site, whether an agent is connected, whether power is available, presence, last sighting |
 | `POST /wake` | wake | Send a wake: `{"mac": "00:00:5E:00:53:01", "confirm": true}` |
 | `GET /wake/{id}` | read | One wake's outcome by the id the wake response returned |
