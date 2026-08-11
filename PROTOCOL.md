@@ -305,6 +305,7 @@ Defined capabilities, each naming the relay→device command it gates:
 |---|---|
 | `wake` | `wake` |
 | `power` | `power` |
+| `rdp` | `rdp_enable` |
 | `status` | `status` |
 | `probe` | `probe` |
 | `scan` | `scan` |
@@ -318,8 +319,22 @@ to reason about, for no gain. Where an individual action genuinely is not availa
 with no suspend state), the device answers that action `unsupported` when it is asked, which is
 the honest place to find out.
 
-A device advertising `power` SHOULD also advertise `macs`. Without it a service can dispatch the
-command but cannot tell which machine it would land on.
+**`rdp` is separate from `power` and is not implied by it.** The two are the same order of
+privilege — both change somebody's machine rather than merely switching it on — but they are not
+the same *availability*: turning Remote Desktop on means Windows registry policy and Windows
+Firewall rules, and a device that can suspend its host may have no way to do any of it. Our own
+agent advertises `power` on three platforms and `rdp` on Windows alone. Folding the two together
+would put an `rdp_enable` on a Linux agent's socket, where §2 requires it to be ignored silently —
+so the caller would wait out its timeout and be told the machine did not answer, about a machine
+that had answered everything else all day. A separate capability turns that into a refusal before
+the frame leaves.
+
+It is one capability rather than one per command for the same reason `power` is: a device that can
+turn Remote Desktop on is a device that could turn it off, so splitting them would advertise a
+subset a relay then has to reason about, for no gain.
+
+A device advertising `power` or `rdp` SHOULD also advertise `macs`. Without it a service can
+dispatch the command but cannot tell which machine it would land on.
 
 Unknown entries are ignored.
 
@@ -454,6 +469,68 @@ process that is still running, which is precisely the state the command exists t
 
 On failure: `{"t":"power_result","req_id":"…","ok":false,"err":"no_privilege","action":"shutdown"}`.
 A failure is reported before anything is attempted, so it is safe to retry.
+
+### `rdp_enable_result`
+
+```json
+{ "t": "rdp_enable_result", "req_id": "…", "ok": true }
+```
+
+Answers `rdp_enable` (§5). On success there are no other fields: the command has one outcome and
+it either happened or it did not.
+
+**`ok: true` means the change is DONE — the exact opposite of `power_result` above, and the
+difference is not an inconsistency between the two.** `power_result` precedes its action only
+because the action destroys the process that would otherwise send it; that is the strongest claim
+available there, not a preference. Nothing about enabling a listener destroys anything. The device
+is still running, still connected, and still able to say which of the settings actually landed —
+so a device MUST do the work first and report it, and MUST NOT send this frame as an acceptance.
+
+The reason to insist is what the answer is used for. "Remote Desktop is on" is a sentence somebody
+acts on by opening a client against a machine they cannot see; if it means "we asked", the failures
+show up as a client that hangs, from a machine that looks switched off. An acceptance here would be
+throwing away an answer the device already has.
+
+A relay MUST NOT read `ok: true` as evidence that the machine is reachable *from where the relay
+is*. What the device is reporting is the state of the machine's own settings, and reaching it is
+still a matter of the network in between.
+
+On failure, `err` carries a §6 code — `unsupported`, `no_privilege`, `busy` or `internal` — and two
+optional fields say what a code cannot:
+
+```json
+{ "t": "rdp_enable_result", "req_id": "…", "ok": false, "err": "internal", "step": "firewall",
+  "note": "the Windows Firewall still blocks Remote Desktop — netsh said: No rules match…" }
+```
+
+`step` names which part of the work stopped, and it is worth carrying because **the states these
+failures leave behind are genuinely different**:
+
+| `step` | What the machine is left in |
+|---|---|
+| `policy` | Nothing changed. It stopped at the setting that admits Remote Desktop at all. |
+| `nla` | Nothing was opened. The device requires authentication *before* it admits connections (§5), so a stop here leaves the machine no more open than it was found. |
+| `firewall` | **Remote Desktop is now ON, and the firewall still drops it.** The machine will accept a connection the moment its firewall lets one through; until then a client sees exactly what it would see if the machine were switched off. |
+
+The `firewall` row is why the field exists. A caller that flattened these three into "it failed"
+would send somebody to diagnose a dead machine that is in fact listening — and would leave the
+half-changed state unreported, which is the one outcome the owner has to know about to act.
+
+`step` is omitted where the device cannot attribute the failure; a caller MUST NOT infer a state
+from its absence, and MUST NOT treat an unrecognised value as one of the three.
+
+`note` is one short sentence for a person: the tool's or the policy's own words, not a paraphrase,
+because whoever has to fix the machine is better served by what Windows actually said. It is
+untrusted like every string in §4 — a relay SHOULD bound it and MUST NOT interpret it — and a
+device MUST keep it well inside §1's 2048-byte frame limit. Reference behaviour is 300 characters.
+
+A device MUST answer a second `rdp_enable` that arrives while one is running with `busy` rather
+than queueing it, on the same grounds as `scan`: two interleaved runs could read a half-applied
+machine as a settled one.
+
+A device that receives an `rdp_enable` with no `req_id` answers **nothing at all** — `req_id` is
+echoed verbatim and a frame without one has nowhere for an answer to go. Same rule as `wake` and
+`power`, same silence.
 
 ### `status_result`
 
@@ -755,6 +832,61 @@ switches off its own host and nothing else — the address in a `wake` names a p
 segment, but powering down a peer would require an agreement with that peer that this protocol
 does not have and should not invent.
 
+### `rdp_enable`
+
+```json
+{ "t": "rdp_enable", "req_id": "…" }
+```
+
+Asks the device to switch Remote Desktop on for the machine it runs on, so that a caller who has
+just woken a machine and been told its Remote Desktop is off has something to press. Only sent to
+devices advertising the `rdp` capability.
+
+The device answers `rdp_enable_result` (§4) **after** doing the work, unlike every other command
+here — that section says why, and the difference is the reason this is a frame of its own rather
+than a fourth `power` action. A `power` frame carries an acceptance semantics in its reply that
+this command cannot honestly use, and a receiver cannot tell two meanings apart inside one frame
+type.
+
+**It takes no parameters, and that is a security property rather than an omission.** The two rules
+below are the device's, and a relay has no field with which to soften them:
+
+1. **Network-level authentication MUST be required**, and it MUST be set *before* connections are
+   admitted. Consider the two partial failures: authentication first, then the write that admits
+   connections fails, and the machine is left exactly as safe as it was with one setting tightened.
+   The other order leaves a listener that establishes a session *before* authenticating, on a
+   machine whose owner pressed a button in somebody's product. The ordering is the whole safety
+   argument, not a preference.
+2. **Nothing beyond the local network may be opened.** On Windows that means the firewall rule is
+   enabled for the private and domain profiles and **never** for public. Nothing here touches a
+   router, a UPnP mapping or a port forward, and no relay may ask it to.
+
+A device that cannot do both MUST answer `unsupported` and change nothing. Doing the part it can
+would be worse than refusing: it is exactly the pre-authentication listener rule 1 exists to
+prevent, created by a command whose name says it is making things work.
+
+**These rules bind any implementation of this verb, not only ours.** A device that answered
+`rdp_enable` by opening a machine to the internet, or by admitting connections without
+authentication, would be a materially more dangerous command wearing this one's name — and a
+caller cannot tell which it is talking to, because a capability string is all it has to go on.
+If your device would do something less safe than the above, do not advertise `rdp` and do not
+implement this frame; add your own and let the difference be visible.
+
+Our own agent implements this on Windows only — `fDenyTSConnections`, the RDP-Tcp WinStation's
+`UserAuthentication`, and the built-in Remote Desktop firewall rule group — and a build for any
+other platform simply does not advertise `rdp`. §4's rule keeps the command off those sockets
+rather than leaving the device to refuse a frame it should never have been sent.
+
+Where Group Policy already answers the question, a device SHOULD answer `unsupported` rather than
+`no_privilege`: a policy is not something elevation overcomes, and sending somebody to run their
+agent as an administrator against a decision their organisation made wastes their evening.
+
+There is no `rdp_enable` for a machine other than the one the device runs on, and there is no
+frame that turns Remote Desktop off. Switching a listener on is a thing an absent owner asks for
+because they cannot reach the machine; switching it off is a thing they can do from the session
+this command gave them, and a remote verb for it would be a way to lock somebody out of their own
+machine from the internet.
+
 ### `status`
 
 ```json
@@ -860,8 +992,8 @@ is the less important direction.
 
 ## 6. Error codes
 
-Returned in `err` on `wake_result`, `power_result`, `probe_result`, `scan_result`, `hello_ack`,
-`adopt_ack`, `ota_reject` and `ota_result`.
+Returned in `err` on `wake_result`, `power_result`, `rdp_enable_result`, `probe_result`,
+`scan_result`, `hello_ack`, `adopt_ack`, `ota_reject` and `ota_result`.
 
 | Code | Meaning |
 |---|---|
@@ -1097,8 +1229,11 @@ A relay is v2-conformant if it:
 6. Never sends a frame larger than 2048 bytes.
 7. Enforces one live connection per `device_id`, closing the displaced one with `4001`.
 
-Everything else — `status`, `power`, `probe`, `scan`, `log`, `enrol`, `adopt`, `ota_offer` — is
-optional.
+Everything else — `status`, `power`, `rdp_enable`, `probe`, `scan`, `log`, `enrol`, `adopt`,
+`ota_offer` — is optional. A relay that implements `rdp_enable` MUST read `rdp_enable_result` as a
+completion rather than an acceptance (§4) and MUST NOT send the command to a device that did not
+advertise `rdp`; implementing it as a fourth `power` action is not conformant, because the reply
+semantics of the two are opposite.
 
 **`enrol` and `adopt` are optional on purpose.** A self-hosted relay whose operator adds tokens
 to a list by hand needs neither, and requiring them would mean every minimal implementation had
@@ -1117,6 +1252,7 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 
 | Version | Date | Change |
 |---|---|---|
+| 2 | 2026-08-11 | **Switching Remote Desktop on.** One new capability, `rdp`, and the frame pair it gates — `rdp_enable` and `rdp_enable_result`. A device that runs *on* a machine can already tell a service that the machine's Remote Desktop is switched off; this is the button beside that sentence, and the alternative it replaces is talking somebody through an elevated registry edit on a machine they cannot see, from a phone. **It is a frame of its own rather than a fourth `power` action, and the reason is the reply.** `power_result` is an acceptance sent BEFORE the action, because the action destroys the process that would otherwise send it — that is the strongest claim available there. Nothing about enabling a listener destroys anything, so `rdp_enable_result` is sent AFTER the work and `ok:true` means the change is made. It has to: "Remote Desktop is on" is a sentence somebody acts on by opening a client against a machine they cannot see, and one frame type cannot carry two opposite meanings for a receiver to tell apart. The reply also carries **`step`** — `policy`, `nla` or `firewall`, which of the three settings stopped it — and **`note`**, the tool's or policy's own sentence. `step` exists for one row of its own table: a `firewall` stop leaves Remote Desktop switched ON behind a firewall that still drops it, which from a client is indistinguishable from a machine that is switched off, and a caller that flattened the three into "it failed" would send somebody to diagnose a dead machine that is in fact listening. **The command takes no parameters, and that is a security property**: network-level authentication MUST be required and MUST be set before connections are admitted (the reverse order leaves a listener that establishes a session before authenticating, created by a button in somebody's product), and nothing beyond the local network may be opened — private and domain firewall profiles only, never public, no router, no UPnP, no port forward. Those rules bind any implementation of this verb, because a capability string is all a caller has to go on: a device that would do something less safe under this name should implement a different frame and let the difference be visible. `rdp` is separate from `power` because the two differ in availability rather than in privilege — our agent implements this on Windows alone — and §4's rule then keeps the command off every other socket, instead of leaving a Linux agent to silently ignore a frame whose caller waits out a timeout. Additive throughout: `v` stays 2. |
 | 2 | 2026-08-10 | **Token adoption.** Two optional fields on `adopt` — `enrol_token` and `host` — one optional field on `adopt_ack` — `machine` — and three `adopt_ack`-only error codes: `bad_token`, `not_entitled`, `device_limit`. The email path binds one machine per typed address, which is the right shape for a person and the wrong one for a fleet: twenty installs mean twenty addresses typed and twenty invitations answered. An enrolment token is the account holder's own consent made portable — minted at the service, carried by an installer flag, presented in the frame the device already sends — so a fleet binds with nobody at a desk. A frame carrying both a token and an email is a token frame, because the token names an account precisely and the email would be a guess beside it. `host` is advisory display naming, untrusted like every name in §4; `machine` reports what the service did about saving the host as a wakeable machine (`created`/`exists`/`quota`/`none`), advisory too — the device's part ended at `bound`. The refusal codes are deliberately unhelpful to a probe: `bad_token` is one answer for unknown, revoked and malformed alike, because the presenter is unauthenticated and "valid but revoked" is a fact about somebody's account that a stranger should not be able to enumerate. Everything rides §10's unknown-field rule: a relay without accounts ignores the new fields and answers `adopt` exactly as it always did, and a device offered none of this behaves exactly as before. Additive throughout; `v` stays 2. |
 | 2 | 2026-08-08 | **The other half of the power button.** One new capability, `power`, and the frames it gates — `power` and `power_result` — plus three additive fields and one push frame. Every wake in this protocol's history could turn a machine on and nothing could turn one off, which is not a gap in the feature list so much as a gap in the idea: a switch with one position. A device that runs *on* a machine can close it, and the whole of the change is about making that safe rather than making it possible. **`power_result` is specified to be sent before the action runs**, because the action destroys the process that would otherwise send it — so `ok:true` means accepted, the connection dropping is the confirmation, and no implementation can honestly do better. **`hello.macs`** lets a service tell which of an account's machines a software emitter is running on, fenced by a rule that a relay MUST NOT act on it before the handshake completes: the field turns a pre-authentication claim into a power command's destination, which is a different order of consequence from the `fw` string beside it. **`status_result.machine`** carries `wake_from_off`, and it exists because shutting a machine down can make it unwakeable — wake-from-S5 is often disabled in firmware, and Windows Fast Startup turns a shutdown into a hybrid hibernate most adapters will not wake from — so a caller that offers the action without reading the field is offering to strand somebody. Its `unknown` is a first-class answer for the systems whose tools will not say. **`hello_ack.features`** and the **`features`** push tell a device which of its capabilities the service will currently act on, explicitly advisory: a device that enforced a list it cannot verify would be applying somebody else's policy to a machine its own operator controls. One new error code, **`no_privilege`**, separated from `internal` because it is the only failure here whose remedy is something the reader can do. `power` is deliberately one capability rather than one per action — the same privilege exercised three ways — and there is deliberately no way to power down a machine other than the device's own host. Additive throughout: `v` stays 2, and §10's rule that unknown `t` values and unknown fields are ignored is what makes that true. |
 | **2** | 2026-08-05 | **The device stops holding a list of the machines it can wake.** The first breaking change, and the whole of it: `config_push` and `config_ack` are **removed from the protocol**, `hello` and `status_result` no longer carry `targets`, the `config` capability is gone, and **`mac` is now required on `wake` and `probe`** — a frame without one is answered `bad_frame`, which §6 already defined as a missing required field. The device stored up to eight addresses and consulted them in exactly one case: a `wake` that named none, where it fell back to the first entry. Every caller — dashboard, API, setup page — already knew the MAC it meant, so the fallback was reachable only by a caller that had thrown that knowledge away, and the fix is for the caller to resolve it before the frame leaves. What the list cost was not the eight entries: it was `config_push` on every dashboard edit, the reconciliation that repaired a push a dongle missed while unplugged, the "which eight get sent" subset logic, a config-format field and a flash write per change — and a dongle carrying the names and addresses of the machines in somebody's house, which matters the day one is stolen, resold or returned. **Removing it also removes the one frame in which a relay writes to a device's persistent configuration**, so the rule in §11 that a relay cannot reconfigure a device is now a property of the frame set rather than a promise the firmware keeps. Two error codes retire with it: `no_target` described a state that can no longer exist, and `too_many` had exactly one producer. The subprotocol token stays `roosterwake.v1` — §1 and §10 say why a major bump does not move it. **§2's wakeable-address rule moved with the MAC**: a device used to apply it where a target was stored, and that path is gone, so it is now applied where the address arrives — a `wake` or `probe` naming a group, broadcast or all-zero address is answered `bad_mac` instead of being sent and reported as a success nothing came of. `firmware/docs/config-format.md` goes to **format version 2** in the same change; the target block is deleted rather than reserved and images of the previous version are not migrated. |
