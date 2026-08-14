@@ -68,6 +68,10 @@ static struct {
     uint32_t        backoff_ms;
     absolute_time_t retry_at;
     absolute_time_t next_ping;
+    /* When the relay last said anything at all. Any frame counts, not just a pong: the question
+     * is whether the socket still carries traffic, and a `wake` proves that as well as a pong
+     * does. See RW_RELAY_SILENCE_MS. */
+    absolute_time_t last_rx;
 
     pending_kind_t kind;
     char           req_id[REQ_ID_MAX];
@@ -82,6 +86,17 @@ static struct {
     bool enrolling;
     /* A configuration change made in a network callback, to be written on the main loop. */
     bool persist_pending;
+
+    /*
+     * Why the previous boot restarted itself (diag/stuck.h), waiting to be reported.
+     *
+     * Cleared as soon as a `hello` carries it. A device that has reconnected has answered the
+     * question, and re-sending it on every subsequent reconnection would turn one incident into
+     * a permanent attribute of the device — and would make the relay's copy meaningless, because
+     * it could no longer tell "this just happened" from "this happened once in March".
+     */
+    bool              have_last_stuck;
+    rw_stuck_record_t last_stuck;
 
     /*
      * An offer that has been checked but not yet answered. Clearing the slot takes a couple of
@@ -121,6 +136,10 @@ static struct {
 static void set_state(rw_relay_state_t state) {
     s.state = state;
 }
+
+/* Defined with rw_relay_state_name() at the foot of the file, next to the mapping it shares.
+ * Declared here because send_hello() names the state a PREVIOUS boot gave up in. */
+static const char *relay_state_name_of(rw_relay_state_t state);
 
 static bool send_json(const rw_jw_t *w) {
     if (!w->ok) {
@@ -176,6 +195,42 @@ static bool send_hello(void) {
     rw_jw_raw(&w, ",");
     rw_jw_key(&w, "caps");
     rw_jw_raw(&w, RW_CAPS_JSON);
+
+    /*
+     * PROTOCOL.md §4 `stuck`: present only on the first hello after the device restarted itself
+     * for having a network and no relay. Absent on every ordinary boot, which is nearly all of
+     * them — a field that were always present would cost every device bytes on every connection
+     * to say "nothing happened".
+     *
+     * Sent before the handshake completes, like everything else in `hello`, so the relay must
+     * treat it as a claim by whoever knows a device_id and only record it once the proof
+     * verifies. §4 already says that about `macs`; this rides the same rule.
+     */
+    if (s.have_last_stuck) {
+        rw_jw_raw(&w, ",");
+        rw_jw_key(&w, "stuck");
+        rw_jw_raw(&w, "{");
+        rw_jw_key(&w, "relay");
+        rw_jw_str(&w, relay_state_name_of((rw_relay_state_t)s.last_stuck.relay_state));
+        rw_jw_raw(&w, ",");
+        rw_jw_key(&w, "unlinked_s");
+        rw_jw_int(&w, (long)s.last_stuck.unlinked_s);
+        rw_jw_raw(&w, ",");
+        rw_jw_key(&w, "uptime_s");
+        rw_jw_int(&w, (long)s.last_stuck.uptime_s);
+        rw_jw_raw(&w, ",");
+        rw_jw_key(&w, "heap_free");
+        rw_jw_int(&w, (long)s.last_stuck.heap_free);
+        rw_jw_raw(&w, ",");
+        rw_jw_key(&w, "mem_err");
+        rw_jw_int(&w, (long)s.last_stuck.mem_err);
+        if (s.last_stuck.last_error[0]) {
+            rw_jw_raw(&w, ",");
+            rw_jw_key(&w, "err");
+            rw_jw_str(&w, s.last_stuck.last_error);
+        }
+        rw_jw_raw(&w, "}");
+    }
     /*
      * No list of machines here, and no frame by which the relay could send one back: the caller
      * names the MAC in every `wake` and every `probe`, so there is nothing for a device to
@@ -189,7 +244,17 @@ static bool send_hello(void) {
     rw_jw_raw(&w, "}");
     rw_jw_finish(&w);
 
-    return send_json(&w);
+    if (!send_json(&w)) {
+        return false;
+    }
+
+    /*
+     * Cleared only once the frame is actually away. Clearing it while building would throw the
+     * report away on a send that failed — and a send failing is precisely the situation in which
+     * the device is about to reconnect and would have had one more chance to deliver it.
+     */
+    s.have_last_stuck = false;
+    return true;
 }
 
 static bool send_auth(const char *nonce_s) {
@@ -773,6 +838,10 @@ static void handle_hello_ack(const char *js, const jsmntok_t *tok, int count) {
      * rejects at auth would otherwise be hammered at one-second intervals for ever. */
     s.backoff_ms = RW_RELAY_BACKOFF_MIN_MS;
     s.next_ping  = make_timeout_time_ms(RW_RELAY_PING_INTERVAL_MS);
+    /* Armed from the moment the link is live. Without this the silence timer would still hold
+     * whatever the previous connection left in it — or, on the first connection of a boot, a zero
+     * that reads as "silent since the epoch" and tears the link down immediately. */
+    s.last_rx = get_absolute_time();
 
     /*
      * Enrolment is only complete once `proof_s` has verified, which is why the flag is set here
@@ -1103,6 +1172,10 @@ static void on_text(rw_ws_client_t *ws, void *ctx, char *text, size_t len) {
     (void)ws;
     (void)ctx;
 
+    /* Anything arriving proves the socket is alive, so the silence timer is stamped before the
+     * frame is even looked at — including for frames this function goes on to ignore. */
+    s.last_rx = get_absolute_time();
+
     /* §9: answered byte for byte, before anything else looks at the frame. This is the hot
      * path — one frame per device per 25 seconds — and the whole point is that it is cheap. */
     if (len == sizeof(k_ping_frame) - 1 && memcmp(text, k_ping_frame, len) == 0) {
@@ -1110,7 +1183,7 @@ static void on_text(rw_ws_client_t *ws, void *ctx, char *text, size_t len) {
         return;
     }
     if (len == sizeof(k_pong_frame) - 1 && memcmp(text, k_pong_frame, len) == 0) {
-        return; /* liveness is recorded by the transport */
+        return; /* the stamp above is the whole point of a pong; there is nothing else to do */
     }
 
     jsmn_parser parser;
@@ -1327,6 +1400,19 @@ void rw_relay_task(void) {
     }
 
     if (s.state == RW_RELAY_READY) {
+        /*
+         * Checked before the ping is sent, so a socket that has been silent for three intervals
+         * is torn down rather than given a fourth frame to swallow. See RW_RELAY_SILENCE_MS —
+         * this is the only thing that notices a half-open connection, because sending into one
+         * succeeds.
+         */
+        if (absolute_time_diff_us(s.last_rx, get_absolute_time()) >=
+            (int64_t)RW_RELAY_SILENCE_MS * 1000) {
+            RW_LOG_WARN("proto: relay silent for %d ms - dropping the link to reconnect",
+                        RW_RELAY_SILENCE_MS);
+            rw_ws_abort(&s.ws, RW_WS_FAIL_LOCAL);
+            return;
+        }
         if (time_reached(s.next_ping)) {
             s.next_ping = make_timeout_time_ms(RW_RELAY_PING_INTERVAL_MS);
             if (!rw_ws_send_text(&s.ws, k_ping_frame, sizeof(k_ping_frame) - 1)) {
@@ -1388,8 +1474,19 @@ void rw_relay_ota_progress(bool *receiving, uint32_t *got, uint32_t *total) {
     }
 }
 
-const char *rw_relay_state_name(void) {
-    switch (s.state) {
+/*
+ * The externally-visible name of a state, for any state rather than just the current one.
+ *
+ * Separate from rw_relay_state_name() because a stuck record carries the state the PREVIOUS boot
+ * gave up in, and naming it with a function that reads `s.state` would report where the device is
+ * now — which is, by construction, "connecting", every time.
+ *
+ * The mapping deliberately collapses pairs: AUTHENTICATING is part of connecting from the outside,
+ * and STOPPED is an auth failure the device has decided not to retry. Callers get the four states
+ * that mean something to a person, not the seven the machine has.
+ */
+static const char *relay_state_name_of(rw_relay_state_t state) {
+    switch (state) {
         case RW_RELAY_OFFLINE:         return "idle";
         case RW_RELAY_BACKOFF:         return "backoff";
         case RW_RELAY_CONNECTING:      return "connecting";
@@ -1399,4 +1496,13 @@ const char *rw_relay_state_name(void) {
         case RW_RELAY_STOPPED:         return "auth_failed";
     }
     return "idle";
+}
+
+const char *rw_relay_state_name(void) {
+    return relay_state_name_of(s.state);
+}
+
+void rw_relay_set_last_stuck(const rw_stuck_record_t *rec) {
+    s.last_stuck = *rec;
+    s.have_last_stuck = true;
 }

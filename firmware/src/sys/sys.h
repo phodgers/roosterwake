@@ -9,6 +9,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "diag/stuck.h"
+
 /*
  * Watchdog period. Long enough that a slow DNS lookup, a TLS handshake on a congested link or
  * a 4 KB flash program never trip it, short enough that a wedged device recovers before anyone
@@ -63,6 +65,27 @@ const char *rw_sys_reset_reason(void);
 
 /* Reboot after `delay_ms`, so a usbcfg response reaches the host before the port disappears. */
 void rw_sys_reboot(uint32_t delay_ms);
+
+/*
+ * Carry a stuck record across a restart, and read it back afterwards.
+ *
+ * The record lives in `.uninitialized_data`, a RAM section the SDK's start-up code leaves alone.
+ * That is deliberate and it is the reason this is not in the watchdog scratch registers: the SDK
+ * already owns scratch[4..7] (watchdog.c), the free ones differ in count and meaning between
+ * RP2040 and RP2350, and this project has been bitten once already by an RP2040 assumption that
+ * was silently wrong on RP2350 — see rw_sys_bootsel_pressed(). An uninitialised RAM section is
+ * defined identically in both memmap_default.ld files, so there is no chip-specific behaviour to
+ * get wrong.
+ *
+ * The trade is that a power cut wipes it, where scratch registers would too — both are RAM. What
+ * survives is what we need: our own restart. Power-on noise is rejected by the magic and CRC, so
+ * the worst case is a lost report rather than a fabricated one.
+ *
+ * `rw_sys_stuck_take` CONSUMES the record: one restart is explained once, and a later boot cannot
+ * re-report a reason that belonged to an earlier one.
+ */
+void rw_sys_stuck_store(const rw_stuck_record_t *rec);
+bool rw_sys_stuck_take(rw_stuck_record_t *out);
 
 /* Reboot into the RP2350 UF2 bootloader (usbcfg.md §4, BOOTSEL). Does not return. */
 void rw_sys_reboot_to_bootloader(void);

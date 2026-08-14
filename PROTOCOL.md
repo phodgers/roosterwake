@@ -299,6 +299,42 @@ slot; it cannot infer that from the version, and offering the wrong one wastes a
 refused. A device with a single firmware region omits the field, and a relay that sees no `slot`
 MUST NOT offer an update.
 
+`stuck` is optional and reports that the device **restarted itself** because it had a working
+network and could not reach a relay. It is sent on the first `hello` after such a restart and
+then never again, so its presence means "this just happened" rather than "this once happened".
+
+```json
+"stuck": {
+  "relay": "connecting",
+  "unlinked_s": 900,
+  "uptime_s": 143000,
+  "heap_free": 41232,
+  "mem_err": 0,
+  "err": "sntp_timeout"
+}
+```
+
+`relay` is the state the device gave up in, one of `idle`, `backoff`, `connecting`, `connected`,
+`auth_failed`. `unlinked_s` is how long it had been unable to reach a relay and `uptime_s` how
+long it had been running, both in seconds. `heap_free`, `mem_err` and `err` are optional
+diagnostics: free heap in bytes, the count of allocations the network stack refused, and whatever
+short error string the device's own network layer last set.
+
+The field exists because this failure erases its own evidence. A device that cannot reach a relay
+is, by definition, a device the relay has no record of — nothing was attempted, so nothing was
+refused and nothing was logged — and the fix, a restart, discards whatever the device knew. A
+device that carries the account across the restart is the only witness there will ever be.
+
+> **A relay MUST NOT treat `stuck` as fact before the handshake completes**, and MUST bound every
+> field before storing it. The rule is `macs`'s, for a weaker reason: nothing here can switch a
+> machine off, but these values are shown to a person as our own diagnosis of their hardware, and
+> a peer that merely knows a `device_id` must not be able to write that. In particular a relay
+> SHOULD distinguish a field it could not parse from a zero — `mem_err: 0` says the allocator
+> refused nothing and the fault lay elsewhere, which is a finding, while a missing `mem_err` is
+> the absence of one.
+
+A relay that does not understand the field ignores it, per §10.
+
 Defined capabilities, each naming the relay→device command it gates:
 
 | Capability | Gates |

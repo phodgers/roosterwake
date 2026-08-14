@@ -9,6 +9,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "lwip/stats.h"
+
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
 #include "pico/unique_id.h"
@@ -16,6 +18,7 @@
 #include "brand.h"
 #include "config/config.h"
 #include "config/config_flash.h"
+#include "diag/stuck.h"
 #include "led/led.h"
 #include "net/arplearn.h"
 #include "net/net.h"
@@ -171,6 +174,53 @@ static void factory_reset_task(void) {
     }
 }
 
+/*
+ * The stuck detector (diag/stuck.h): a provisioned device that has held a relay link this boot,
+ * still has network, and has not been able to get back for RW_STUCK_TRIGGER_MS, restarts itself
+ * — after writing down what it looked like, so the next `hello` can say why.
+ *
+ * Only for provisioned devices. An unprovisioned one has no relay to be cut off from, and its
+ * resting state is the setup hotspot.
+ */
+static rw_stuck_t s_stuck_state;
+
+static void stuck_task(bool provisioned) {
+    if (!provisioned) {
+        return;
+    }
+
+    const uint32_t now = to_ms_since_boot(get_absolute_time());
+    if (!rw_stuck_step(&s_stuck_state, rw_net_ready(), rw_relay_state() == RW_RELAY_READY, now)) {
+        return;
+    }
+
+    rw_stuck_record_t rec;
+    memset(&rec, 0, sizeof(rec));
+    rec.relay_state = (uint8_t)rw_relay_state();
+    rec.uptime_s = rw_sys_uptime_s();
+    rec.unlinked_s = rw_stuck_unlinked_s(&s_stuck_state, now);
+    rec.heap_free = rw_sys_heap_free();
+    /* lwIP's refusal count. See the field's note in stuck.h — this is the number that tells a
+       leak apart from a network that is turning us away, and they need different fixes. */
+    rec.mem_err = (uint32_t)lwip_stats.mem.err;
+    const char *err = rw_net_last_error();
+    if (err != NULL) {
+        /* strncpy rather than snprintf: the field is not a string to print, it is a fixed-width
+           slot in a record whose layout has to survive a reset unchanged. */
+        strncpy(rec.last_error, err, sizeof(rec.last_error) - 1);
+    }
+
+    RW_LOG_ERROR("stuck: %lu s with a network and no relay (state %s, err %s, heap %lu, "
+                 "mem_err %lu) - restarting",
+                 (unsigned long)rec.unlinked_s, rw_relay_state_name(),
+                 rec.last_error[0] ? rec.last_error : "none", (unsigned long)rec.heap_free,
+                 (unsigned long)rec.mem_err);
+
+    rw_sys_stuck_store(&rec);
+    /* Long enough for the log line to leave the USB buffer, short enough to be a blip. */
+    rw_sys_reboot(250);
+}
+
 /* Pick the LED pattern that matches what the device is actually doing. */
 static void update_led(bool provisioned) {
     if (rw_tls_insecure()) {
@@ -277,7 +327,24 @@ int main(void) {
         rw_led_set(RW_LED_ERROR);
     }
 
+    rw_stuck_init(&s_stuck_state);
+
     rw_relay_init(&s_config, &k_relay_hooks);
+
+    /*
+     * Read back whatever the previous boot wrote before restarting itself, and hand it to the
+     * relay module so it rides out on the next `hello`. After rw_relay_init, which clears the
+     * module's state; taken exactly once, and consumed on read, so a later boot cannot re-report
+     * a reason that belonged to an earlier one.
+     */
+    rw_stuck_record_t last_stuck;
+    if (rw_sys_stuck_take(&last_stuck)) {
+        RW_LOG_WARN("stuck: previous boot gave up after %lu s unlinked (state %u, err %s)",
+                    (unsigned long)last_stuck.unlinked_s, (unsigned)last_stuck.relay_state,
+                    last_stuck.last_error[0] ? last_stuck.last_error : "none");
+        rw_relay_set_last_stuck(&last_stuck);
+    }
+
     rw_ota_init();
     rw_usbcfg_init(&s_config);
 
@@ -334,6 +401,7 @@ int main(void) {
             rw_arp_learn_tick();
             rw_relay_task();
             rw_provisioning_task();
+            stuck_task(provisioned);
         }
 
         if (!radio_ok && time_reached(radio_retry)) {

@@ -62,6 +62,7 @@ int main(int argc, char **argv) {
 
     static const suite_t suites[] = {
         {"config", test_config},
+        {"stuck", test_stuck},
         {"wol", test_wol},
         {"ws_frame", test_ws_frame},
         {"ws_handshake", test_ws_handshake},

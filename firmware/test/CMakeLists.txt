@@ -83,6 +83,7 @@ endif()
 # the other is either untested or unshipped.
 set(RW_PORTABLE_SOURCES
     ${RW_SRC}/config/config.c
+    ${RW_SRC}/diag/stuck.c
     ${RW_SRC}/net/mdns.c
     ${RW_SRC}/net/nbns.c
     ${RW_SRC}/net/url.c
@@ -105,6 +106,7 @@ set(TEST_SOURCES
     test_main.c
     vectors_json.c
     test_config.c
+    test_stuck.c
     test_wol.c
     test_ws_frame.c
     test_ws_handshake.c

@@ -7,6 +7,8 @@
 
 #include <malloc.h>
 
+#include <string.h>
+
 #include "hardware/gpio.h"
 #include "hardware/structs/io_qspi.h"
 #include "hardware/structs/sio.h"
@@ -14,6 +16,7 @@
 #include "hardware/watchdog.h"
 #include "pico/bootrom.h"
 #include "pico/cyw43_arch.h"
+#include "pico/platform/sections.h"
 #include "pico/time.h"
 
 /* The power-on/brownout latch lives in a different peripheral on each chip. */
@@ -28,6 +31,16 @@
 static const char *s_reset_reason = "unknown";
 static absolute_time_t s_boot_time;
 static bool            s_network_ready;
+
+/*
+ * The stuck record, in RAM the start-up code does not clear.
+ *
+ * `.uninitialized_data` is a NOLOAD section in both memmap_default.ld files, so crt0 neither
+ * zeroes it nor copies an initialiser over it. After a watchdog reset the contents are whatever
+ * this firmware last wrote; after a power cut they are whatever the SRAM powered up holding,
+ * which is why nothing here is believed without the magic and the CRC. See sys.h.
+ */
+static rw_stuck_record_t __uninitialized_ram(s_stuck);
 
 void rw_sys_init(void) {
     s_boot_time = get_absolute_time();
@@ -125,6 +138,26 @@ void rw_sys_reboot(uint32_t delay_ms) {
     while (true) {
         tight_loop_contents();
     }
+}
+
+void rw_sys_stuck_store(const rw_stuck_record_t *rec) {
+    memcpy(&s_stuck, rec, sizeof(s_stuck));
+    rw_stuck_record_seal(&s_stuck);
+}
+
+bool rw_sys_stuck_take(rw_stuck_record_t *out) {
+    if (!rw_stuck_record_valid(&s_stuck)) {
+        /*
+         * Clear it anyway. On a power-on boot this is uninitialised SRAM, and leaving noise in
+         * place risks a later seal-and-store reading stale bytes into the fields it does not set.
+         */
+        memset(&s_stuck, 0, sizeof(s_stuck));
+        return false;
+    }
+    memcpy(out, &s_stuck, sizeof(*out));
+    /* Consumed: one restart is explained exactly once. */
+    memset(&s_stuck, 0, sizeof(s_stuck));
+    return true;
 }
 
 /*

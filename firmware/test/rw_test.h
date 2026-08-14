@@ -73,6 +73,7 @@ void rw_check_mem(const char *file, int line, const char *what, const void *actu
 
 /* Each suite. */
 void test_config(void);
+void test_stuck(void);
 void test_wol(void);
 void test_ws_frame(void);
 void test_ws_handshake(void);
