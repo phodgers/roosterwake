@@ -147,6 +147,7 @@ set(RW_PORTABLE_SOURCES
     src/net/url.c
     src/ota/image.c
     src/ota/state.c
+    src/plug/shelly.c
     src/proto/auth.c
     src/proto/json.c
     src/proto/scan_json.c
@@ -167,6 +168,7 @@ set(RW_DEVICE_SOURCES
     src/diag/radio_trace.c
     src/led/led.c
     src/net/arplearn.c
+    src/net/httpc.c
     src/net/lanscan.c
     src/net/net.c
     src/net/scan.c
@@ -174,6 +176,7 @@ set(RW_DEVICE_SOURCES
     src/ota/ota_write.c
     src/ota/ota_flash.c
     src/ota/signing_key.c
+    src/plug/plug.c
     src/proto/probe.c
     src/proto/proto.c
     src/provisioning/dhcpserver.c

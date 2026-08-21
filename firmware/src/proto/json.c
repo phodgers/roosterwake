@@ -74,6 +74,28 @@ void rw_jw_int(rw_jw_t *w, long value) {
     rw_jw_raw(w, text);
 }
 
+void rw_jw_milli(rw_jw_t *w, long milli) {
+    /* Sign handled by hand: -500 splits into quotient 0 and remainder 500, and "%ld" of that
+     * quotient would print `0.5` for a value that is negative. */
+    const bool    neg = milli < 0;
+    unsigned long a   = neg ? (unsigned long)-(milli + 1) + 1 : (unsigned long)milli;
+
+    char text[32];
+    if (a % 1000 == 0) {
+        snprintf(text, sizeof(text), "%s%lu", neg ? "-" : "", a / 1000);
+    } else {
+        snprintf(text, sizeof(text), "%s%lu.%03lu", neg ? "-" : "", a / 1000, a % 1000);
+        /* Trailing zeros carry nothing: 8.900 and 8.9 are the same JSON number, and the frame
+         * has a 2048-byte ceiling to respect. */
+        size_t end = strlen(text);
+        while (text[end - 1] == '0') {
+            end--;
+        }
+        text[end] = '\0';
+    }
+    rw_jw_raw(w, text);
+}
+
 size_t rw_jw_finish(rw_jw_t *w) {
     if (!w->ok) {
         return 0;

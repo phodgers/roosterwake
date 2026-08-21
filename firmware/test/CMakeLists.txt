@@ -89,6 +89,7 @@ set(RW_PORTABLE_SOURCES
     ${RW_SRC}/net/url.c
     ${RW_SRC}/ota/image.c
     ${RW_SRC}/ota/state.c
+    ${RW_SRC}/plug/shelly.c
     ${RW_SRC}/proto/auth.c
     ${RW_SRC}/proto/json.c
     ${RW_SRC}/proto/scan_json.c
@@ -120,6 +121,7 @@ set(TEST_SOURCES
     test_mdns.c
     test_nbns.c
     test_scan_json.c
+    test_shelly.c
 )
 
 add_executable(rw_tests ${TEST_SOURCES} ${RW_PORTABLE_SOURCES} ${MBEDTLS_SOURCES}

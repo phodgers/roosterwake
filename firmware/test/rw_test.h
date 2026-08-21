@@ -87,6 +87,7 @@ void test_ota_state(void);
 void test_mdns(void);
 void test_nbns(void);
 void test_scan_json(void);
+void test_shelly(void);
 
 /* Path to firmware/test, passed in by CMake so the vectors are found wherever the build runs. */
 extern const char *rw_test_data_dir;

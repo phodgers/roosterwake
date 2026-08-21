@@ -48,6 +48,16 @@ void rw_jw_key(rw_jw_t *w, const char *key);
 
 void rw_jw_int(rw_jw_t *w, long value);
 
+/*
+ * A fixed-point value held as thousandths, written as a plain JSON number: 8900 → `8.9`,
+ * 1005 → `1.005`, -500 → `-0.5`, 2000 → `2`.
+ *
+ * This exists because the firmware carries no floating point across the wire boundary: a
+ * metering read is parsed into thousandths and emitted from thousandths, so what goes out is
+ * exactly what came in, never a float that has been through printf's rounding.
+ */
+void rw_jw_milli(rw_jw_t *w, long milli);
+
 /* Finish: NUL-terminates and returns the length, or 0 if anything overflowed. */
 size_t rw_jw_finish(rw_jw_t *w);
 

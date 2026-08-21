@@ -94,11 +94,11 @@ _Static_assert(sizeof(RW_SETUP_SSID_PREFIX) - 1 + RW_SETUP_SSID_SUFFIX_LEN <= 32
  *
  *   wake   -> `wake`          status -> `status`
  *   probe  -> `probe`         scan   -> `scan`
- *   ota    -> `ota_offer`
+ *   ota    -> `ota_offer`     plug   -> `plug_scan`, `plug_set`, `plug_status`
  *
  * `sched` is reserved by the protocol and has no command yet, so it is not advertised. There
  * is no `log` capability: diagnostics are enabled locally and no frame can turn them on.
  */
-#define RW_CAPS_JSON "[\"wake\",\"status\",\"probe\",\"scan\",\"ota\"]"
+#define RW_CAPS_JSON "[\"wake\",\"status\",\"probe\",\"scan\",\"ota\",\"plug\"]"
 
 #endif /* RW_BRAND_H */

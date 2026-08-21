@@ -45,10 +45,10 @@ subtly wrong.
   reject a larger frame with close code `1009`. Devices are memory-constrained; this limit is
   a hard part of the contract, not a suggestion.
   Most frames are nowhere near it: every frame that carries a fixed set of fields is a few
-  hundred bytes. The one frame that can reach the ceiling is `scan_result`, whose host list is
-  as long as the segment is busy — which is why it is specified to drop hosts and say so rather
-  than to grow. A single symmetric bound is easier to implement correctly than two, and lets
-  both sides size one receive buffer.
+  hundred bytes. The frames that can reach the ceiling are `scan_result` and
+  `plug_scan_result`, whose lists are as long as the segment is busy — which is why both are
+  specified to drop entries and say so rather than to grow. A single symmetric bound is easier
+  to implement correctly than two, and lets both sides size one receive buffer.
 - **Encoding** is UTF-8. Relays MUST NOT assume ASCII: the account address in `adopt` is text a
   person typed into a captive portal.
 
@@ -345,6 +345,7 @@ Defined capabilities, each naming the relay→device command it gates:
 | `status` | `status` |
 | `probe` | `probe` |
 | `scan` | `scan` |
+| `plug` | `plug_scan`, `plug_set`, `plug_status` |
 | `ota` | `ota_offer`, and the binary frames that follow it |
 | `sched` | reserved for device-side scheduling; no command yet |
 
@@ -368,6 +369,18 @@ the frame leaves.
 It is one capability rather than one per command for the same reason `power` is: a device that can
 turn Remote Desktop on is a device that could turn it off, so splitting them would advertise a
 subset a relay then has to reason about, for no gain.
+
+`plug` says the device can drive smart plugs on its own segment over local HTTP — discover
+them, switch them, read them. It is one capability rather than three for `power`'s reason: a
+device that can send one of these requests can send all of them, and a subset would only give
+relays something to reason about. It is separate from `scan` even though discovery rides the
+same ARP sweep, because the two enumerate different things for different callers — `scan`
+lists wake candidates, `plug_scan` lists actuators — and a device may reasonably implement
+either without the other. Unlike `power`, the commands act on a *peer* device, and that does
+not break §5's no-powering-down-peers rule: a plug is an actuator whose entire published
+contract is to be switched by whoever shares its network, not a machine with an owner's
+session on it. The agreement `power` refuses to invent is one the plug's own vendor already
+made.
 
 A device advertising `power` or `rdp` SHOULD also advertise `macs`. Without it a service can
 dispatch the command but cannot tell which machine it would land on.
@@ -674,7 +687,86 @@ joined to a network, `busy` when another operation holds the radio.
 { "t": "scan_result", "req_id": "…", "ok": false, "err": "no_link" }
 ```
 
-### `ota_accept` / `ota_reject`
+### `plug_scan_result`
+
+Sent once, in answer to `plug_scan`.
+
+```json
+{
+  "t": "plug_scan_result",
+  "req_id": "…",
+  "ok": true,
+  "truncated": false,
+  "plugs": [
+    { "mac": "00:00:5E:00:53:02", "ip": "192.168.1.60", "model": "SNPL-00112UK",
+      "gen": 2, "name": "rack plug", "channels": 1 }
+  ]
+}
+```
+
+`mac` is in §2's output form and is the plug's identity — the field a caller stores and names
+in every later `plug_set` and `plug_status`, because the `ip` beside it is only where that
+identity was seen today. `model` and `gen` are the device's own claims from `GET /shelly`
+(Gen1 answers with a `type`, Gen2+ with `model` and `gen`), passed through so a registry on
+the service side can decide what the hardware is; `gen` is the figure the device reported,
+not clamped to 2. `channels` is the device's own figure where it states one (Gen1
+`num_outputs`) and `1` otherwise — a caller with a registry knows better than the sweep does.
+`name` is present only where the device offered one and is untrusted display text under
+exactly `scan_result`'s rule: never an identifier, never matched against.
+
+`truncated` is `true` when plugs were found that did not fit — this is the other frame §1
+names as able to reach the 2048-byte ceiling, and it drops entries rather than exceed it.
+There is no named-first preference: everything listed already identified itself as a plug.
+
+`ok: false` carries `err` from §6 in place of `plugs`: `no_link` when the device is not on a
+network, `busy` when another plug operation holds the sweep's sockets.
+
+### `plug_result`
+
+Sent once, in answer to `plug_set` — **after the action completes**, which is the one
+deliberate inversion of `power_result`'s reply-before-action rule. `power` replies first
+because the action destroys the process that would reply; nothing here destroys anything —
+the actor is beside the plug, not behind it — so the strong claim is available and a caller
+about to trust that a hung machine has been power-cycled deserves it. For `state: "cycle"`
+that means the reply arrives only after the *on* leg, several seconds after the frame.
+
+```json
+{ "t": "plug_result", "req_id": "…", "ok": true, "state": "on" }
+{ "t": "plug_result", "req_id": "…", "ok": false, "err": "plug_unreachable" }
+```
+
+`state` is the state the plug was left in, present only on success — and it is **observed,
+never assumed**. Gen1 devices echo the relay's new state in the set response itself; Gen2's
+`Switch.Set` answers `was_on`, the *previous* state, so a device MUST follow a Gen2 set with
+a confirming `Switch.GetStatus` and report what that read saw. A driver that echoed `was_on`
+would report every successful `on` as `off`; one that echoed the request would report a plug
+whose overpower protection re-tripped as happily on. On a healthy plug the confirming read
+sees the requested state; when it does not, the caller gets the truth instead.
+
+A `cycle` that has cut power and cannot complete or confirm the restore MUST retry the
+restore on a fresh short budget — our firmware makes three further attempts a second apart —
+before reporting failure. Past the cut, a first-miss failure is not an error report, it is a
+machine left off at the wall over one lost segment. `ok: false` after that budget means the
+restore really could not be confirmed, and carries `err` from §6, including the two
+plug-specific codes.
+
+### `plug_status_result`
+
+Sent once, in answer to `plug_status`.
+
+```json
+{ "t": "plug_status_result", "req_id": "…", "ok": true, "on": true,
+  "apower_w": 41.25, "voltage": 237.5, "energy_wh": 6.5 }
+{ "t": "plug_status_result", "req_id": "…", "ok": false, "err": "plug_unreachable" }
+```
+
+`on` is the relay channel's state. The metering fields — instantaneous power in watts, mains
+voltage in volts, lifetime energy in watt-hours — are **omitted where the hardware does not
+measure them**, never sent as zero: zero watts is a reading (a machine off at the wall, which
+is a finding), and "this plug cannot read watts" must not impersonate it. Gen1 plugs report
+power and energy but not voltage; Gen1 energy counters are converted from the device's
+watt-minutes before they get here, so the unit on the wire is always watt-hours. Values are
+plain JSON numbers with at most three decimal places.
 
 ```json
 { "t": "ota_accept", "id": "6f1c…", "slot": 1 }
@@ -990,6 +1082,92 @@ A device MUST answer a second `scan` that arrives while one is running with `bus
 queueing it: the sweep already bounds itself in time, and queueing turns one slow command into
 an unbounded backlog of them.
 
+### `plug_scan`
+
+```json
+{ "t": "plug_scan", "req_id": "…" }
+```
+
+Asks the device which smart plugs are on its own segment, so a caller can offer a list to
+claim from. Only sent to devices advertising the `plug` capability.
+
+It takes no parameters, on `scan`'s grounds: the range and the bounds are the device's to
+choose. Our firmware runs the same ARP sweep `scan` uses and then asks everything that
+answered `GET /shelly`, two sockets at a time — an identification, not a port scan: one
+request to one well-known path, and whatever answers with anything else is dropped without
+another byte. The device answers exactly once and may take **up to 25 seconds**; a relay
+SHOULD acknowledge and collect, as for `scan`. A second `plug_scan` — or any plug command —
+while one is running is answered `busy` rather than queued, and so is a `plug_scan` while a
+set or status is in flight: the sweep and a live command would contend for the same two
+sockets, which are the whole budget.
+
+### `plug_set`
+
+```json
+{ "t": "plug_set", "req_id": "…", "mac": "00:00:5E:00:53:02", "ip": "192.168.1.60",
+  "channel": 0, "state": "cycle", "off_ms": 5000 }
+```
+
+Switches one relay channel of a plug on the device's own segment. Only sent to devices
+advertising the `plug` capability. The device answers `plug_result` (§4) **after** the action
+completes — for a `cycle`, after the restoring *on* — so a relay MUST size this command's
+patience from the frame rather than using a flat figure: `off_ms + 10000` covers the dwell
+plus the driver's own timeouts and retries.
+
+**`mac` and `ip` are both required.** The MAC is the plug's identity — the thing a caller
+stores — and MUST be a unicast address, refused `bad_mac` otherwise on `wake`'s reasoning: no
+device holds a group address, so naming one is not a request to interpret. The IP is only
+where that identity was last seen; DHCP moves it. Before ANY set the device MUST confirm the
+identity at the address with `GET /shelly` — a reassigned lease is detected, never driven:
+switching whatever lives at a remembered address is how the wrong appliance loses power. When
+the address does not answer, or answers as something else, the device re-resolves the MAC
+(a targeted ARP mini-sweep here; mDNS where an implementation has it) and tries once more
+before failing `plug_unreachable`.
+
+**`ip` MUST name a host on the device's own subnet**, and anything else — a public address,
+another RFC 1918 range, the network or broadcast address, the device itself — is answered
+`bad_frame` with no socket ever opened. This is a security rule, not a routing nicety: the
+plug driver speaks plain unauthenticated HTTP wherever it is pointed, and without this rule a
+compromised relay would have an HTTP client inside — and beyond — somebody's network
+perimeter. The commands drive LAN peers; an address that is not one is a request this device
+must never make.
+
+`channel` is optional, default `0`, clamped into the device's plausible range — it exists for
+the DIN-rail and PDU shapes, and nearly everything is a single-channel plug. A channel the
+target hardware does not have is answered `plug_unsupported`: the plug itself refuses, and
+its refusal is passed on rather than remapped to channel 0's answer.
+
+`state` is **required**: `on`, `off` or `cycle`. Anything else — missing, unknown, a
+non-string — is `bad_frame`, not clamped and not defaulted, on `power.action`'s reasoning:
+there is no safe guess among "switch it on", "switch it off" and "cut this machine's power",
+and a device that picked one would be choosing on behalf of a caller who failed to say.
+
+`cycle` is off → wait `off_ms` → on → confirming read, reply after the on. `off_ms` is
+optional, default 5000, **floor 3000, ceiling 60000**, clamped rather than rejected. The
+floor is a safety property: below about three seconds a PC power supply's hold-up capacitors
+can ride through the cut, and a cut that does not cut reports a power cycle that never
+happened. The ceiling is a liveness one: an unbounded dwell holds the target dark and the
+device's busy latch closed on the say-so of one frame.
+
+A device whose relay connection drops mid-`cycle` MUST still complete the restore. The reply
+is forfeit — its `req_id` belongs to a connection that no longer exists — but the restore is
+the second half of an instruction already accepted, and abandoning it would leave a machine
+off at the wall over a WAN blip. The caller's timeout is its signal to ask `plug_status`
+what actually happened.
+
+### `plug_status`
+
+```json
+{ "t": "plug_status", "req_id": "…", "mac": "00:00:5E:00:53:02", "ip": "192.168.1.60",
+  "channel": 0 }
+```
+
+Reads one relay channel's state and, where the hardware meters, its power figures — answered
+`plug_status_result` (§4). Only sent to devices advertising the `plug` capability. `mac`,
+`ip` and `channel` are exactly `plug_set`'s fields under exactly its rules, including the
+identity confirmation, the re-resolve, and the own-subnet requirement. One command of any
+plug kind runs at a time; a second is answered `busy`.
+
 ### `ota_offer`
 
 ```json
@@ -1054,7 +1232,8 @@ is the less important direction.
 ## 6. Error codes
 
 Returned in `err` on `wake_result`, `power_result`, `rdp_enable_result`, `probe_result`,
-`scan_result`, `hello_ack`, `adopt_ack`, `ota_reject` and `ota_result`.
+`scan_result`, `plug_scan_result`, `plug_result`, `plug_status_result`, `hello_ack`,
+`adopt_ack`, `ota_reject` and `ota_result`.
 
 | Code | Meaning |
 |---|---|
@@ -1085,6 +1264,19 @@ token path:
 None of them invites a retry: the device's recovery is a person minting or fixing something at
 the service, and a device MUST treat all three exactly as it treats any other `adopt_ack`
 refusal.
+
+Plug-specific codes, on `plug_result` and `plug_status_result` only:
+
+| Code | Meaning |
+|---|---|
+| `plug_unreachable` | The plug answered at neither the cached address nor any address a re-resolve could trace its MAC to. The plug may be unpowered, off the network, or the caller's record stale beyond recovery |
+| `plug_unsupported` | Something answered, but not usefully: not a Shelly of a generation this device drives, a channel the hardware does not have, or a device-side refusal. Retrying will not help; a person looking at the hardware might |
+
+The split carries the remedy, `no_privilege`-style: `plug_unreachable` invites checking the
+plug's own power and Wi-Fi, `plug_unsupported` invites checking what was claimed. A `plug_set`
+that fails after the cut — the restore could not be confirmed within the device's retry
+budget — reports `plug_unreachable`, and the honest next move is a `plug_status` once the
+plug is reachable again, not an assumption in either direction about a machine's power.
 
 Update-specific codes, on `ota_reject` and `ota_result` only:
 
@@ -1290,8 +1482,8 @@ A relay is v2-conformant if it:
 6. Never sends a frame larger than 2048 bytes.
 7. Enforces one live connection per `device_id`, closing the displaced one with `4001`.
 
-Everything else — `status`, `power`, `rdp_enable`, `probe`, `scan`, `log`, `enrol`, `adopt`,
-`ota_offer` — is optional. A relay that implements `rdp_enable` MUST read `rdp_enable_result` as a
+Everything else — `status`, `power`, `rdp_enable`, `probe`, `scan`, `plug_scan`, `plug_set`,
+`plug_status`, `log`, `enrol`, `adopt`, `ota_offer` — is optional. A relay that implements `rdp_enable` MUST read `rdp_enable_result` as a
 completion rather than an acceptance (§4) and MUST NOT send the command to a device that did not
 advertise `rdp`; implementing it as a fourth `power` action is not conformant, because the reply
 semantics of the two are opposite.
@@ -1313,6 +1505,7 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 
 | Version | Date | Change |
 |---|---|---|
+| 2 | 2026-08-21 | **Hard power, from beside the machine.** One new capability, `plug`, and the three frame pairs it gates — `plug_scan`/`plug_scan_result`, `plug_set`/`plug_result`, `plug_status`/`plug_status_result` — plus two error codes, `plug_unreachable` and `plug_unsupported`. Everything above this row moves a machine's own switches; this is the rung below all of it, for the machine whose kernel is hung and whose adapter never armed: a smart plug on the same segment cuts and restores the AC, driven by the device over plain local HTTP (Shelly Gen1 REST and Gen2+ JSON-RPC), with no vendor cloud and no internet route to the plug at all. **The reply is the protocol's one deliberate inversion of `power`'s rule**: `power_result` is sent before the action because the action destroys the replier, but a plug's actor stands beside the machine, not behind it, so `plug_result` arrives AFTER the work and its `state` is read back, never assumed — Gen2's `Switch.Set` answers the PREVIOUS state, which is exactly the trap the confirming read exists to step over. `cycle`'s `off_ms` has a floor because a PSU's hold-up capacitors can ride out a short cut, and a ceiling because an unbounded dwell holds a machine dark on one frame's say-so; a device that has cut power retries the restore on a short budget before admitting failure, and completes it even when the relay connection has died under the command — past the cut, giving up is not an error report but a machine left off at the wall. Identity is the plug's MAC with the IP a hint: every set re-confirms who answers at the address before driving it, because DHCP reassigns leases to appliances that must not lose power for it. The target address MUST be on the device's own subnet, refused `bad_frame` before any socket opens — the driver is an unauthenticated HTTP client, and this rule is what keeps a compromised relay from aiming it. Additive throughout: `v` stays 2. |
 | 2 | 2026-08-15 | **Deliberate silence, announced.** One new optional device→relay frame, `bye` (`reason`: `suspend`, `shutdown` or `stop`), fire-and-forget with no reply and no capability — capabilities gate relay→device commands, and nothing here invites one. A software emitter runs on a machine whose whole reason for carrying it is to be asleep most of the time, and a relay watching for silence cannot otherwise tell that ordinary night from a crash: the frame is the difference, sent in the milliseconds the OS grants between "the system is suspending" and the freeze. The specification deliberately bounds what a relay may do with it — set expectations, nothing more — because the claim is cheap to make and impossible to verify; and it deliberately notes that a dongle never sends it, because firmware cannot see a power cut coming, which is exactly why absence-of-`bye` stays meaningful. A relay treats the announcement as spent on the device's next completed authentication. Additive under §10: `v` stays 2, old relays ignore it. |
 | 2 | 2026-08-11 | **Switching Remote Desktop on.** One new capability, `rdp`, and the frame pair it gates — `rdp_enable` and `rdp_enable_result`. A device that runs *on* a machine can already tell a service that the machine's Remote Desktop is switched off; this is the button beside that sentence, and the alternative it replaces is talking somebody through an elevated registry edit on a machine they cannot see, from a phone. **It is a frame of its own rather than a fourth `power` action, and the reason is the reply.** `power_result` is an acceptance sent BEFORE the action, because the action destroys the process that would otherwise send it — that is the strongest claim available there. Nothing about enabling a listener destroys anything, so `rdp_enable_result` is sent AFTER the work and `ok:true` means the change is made. It has to: "Remote Desktop is on" is a sentence somebody acts on by opening a client against a machine they cannot see, and one frame type cannot carry two opposite meanings for a receiver to tell apart. The reply also carries **`step`** — `policy`, `nla` or `firewall`, which of the three settings stopped it — and **`note`**, the tool's or policy's own sentence. `step` exists for one row of its own table: a `firewall` stop leaves Remote Desktop switched ON behind a firewall that still drops it, which from a client is indistinguishable from a machine that is switched off, and a caller that flattened the three into "it failed" would send somebody to diagnose a dead machine that is in fact listening. **The command takes no parameters, and that is a security property**: network-level authentication MUST be required and MUST be set before connections are admitted (the reverse order leaves a listener that establishes a session before authenticating, created by a button in somebody's product), and nothing beyond the local network may be opened — private and domain firewall profiles only, never public, no router, no UPnP, no port forward. Those rules bind any implementation of this verb, because a capability string is all a caller has to go on: a device that would do something less safe under this name should implement a different frame and let the difference be visible. `rdp` is separate from `power` because the two differ in availability rather than in privilege — our agent implements this on Windows alone — and §4's rule then keeps the command off every other socket, instead of leaving a Linux agent to silently ignore a frame whose caller waits out a timeout. Additive throughout: `v` stays 2. |
 | 2 | 2026-08-10 | **Token adoption.** Two optional fields on `adopt` — `enrol_token` and `host` — one optional field on `adopt_ack` — `machine` — and three `adopt_ack`-only error codes: `bad_token`, `not_entitled`, `device_limit`. The email path binds one machine per typed address, which is the right shape for a person and the wrong one for a fleet: twenty installs mean twenty addresses typed and twenty invitations answered. An enrolment token is the account holder's own consent made portable — minted at the service, carried by an installer flag, presented in the frame the device already sends — so a fleet binds with nobody at a desk. A frame carrying both a token and an email is a token frame, because the token names an account precisely and the email would be a guess beside it. `host` is advisory display naming, untrusted like every name in §4; `machine` reports what the service did about saving the host as a wakeable machine (`created`/`exists`/`quota`/`none`), advisory too — the device's part ended at `bound`. The refusal codes are deliberately unhelpful to a probe: `bad_token` is one answer for unknown, revoked and malformed alike, because the presenter is unauthenticated and "valid but revoked" is a fact about somebody's account that a stranger should not be able to enumerate. Everything rides §10's unknown-field rule: a relay without accounts ignores the new fields and answers `adopt` exactly as it always did, and a device offered none of this behaves exactly as before. Additive throughout; `v` stays 2. |

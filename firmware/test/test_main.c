@@ -76,6 +76,7 @@ int main(int argc, char **argv) {
         {"mdns", test_mdns},
         {"nbns", test_nbns},
         {"scan_json", test_scan_json},
+        {"shelly", test_shelly},
     };
 
     for (size_t i = 0; i < sizeof(suites) / sizeof(suites[0]); i++) {

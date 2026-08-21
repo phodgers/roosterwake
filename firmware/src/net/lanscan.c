@@ -266,9 +266,11 @@ static void resolve_names(collector_t *c) {
     }
 }
 
-int rw_lan_scan(rw_lan_host_t *out, int max) {
+/* The ARP pass on its own: probe the subnet, collect who answered. Shared by the two public
+ * entry points, which differ only in whether the name queries follow. */
+static int sweep(collector_t *c) {
     struct netif *nif = netif_default;
-    if (nif == NULL || max <= 0) {
+    if (nif == NULL || c->max <= 0) {
         return RW_LAN_SCAN_ERR_NOT_JOINED;
     }
 
@@ -281,8 +283,6 @@ int rw_lan_scan(rw_lan_host_t *out, int max) {
     /* Network and broadcast are not hosts, so the sweep runs strictly between them. */
     const uint32_t network   = self & mask;
     const uint32_t broadcast = network | ~mask;
-
-    collector_t c = {.out = out, .max = max, .count = 0};
 
     const absolute_time_t deadline = make_timeout_time_ms(RW_LAN_SCAN_BUDGET_MS);
     uint32_t              probes   = 0;
@@ -309,7 +309,7 @@ int rw_lan_scan(rw_lan_host_t *out, int max) {
          */
         if (etharp_request(nif, &target) != ERR_OK) {
             rw_sys_pump_ms(BATCH_PUMP_MS);
-            drain(&c);
+            drain(c);
             batch = 0;
             if (etharp_request(nif, &target) != ERR_OK) {
                 refused++;
@@ -321,7 +321,7 @@ int rw_lan_scan(rw_lan_host_t *out, int max) {
         if (++batch >= PROBES_PER_BATCH) {
             batch = 0;
             rw_sys_pump_ms(BATCH_PUMP_MS);
-            drain(&c);
+            drain(c);
         }
     }
 
@@ -329,16 +329,29 @@ int rw_lan_scan(rw_lan_host_t *out, int max) {
     const absolute_time_t settle = make_timeout_time_ms(SETTLE_MS);
     while (!time_reached(settle) && !time_reached(deadline)) {
         rw_sys_pump_ms(50);
-        drain(&c);
+        drain(c);
     }
-
-    resolve_names(&c);
 
     if (refused > 0) {
         /* Out of pbufs twice over for these, so they were never asked. Warned rather than logged
          * at info: the count is the difference between "nothing is there" and "we did not look". */
         RW_LOG_WARN("lanscan: %lu address(es) could not be probed", (unsigned long)refused);
     }
-    RW_LOG_INFO("lanscan: probed %lu address(es), %d answered", (unsigned long)probes, c.count);
+    RW_LOG_INFO("lanscan: probed %lu address(es), %d answered", (unsigned long)probes, c->count);
+    return c->count;
+}
+
+int rw_lan_scan(rw_lan_host_t *out, int max) {
+    collector_t c = {.out = out, .max = max, .count = 0};
+    const int   n = sweep(&c);
+    if (n < 0) {
+        return n;
+    }
+    resolve_names(&c);
     return c.count;
+}
+
+int rw_lan_sweep(rw_lan_host_t *out, int max) {
+    collector_t c = {.out = out, .max = max, .count = 0};
+    return sweep(&c);
 }

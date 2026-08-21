@@ -63,4 +63,15 @@ typedef struct {
  */
 int rw_lan_scan(rw_lan_host_t *out, int max);
 
+/*
+ * The same sweep without the name pass: addresses and MACs only, every `name` left empty.
+ *
+ * For callers that identify hosts some other way — the plug driver asks each candidate over
+ * HTTP, so a NetBIOS name would be a second, worse answer it then had to ignore — and for the
+ * targeted re-resolve, where the question is "which address holds this MAC now" and a name
+ * pass would only lengthen the outage it is recovering from. Blocks and pumps like
+ * rw_lan_scan, minus NAME_WAIT_MS.
+ */
+int rw_lan_sweep(rw_lan_host_t *out, int max);
+
 #endif /* RW_LANSCAN_H */

@@ -21,6 +21,7 @@
 #include "ota/image.h"
 #include "ota/ota.h"
 #include "ota/ota_write.h"
+#include "plug/plug.h"
 #include "rw_log.h"
 #include "sys/sys.h"
 #include "sys/wallclock.h"
@@ -50,6 +51,9 @@ typedef enum {
     PENDING_PROBE,
     PENDING_SCAN,
     PENDING_OTA_BEGIN,
+    PENDING_PLUG_SCAN,
+    PENDING_PLUG_SET,
+    PENDING_PLUG_STATUS,
 } pending_kind_t;
 
 #define REQ_ID_MAX 37 /* 36 characters plus NUL (PROTOCOL.md §2) */
@@ -81,6 +85,18 @@ static struct {
 
     char probe_req_id[REQ_ID_MAX];
     bool probe_owned; /* a probe belonging to the current connection is running */
+
+    /* A plug operation runs like a probe: queued, started from the main loop, answered from a
+     * completion callback, and owned by the connection that asked. The parameters ride here
+     * between the frame handler and run_pending(); `s.mac` carries the plug's MAC the same way
+     * it carries a wake target's. */
+    char             plug_req_id[REQ_ID_MAX];
+    bool             plug_owned;
+    bool             plug_is_status;
+    ip4_addr_t       plug_ip;
+    int              plug_channel;
+    rw_plug_action_t plug_action;
+    uint32_t         plug_off_ms;
 
     /* `enrol` was sent on this connection and its outcome is not yet known. */
     bool enrolling;
@@ -593,6 +609,162 @@ static void run_scan(const char *req_id) {
     send_json(&w);
 }
 
+/* ── Plug frames ───────────────────────────────────────────────────────────── */
+
+/*
+ * PROTOCOL.md §4 `plug_result`. Sent AFTER the action completes — the one deliberate
+ * inversion of `power`'s reply-before-action rule, and it is honest rather than convenient:
+ * the actor is not the machine being acted on, so nothing here destroys the process that
+ * replies, and a caller about to trust that a hung machine has been power-cycled deserves the
+ * strong claim. `state` is the state the plug was left in, present only on success.
+ */
+static void send_plug_result(const char *req_id, bool ok, const char *err, bool on) {
+    rw_jw_t w;
+    rw_jw_init(&w, s.out, sizeof(s.out));
+    rw_jw_raw(&w, "{");
+    rw_jw_key(&w, "t");
+    rw_jw_str(&w, "plug_result");
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "req_id");
+    rw_jw_str(&w, req_id);
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "ok");
+    rw_jw_raw(&w, ok ? "true" : "false");
+    if (ok) {
+        rw_jw_raw(&w, ",");
+        rw_jw_key(&w, "state");
+        rw_jw_str(&w, on ? "on" : "off");
+    } else {
+        rw_jw_raw(&w, ",");
+        rw_jw_key(&w, "err");
+        rw_jw_str(&w, err);
+    }
+    rw_jw_raw(&w, "}");
+    rw_jw_finish(&w);
+    send_json(&w);
+}
+
+/* PROTOCOL.md §4 `plug_status_result`. The metering fields are omitted, not zeroed, where the
+ * hardware has none: zero watts is a reading, and "cannot read watts" must not impersonate
+ * it. */
+static void send_plug_status_result(const char *req_id, bool ok, const char *err,
+                                    const rw_shelly_status_t *st) {
+    rw_jw_t w;
+    rw_jw_init(&w, s.out, sizeof(s.out));
+    rw_jw_raw(&w, "{");
+    rw_jw_key(&w, "t");
+    rw_jw_str(&w, "plug_status_result");
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "req_id");
+    rw_jw_str(&w, req_id);
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "ok");
+    rw_jw_raw(&w, ok ? "true" : "false");
+    if (!ok) {
+        rw_jw_raw(&w, ",");
+        rw_jw_key(&w, "err");
+        rw_jw_str(&w, err);
+    } else {
+        rw_jw_raw(&w, ",");
+        rw_jw_key(&w, "on");
+        rw_jw_raw(&w, st->on ? "true" : "false");
+        if (st->have_apower) {
+            rw_jw_raw(&w, ",");
+            rw_jw_key(&w, "apower_w");
+            rw_jw_milli(&w, st->apower_mw);
+        }
+        if (st->have_voltage) {
+            rw_jw_raw(&w, ",");
+            rw_jw_key(&w, "voltage");
+            rw_jw_milli(&w, st->voltage_mv);
+        }
+        if (st->have_energy) {
+            rw_jw_raw(&w, ",");
+            rw_jw_key(&w, "energy_wh");
+            rw_jw_milli(&w, st->energy_mwh);
+        }
+    }
+    rw_jw_raw(&w, "}");
+    rw_jw_finish(&w);
+    send_json(&w);
+}
+
+static void send_plug_scan_err(const char *req_id, const char *err) {
+    rw_jw_t w;
+    rw_jw_init(&w, s.out, sizeof(s.out));
+    rw_jw_raw(&w, "{");
+    rw_jw_key(&w, "t");
+    rw_jw_str(&w, "plug_scan_result");
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "req_id");
+    rw_jw_str(&w, req_id);
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "ok");
+    rw_jw_raw(&w, "false");
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "err");
+    rw_jw_str(&w, err);
+    rw_jw_raw(&w, "}");
+    rw_jw_finish(&w);
+    send_json(&w);
+}
+
+/* What rw_shelly_json_plugs() must leave room for: `,"truncated":false}` and the terminator
+ * the writer keeps back — the SCAN_TAIL_RESERVE arrangement, priced for the same tail. */
+#define PLUG_TAIL_RESERVE 20
+
+/*
+ * Sweep for plugs and answer. Runs from the main loop like run_scan(), and blocks longer:
+ * the ARP pass, then an HTTP `GET /shelly` to everything that answered. §5 gives it thirty
+ * seconds of a relay's patience, which the two budgets stay comfortably inside.
+ */
+static void run_plug_scan(const char *req_id) {
+    static rw_shelly_plug_t plugs[RW_PLUG_SCAN_MAX];
+
+    const int count = rw_plug_scan(plugs, RW_PLUG_SCAN_MAX);
+    if (count < 0) {
+        send_plug_scan_err(req_id, "no_link");
+        return;
+    }
+
+    rw_jw_t w;
+    rw_jw_init(&w, s.out, sizeof(s.out));
+    rw_jw_raw(&w, "{");
+    rw_jw_key(&w, "t");
+    rw_jw_str(&w, "plug_scan_result");
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "req_id");
+    rw_jw_str(&w, req_id);
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "ok");
+    rw_jw_raw(&w, "true");
+    rw_jw_raw(&w, ",");
+    const bool all = rw_shelly_json_plugs(&w, plugs, count, PLUG_TAIL_RESERVE);
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "truncated");
+    rw_jw_raw(&w, all ? "false" : "true");
+    rw_jw_raw(&w, "}");
+    rw_jw_finish(&w);
+
+    RW_LOG_INFO("proto: plug scan found %d plug(s)%s", count, all ? "" : ", list truncated");
+    send_json(&w);
+}
+
+/* The plug driver's completion, on the main loop via rw_plug_task(). The ownership rule is
+ * probe_report()'s: an outcome whose connection has gone is dropped, not misdelivered. */
+static void plug_done(void *ctx, const rw_plug_outcome_t *outcome) {
+    (void)ctx;
+    if (!s.plug_owned || s.state != RW_RELAY_READY) {
+        return;
+    }
+    s.plug_owned = false;
+    if (s.plug_is_status) {
+        send_plug_status_result(s.plug_req_id, outcome->ok, outcome->err, &outcome->st);
+    } else {
+        send_plug_result(s.plug_req_id, outcome->ok, outcome->err, outcome->state_on);
+    }
+}
+
 /* Defined with the rest of the update frames, below; needed here because clearing the slot runs
  * from the main loop and both outcomes are answered from there. */
 static void send_ota_reject(const char *id, const char *code);
@@ -696,6 +868,36 @@ static void run_pending(void) {
         case PENDING_SCAN:
             run_scan(s.req_id);
             break;
+
+        case PENDING_PLUG_SCAN:
+            run_plug_scan(s.req_id);
+            break;
+
+        case PENDING_PLUG_SET:
+        case PENDING_PLUG_STATUS: {
+            /* Started here, answered from plug_done() when the driver finishes — the probe
+             * arrangement, because a cycle holds seconds of deliberate waiting that must not
+             * happen inside run_pending(). */
+            snprintf(s.plug_req_id, sizeof(s.plug_req_id), "%s", s.req_id);
+            s.plug_is_status = (s.kind == PENDING_PLUG_STATUS);
+            s.plug_owned     = true;
+            const bool started =
+                s.plug_is_status
+                    ? rw_plug_status_start(s.mac, &s.plug_ip, s.plug_channel, plug_done, NULL)
+                    : rw_plug_set_start(s.mac, &s.plug_ip, s.plug_channel, s.plug_action,
+                                        s.plug_off_ms, plug_done, NULL);
+            if (!started) {
+                /* The driver is still finishing something — an orphaned cycle restoring its
+                 * power survives reconnections by design. */
+                s.plug_owned = false;
+                if (s.plug_is_status) {
+                    send_plug_status_result(s.req_id, false, "busy", NULL);
+                } else {
+                    send_plug_result(s.req_id, false, "busy", false);
+                }
+            }
+            break;
+        }
 
         case PENDING_OTA_BEGIN:
             run_ota_begin();
@@ -982,6 +1184,151 @@ static void handle_probe(const char *js, const jsmntok_t *tok, int count, const 
     s.timeout_s = (uint32_t)(timeout_s < 0 ? 0 : timeout_s);
 }
 
+/* ── Plug commands ─────────────────────────────────────────────────────────── */
+
+/*
+ * The fields `plug_set` and `plug_status` share: the plug's identity and where it was last
+ * seen. `mac` and `ip` are both required — the MAC because it is the identity a re-resolve
+ * recovers by, the IP because a sweep per command would put seconds of ARP traffic in front
+ * of every status read. A MAC that parses but could never be a device's own — group,
+ * broadcast, all-zero — is `bad_mac` on the same grounds as `wake`'s rule: a plug has a
+ * unicast address or it does not exist.
+ */
+static bool parse_plug_target(const char *js, const jsmntok_t *tok, int count, uint8_t mac[6],
+                              ip4_addr_t *ip, int *channel, const char **err) {
+    int mac_idx = rw_json_find(js, tok, count, "mac");
+    if (mac_idx < 0) {
+        *err = "bad_frame";
+        return false;
+    }
+    char text[32];
+    if (!rw_json_str(js, &tok[mac_idx], text, sizeof(text)) || !rw_mac_parse(text, mac) ||
+        !rw_mac_wakeable(mac)) {
+        *err = "bad_mac";
+        return false;
+    }
+
+    int ip_idx = rw_json_find(js, tok, count, "ip");
+    if (ip_idx < 0 || !rw_json_str(js, &tok[ip_idx], text, sizeof(text)) ||
+        !ip4addr_aton(text, ip)) {
+        /* Missing and unparseable land together: there is no bad_ip code, and both mean the
+         * caller failed to name where it last saw the plug. */
+        *err = "bad_frame";
+        return false;
+    }
+
+    /* §5: absent means channel 0, out of range is clamped. Almost everything is a
+     * single-channel plug; the field exists for the DIN and PDU shapes. */
+    long ch     = 0;
+    int  ch_idx = rw_json_find(js, tok, count, "channel");
+    if (ch_idx >= 0 && !rw_json_int(js, &tok[ch_idx], &ch)) {
+        ch = 0;
+    }
+    if (ch < 0) {
+        ch = 0;
+    } else if (ch > 7) {
+        ch = 7;
+    }
+    *channel = (int)ch;
+    return true;
+}
+
+static void handle_plug_set(const char *js, const jsmntok_t *tok, int count, const char *req_id) {
+    uint8_t     mac[6];
+    ip4_addr_t  ip;
+    int         channel;
+    const char *err;
+    if (!parse_plug_target(js, tok, count, mac, &ip, &channel, &err)) {
+        send_plug_result(req_id, false, err, false);
+        return;
+    }
+
+    /*
+     * `state` follows `power.action`'s rule, not `wake.repeat`'s: required, and never
+     * defaulted, because there is no safe guess among "on", "off" and "cut this machine's
+     * power and restore it" — a device that picked one would be choosing on behalf of a
+     * caller who failed to say.
+     */
+    rw_plug_action_t action;
+    int              st_idx = rw_json_find(js, tok, count, "state");
+    if (st_idx < 0) {
+        send_plug_result(req_id, false, "bad_frame", false);
+        return;
+    }
+    if (rw_json_eq(js, &tok[st_idx], "on")) {
+        action = RW_PLUG_ON;
+    } else if (rw_json_eq(js, &tok[st_idx], "off")) {
+        action = RW_PLUG_OFF;
+    } else if (rw_json_eq(js, &tok[st_idx], "cycle")) {
+        action = RW_PLUG_CYCLE;
+    } else {
+        send_plug_result(req_id, false, "bad_frame", false);
+        return;
+    }
+
+    /* §5: clamp, do not reject — the floor is a safety property (a cut that does not outlast
+     * the PSU's hold-up capacitors is not a cut), the ceiling a liveness one. */
+    long off_ms = RW_PLUG_OFF_MS_DEFAULT;
+    int  o_idx  = rw_json_find(js, tok, count, "off_ms");
+    if (o_idx >= 0 && !rw_json_int(js, &tok[o_idx], &off_ms)) {
+        off_ms = RW_PLUG_OFF_MS_DEFAULT;
+    }
+    if (off_ms < RW_PLUG_OFF_MS_MIN) {
+        off_ms = RW_PLUG_OFF_MS_MIN;
+    } else if (off_ms > RW_PLUG_OFF_MS_MAX) {
+        off_ms = RW_PLUG_OFF_MS_MAX;
+    }
+
+    if (!rw_net_ready()) {
+        send_plug_result(req_id, false, "no_link", false);
+        return;
+    }
+    /* Refused before any socket exists. The driver speaks plain unauthenticated HTTP wherever
+     * it is pointed, so an address off this device's own subnet is not a stale hint to chase
+     * — it is a request to be an HTTP client somewhere this protocol has no business, and it
+     * is answered like any other field that could never legitimately be meant. */
+    if (!rw_plug_ip_local(&ip)) {
+        send_plug_result(req_id, false, "bad_frame", false);
+        return;
+    }
+    if (s.plug_owned || rw_plug_busy() || !queue(PENDING_PLUG_SET, req_id)) {
+        send_plug_result(req_id, false, "busy", false);
+        return;
+    }
+    memcpy(s.mac, mac, 6);
+    s.plug_ip      = ip;
+    s.plug_channel = channel;
+    s.plug_action  = action;
+    s.plug_off_ms  = (uint32_t)off_ms;
+}
+
+static void handle_plug_status(const char *js, const jsmntok_t *tok, int count,
+                               const char *req_id) {
+    uint8_t     mac[6];
+    ip4_addr_t  ip;
+    int         channel;
+    const char *err;
+    if (!parse_plug_target(js, tok, count, mac, &ip, &channel, &err)) {
+        send_plug_status_result(req_id, false, err, NULL);
+        return;
+    }
+    if (!rw_net_ready()) {
+        send_plug_status_result(req_id, false, "no_link", NULL);
+        return;
+    }
+    if (!rw_plug_ip_local(&ip)) {
+        send_plug_status_result(req_id, false, "bad_frame", NULL);
+        return;
+    }
+    if (s.plug_owned || rw_plug_busy() || !queue(PENDING_PLUG_STATUS, req_id)) {
+        send_plug_status_result(req_id, false, "busy", NULL);
+        return;
+    }
+    memcpy(s.mac, mac, 6);
+    s.plug_ip      = ip;
+    s.plug_channel = channel;
+}
+
 /* ── Updates ───────────────────────────────────────────────────────────────── */
 /*
  * An update arrives over this connection and no other. A second TLS session does not fit — one
@@ -1255,6 +1602,26 @@ static void on_text(rw_ws_client_t *ws, void *ctx, char *text, size_t len) {
         if (!queue(PENDING_SCAN, req_id)) {
             send_scan_result_err(req_id, "busy");
         }
+    } else if (rw_json_eq(text, &tokens[t_idx], "plug_scan")) {
+        if (req_id[0] == '\0') {
+            return;
+        }
+        /* Refused rather than queued while anything plug-shaped runs, on `scan`'s grounds —
+         * and additionally because the sweep and a live set/status would contend for the two
+         * TCP pcbs that are the whole budget. */
+        if (s.plug_owned || rw_plug_busy() || !queue(PENDING_PLUG_SCAN, req_id)) {
+            send_plug_scan_err(req_id, "busy");
+        }
+    } else if (rw_json_eq(text, &tokens[t_idx], "plug_set")) {
+        if (req_id[0] == '\0') {
+            return;
+        }
+        handle_plug_set(text, tokens, count, req_id);
+    } else if (rw_json_eq(text, &tokens[t_idx], "plug_status")) {
+        if (req_id[0] == '\0') {
+            return;
+        }
+        handle_plug_status(text, tokens, count, req_id);
     } else if (rw_json_eq(text, &tokens[t_idx], "ota_offer")) {
         /* Carries `id` rather than `req_id`: a transfer outlives the exchange that started it,
          * and the frames that follow are not answers to a request. */
@@ -1283,6 +1650,12 @@ static void on_close(rw_ws_client_t *ws, void *ctx, rw_ws_fail_t why, uint16_t c
     if (s.probe_owned) {
         rw_probe_cancel();
         s.probe_owned = false;
+    }
+    if (s.plug_owned) {
+        /* Cancelled, not killed: a cycle that has already cut power still restores it, and
+         * only the reply is forfeit. See rw_plug_cancel(). */
+        rw_plug_cancel();
+        s.plug_owned = false;
     }
     if (s.ota.receiving) {
         /* Half an image is in the spare slot. That is safe — it is not the slot running, and
@@ -1356,6 +1729,9 @@ void rw_relay_stop(void) {
 void rw_relay_task(void) {
     rw_ws_task(&s.ws);
     rw_probe_task();
+    /* Above the connection-state checks on purpose: an orphaned cycle finishes its restore
+     * whatever the relay link is doing. */
+    rw_plug_task();
 
     /* Deferred commands run here, on the main loop, where blocking is safe. */
     if (s.state == RW_RELAY_READY) {
