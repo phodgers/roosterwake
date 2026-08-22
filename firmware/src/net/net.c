@@ -40,6 +40,15 @@
  * indefinitely; this is only how long we wait before saying so in the log. */
 #define SNTP_TIMEOUT_MS 45000u
 
+/*
+ * How long an association may hold no address before it is treated as a lost link.
+ *
+ * Not instantaneous: lwIP zeroes the address briefly during a DHCP rebind, and a device that
+ * rejoined on that would turn every renewal into a reconnect. Fifteen seconds is well past a
+ * rebind and far short of the fifteen minutes the stuck detector waits.
+ */
+#define ADDR_LOST_GRACE_MS 15000u
+
 static rw_net_state_t s_state;
 static char           s_ssid[RW_CFG_SSID_LEN];
 static char           s_psk[RW_CFG_PSK_LEN];
@@ -57,6 +66,10 @@ static absolute_time_t s_retry_at;
 static absolute_time_t s_join_deadline;
 static absolute_time_t s_dhcp_deadline;
 static absolute_time_t s_sntp_deadline;
+/* Set when a JOINED association is first seen without an address; cleared the moment one
+ * returns. See the address check in the JOINED branch. */
+static bool            s_addr_lost;
+static absolute_time_t s_addr_lost_at;
 static bool            s_sntp_started;
 static bool            s_sntp_warned;
 static bool            s_initialised;
@@ -300,6 +313,7 @@ void rw_net_task(void) {
             s_state      = RW_NET_JOINED;
             s_backoff_ms = JOIN_BACKOFF_MIN_MS;
             s_last_error = NULL;
+            s_addr_lost  = false;
             start_sntp_once();
             return;
         }
@@ -327,6 +341,44 @@ void rw_net_task(void) {
         schedule_retry("link_lost");
         return;
     }
+
+    /*
+     * An association can outlive its address, and that state is worse than a clean disconnect.
+     *
+     * On 2026-08-12, 08-14 and again on 08-22, a dongle sat for hours holding CYW43_LINK_UP with
+     * no address: unreachable on the LAN (it answered neither ARP nor ping), unable to reach the
+     * relay, and showing RW_LED_ONLINE the whole time because update_led only asked whether the
+     * radio had associated. Worse, rw_net_ready() is false without an address, and that is the
+     * gate on the stuck detector — so the one mechanism written to restart a wedged device was
+     * disabled by the very condition that wedged it. Only pulling the plug ever fixed it.
+     *
+     * Treating a lost address as a lost link puts it back on the ordinary rejoin path, which is
+     * what stuck.h already assumes happens: "without a network there is nothing to diagnose and
+     * net.c's own retry is the right mechanism". That assumption is only true if net.c actually
+     * retries here, which until now it did not.
+     */
+    const bool addressed =
+        netif_default != NULL && ip4_addr_get_u32(netif_ip4_addr(netif_default)) != 0;
+    if (!addressed) {
+        if (!s_addr_lost) {
+            s_addr_lost    = true;
+            s_addr_lost_at = make_timeout_time_ms(ADDR_LOST_GRACE_MS);
+            RW_LOG_WARN("wifi: associated but no address, allowing %u ms to rebind",
+                        (unsigned)ADDR_LOST_GRACE_MS);
+            return;
+        }
+        if (time_reached(s_addr_lost_at)) {
+            /* Drop the association explicitly, for the same reason the DHCP timeout above does:
+             * rejoining on top of a live one leaves the driver and the DHCP client disagreeing
+             * about which attempt they are servicing. */
+            cyw43_wifi_leave(&cyw43_state, CYW43_ITF_STA);
+            s_addr_lost  = false;
+            s_backoff_ms = JOIN_BACKOFF_MIN_MS;
+            schedule_retry("addr_lost");
+        }
+        return;
+    }
+    s_addr_lost = false;
 
     /*
      * Every other error here is raised before a join and cleared by the next successful one.

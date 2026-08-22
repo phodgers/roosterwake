@@ -254,8 +254,16 @@ static void update_led(bool provisioned) {
              * owner could not tell "still trying to reach your router" from "on your network,
              * just not linked to the cloud" — and the second is a normal, working state for a
              * self-hosted or unclaimed device, in which local Wake-on-LAN is fine.
+             *
+             * The test is rw_net_ready(), not rw_net_state(): an association is not a network.
+             * A device holding CYW43_LINK_UP with no address answers neither ARP nor ping and
+             * cannot wake anything, so showing ONLINE there told the owner — and, on 2026-08-22,
+             * told an investigation — that the network was fine when it was the thing at fault.
+             * rw_net_ready() additionally requires an address and a valid clock, which is
+             * exactly what led.h already says JOINING covers: "joining Wi-Fi, or waiting on
+             * DHCP/SNTP/DNS".
              */
-            rw_led_set(rw_net_state() == RW_NET_JOINED ? RW_LED_ONLINE : RW_LED_JOINING);
+            rw_led_set(rw_net_ready() ? RW_LED_ONLINE : RW_LED_JOINING);
             return;
     }
     rw_led_set(RW_LED_JOINING);
