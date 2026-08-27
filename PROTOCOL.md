@@ -346,6 +346,7 @@ Defined capabilities, each naming the relay→device command it gates:
 | `probe` | `probe` |
 | `scan` | `scan` |
 | `plug` | `plug_scan`, `plug_set`, `plug_status` |
+| `plugfw` | `plug_fw_check`, `plug_fw_update` |
 | `ota` | `ota_offer`, and the binary frames that follow it |
 | `sched` | reserved for device-side scheduling; no command yet |
 
@@ -699,7 +700,7 @@ Sent once, in answer to `plug_scan`.
   "truncated": false,
   "plugs": [
     { "mac": "00:00:5E:00:53:02", "ip": "192.168.1.60", "model": "SNPL-00112UK",
-      "gen": 2, "name": "rack plug", "channels": 1 }
+      "gen": 2, "name": "rack plug", "channels": 1, "fw": "2.0.0" }
   ]
 }
 ```
@@ -713,6 +714,11 @@ not clamped to 2. `channels` is the device's own figure where it states one (Gen
 `num_outputs`) and `1` otherwise — a caller with a registry knows better than the sweep does.
 `name` is present only where the device offered one and is untrusted display text under
 exactly `scan_result`'s rule: never an identifier, never matched against.
+
+`fw` is the firmware the device reported in the same answer (`ver` on Gen2+, `fw` on Gen1,
+verbatim) and is best-effort: absent where the device offered none, and absent from every
+implementation that predates it. A service holding a minimum-version policy reads this to
+decide whether to offer or perform an update before the switch is put to work.
 
 `truncated` is `true` when plugs were found that did not fit — this is the other frame §1
 names as able to reach the 2048-byte ceiling, and it drops entries rather than exceed it.
@@ -781,6 +787,39 @@ make with it.
 `format`, `flags`, `length`, `board`, `version`, `signature`. `same_version` means the offer
 names the version already running; `on_trial` means the running image has not yet confirmed
 itself and the slot holding the last known-good image must not be overwritten.
+
+### `plug_fw_check_result`
+
+Sent once, in answer to `plug_fw_check`.
+
+```json
+{ "t": "plug_fw_check_result", "req_id": "…", "ok": true,
+  "current": "1.4.4", "latest": "2.0.0", "has_update": true }
+{ "t": "plug_fw_check_result", "req_id": "…", "ok": true,
+  "current": "2.0.0", "has_update": false }
+{ "t": "plug_fw_check_result", "req_id": "…", "ok": false, "err": "plug_unreachable" }
+```
+
+`current` is the build the device reports it is running, verbatim in the device's own dialect
+(Gen2's plain `1.4.4`, Gen1's long build string). `latest` is present only when the vendor's
+check named something newer — never an echo of `current` — and `has_update` travels as its
+own boolean because the DEVICE saw the vendor's answer and the relay did not: a Gen1 `/ota`
+reply echoes `new_version` even when nothing is newer, and deriving the flag by comparison
+upstream would re-learn that mistake.
+
+### `plug_fw_update_result`
+
+Sent once, in answer to `plug_fw_update`, on acceptance.
+
+```json
+{ "t": "plug_fw_update_result", "req_id": "…", "ok": true }
+{ "t": "plug_fw_update_result", "req_id": "…", "ok": false, "err": "plug_unreachable" }
+```
+
+`ok: true` means the plug ACCEPTED the update order and nothing more. The flash and the
+reboot happen on the device's own schedule; the reads that follow will fail while it does,
+and that failing is the update working. `ok: false` carries `err` from §6 including the two
+plug-specific codes.
 
 ### `ota_result`
 
@@ -1167,6 +1206,34 @@ Reads one relay channel's state and, where the hardware meters, its power figure
 `ip` and `channel` are exactly `plug_set`'s fields under exactly its rules, including the
 identity confirmation, the re-resolve, and the own-subnet requirement. One command of any
 plug kind runs at a time; a second is answered `busy`.
+
+### `plug_fw_check`
+
+```json
+{ "t": "plug_fw_check", "req_id": "…", "mac": "00:00:5E:00:53:02", "ip": "192.168.1.60" }
+```
+
+Reads the plug's firmware standing — answered `plug_fw_check_result` (§4). Only sent to
+devices advertising `plugfw`, which is deliberately its own capability rather than a fourth
+frame under `plug`: every `plug` implementation released before these frames existed would
+otherwise be sent a question it silently ignores, and a capability refusal is the clean
+answer an old actor gives instead. `mac` and `ip` are `plug_set`'s identity fields under its
+rules; there is no `channel`, because firmware is a fact about the device — a multi-channel
+switch runs one build however many feeds it carries.
+
+### `plug_fw_update`
+
+```json
+{ "t": "plug_fw_update", "req_id": "…", "mac": "00:00:5E:00:53:02", "ip": "192.168.1.60" }
+```
+
+Tells the plug to install its vendor's current stable build — answered
+`plug_fw_update_result` (§4) on ACCEPTANCE, never on completion: the plug downloads the
+build from its own vendor over the local network's internet connection, flashes and reboots
+on its own, typically inside a minute, and a reply held across a device reboot would arrive
+as a transport failure about an update that is working. A caller watches the outcome by
+polling `plug_fw_check` until `current` moves. Same identity rules and `plugfw` gate as the
+check; one command of any plug kind runs at a time.
 
 ### `ota_offer`
 
