@@ -86,6 +86,14 @@ The pre-flight is Windows only — the paste is PowerShell. Linux and macOS targ
 
 Wake the machine from the dashboard at [roosterwake.com](https://roosterwake.com).
 
+Firmware stays current on its own: once a release has soaked on real hardware, the hosted relay
+offers it to your dongle over its own connection — the device verifies the signature, flashes the
+spare slot and reboots in about fifteen seconds, keeping the previous build to fall back to. There
+is nothing to click and no cable involved. This is the hosted relay's doing, not the device's: a
+dongle pointed at a self-hosted relay updates when that relay offers it something (`ota_offer`,
+[`PROTOCOL.md`](../PROTOCOL.md) §5), or over USB from a
+[release](https://github.com/phodgers/roosterwake/releases).
+
 If a step failed, [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) covers the device side and the target
 PC. One trap worth knowing: flashing a build by hand and then running guided setup reverts the
 firmware to whatever the release registry serves. Confirm what is actually on the board with
