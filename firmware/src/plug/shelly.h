@@ -36,6 +36,10 @@
 #define RW_SHELLY_MODEL_LEN 24
 #define RW_SHELLY_NAME_LEN  32
 
+/* A firmware version, verbatim in the device's own dialect. Gen2 speaks plain "1.4.4"; Gen1
+ * speaks a long build string ("20230913-112003/v1.14.0-gcb84623"), which sets this bound. */
+#define RW_SHELLY_FW_LEN 64
+
 /*
  * Split a raw HTTP/1.1 response into its status code and body.
  *
@@ -61,6 +65,9 @@ typedef struct {
                                            whose name lives in `/settings` — a body too large
                                            to be worth a request per candidate in a sweep */
     int     channels; /* Gen1 `num_outputs`; 1 where the device does not say */
+    char    fw[RW_SHELLY_FW_LEN];       /* Gen2+ `ver`, Gen1 `fw`, verbatim; best-effort —
+                                           empty where the body offered neither, which is not
+                                           a classification failure */
 } rw_shelly_id_t;
 
 /*
@@ -79,6 +86,24 @@ bool rw_shelly_identify(const char *body, size_t len, rw_shelly_id_t *out);
 size_t rw_shelly_req_identify(char *buf, size_t cap, const char *host);
 size_t rw_shelly_req_set(char *buf, size_t cap, const char *host, int gen, int channel, bool on);
 size_t rw_shelly_req_status(char *buf, size_t cap, const char *host, int gen, int channel);
+
+/*
+ * The firmware verbs. Gen1 keeps the whole standing at one endpoint — `GET /ota` reports it,
+ * `GET /ota?update=true` orders the install — so `req_fw_info` is the only Gen1 check request.
+ * Gen2+ splits the fact across two calls, both in the direct-path RPC form rather than the
+ * `/rpc` envelope: `GET /rpc/Shelly.GetDeviceInfo` names the running build (`req_fw_info`) and
+ * `GET /rpc/Shelly.CheckForUpdate` asks the device to ask its vendor (`req_fw_check`, Gen2+
+ * only). Direct-path answers carry the payload bare, and a refusal is a non-200 — the shape
+ * take_response() already reads — where the envelope would bury it in HTTP 200.
+ *
+ * `req_fw_update` orders the install: Gen1 `GET /ota?update=true`, Gen2+ `POST
+ * /rpc/Shelly.Update {"stage":"stable"}` — direct-path again, deliberately, because
+ * Shelly.Update's success answer is a bare JSON `null` with nothing to decode; the 200 IS the
+ * acceptance.
+ */
+size_t rw_shelly_req_fw_info(char *buf, size_t cap, const char *host, int gen);
+size_t rw_shelly_req_fw_check(char *buf, size_t cap, const char *host);
+size_t rw_shelly_req_fw_update(char *buf, size_t cap, const char *host, int gen);
 
 /*
  * One relay channel's state, with thousandths for the metering fields so no float crosses
@@ -104,6 +129,40 @@ typedef struct {
  */
 bool rw_shelly_parse_status(const char *body, size_t len, int gen, int channel,
                             rw_shelly_status_t *out);
+
+/*
+ * A plug's firmware standing, PROTOCOL.md §4 `plug_fw_check_result`'s three facts. `latest`
+ * is present only when the vendor named something newer — never an echo of `current` — and
+ * `has_update` is its own boolean because the DEVICE saw the vendor's answer and nobody
+ * upstream did: a Gen1 `/ota` echoes `new_version` even when nothing is newer, and deriving
+ * the flag by comparing version strings would re-learn that mistake one layer up.
+ */
+typedef struct {
+    char current[RW_SHELLY_FW_LEN];
+    char latest[RW_SHELLY_FW_LEN];
+    bool has_update;
+} rw_shelly_fw_t;
+
+/*
+ * Parse a Gen1 `/ota` report: `old_version` becomes `current`, `has_update` is the device's
+ * own verdict, and `new_version` is repeated as `latest` only when that verdict is true.
+ * Returns false when the body is not that shape.
+ */
+bool rw_shelly_parse_ota_report(const char *body, size_t len, rw_shelly_fw_t *out);
+
+/*
+ * Parse a direct-path `Shelly.GetDeviceInfo` answer's `ver` member. Returns false when the
+ * body is not an object carrying it — a Gen2+ always does.
+ */
+bool rw_shelly_parse_device_ver(const char *body, size_t len, char *ver, size_t cap);
+
+/*
+ * Parse a direct-path `Shelly.CheckForUpdate` answer into `latest`/`has_update`, leaving
+ * `current` untouched. An absent or empty `stable` member is Shelly's real up-to-date answer
+ * — the reply to a current device is `{}` — so that parses as ok with `has_update` false;
+ * only a body that is not an object at all returns false.
+ */
+bool rw_shelly_parse_update_check(const char *body, size_t len, rw_shelly_fw_t *out);
 
 /*
  * Did a set request succeed, and did the reply state the relay's NEW state?
@@ -133,6 +192,7 @@ typedef struct {
     int  gen;
     char name[RW_SHELLY_NAME_LEN]; /* empty when the device offered none; omitted from JSON */
     int  channels;
+    char fw[RW_SHELLY_FW_LEN];     /* best-effort, same omitted-when-empty rule as `name` */
 } rw_shelly_plug_t;
 
 /*

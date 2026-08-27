@@ -54,6 +54,8 @@ typedef enum {
     PENDING_PLUG_SCAN,
     PENDING_PLUG_SET,
     PENDING_PLUG_STATUS,
+    PENDING_PLUG_FW_CHECK,
+    PENDING_PLUG_FW_UPDATE,
 } pending_kind_t;
 
 #define REQ_ID_MAX 37 /* 36 characters plus NUL (PROTOCOL.md §2) */
@@ -92,7 +94,8 @@ static struct {
      * it carries a wake target's. */
     char             plug_req_id[REQ_ID_MAX];
     bool             plug_owned;
-    bool             plug_is_status;
+    /* Which plug command is running — decides which result frame the completion sends. */
+    pending_kind_t   plug_kind;
     ip4_addr_t       plug_ip;
     int              plug_channel;
     rw_plug_action_t plug_action;
@@ -689,6 +692,71 @@ static void send_plug_status_result(const char *req_id, bool ok, const char *err
     send_json(&w);
 }
 
+/*
+ * PROTOCOL.md §4 `plug_fw_check_result`. `latest` is present only when the vendor named
+ * something newer, and `has_update` travels as its own boolean because the DEVICE saw the
+ * vendor's answer — deriving it upstream by comparing version strings would re-learn Gen1's
+ * new_version-echo mistake one layer up.
+ */
+static void send_plug_fw_check_result(const char *req_id, bool ok, const char *err,
+                                      const rw_shelly_fw_t *fw) {
+    rw_jw_t w;
+    rw_jw_init(&w, s.out, sizeof(s.out));
+    rw_jw_raw(&w, "{");
+    rw_jw_key(&w, "t");
+    rw_jw_str(&w, "plug_fw_check_result");
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "req_id");
+    rw_jw_str(&w, req_id);
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "ok");
+    rw_jw_raw(&w, ok ? "true" : "false");
+    if (!ok) {
+        rw_jw_raw(&w, ",");
+        rw_jw_key(&w, "err");
+        rw_jw_str(&w, err);
+    } else {
+        rw_jw_raw(&w, ",");
+        rw_jw_key(&w, "current");
+        rw_jw_str(&w, fw->current);
+        if (fw->has_update && fw->latest[0] != '\0') {
+            rw_jw_raw(&w, ",");
+            rw_jw_key(&w, "latest");
+            rw_jw_str(&w, fw->latest);
+        }
+        rw_jw_raw(&w, ",");
+        rw_jw_key(&w, "has_update");
+        rw_jw_raw(&w, fw->has_update ? "true" : "false");
+    }
+    rw_jw_raw(&w, "}");
+    rw_jw_finish(&w);
+    send_json(&w);
+}
+
+/* PROTOCOL.md §4 `plug_fw_update_result`. `ok` means the plug ACCEPTED the order and nothing
+ * more — the flash and reboot run on the device's own schedule, watched via later checks. */
+static void send_plug_fw_update_result(const char *req_id, bool ok, const char *err) {
+    rw_jw_t w;
+    rw_jw_init(&w, s.out, sizeof(s.out));
+    rw_jw_raw(&w, "{");
+    rw_jw_key(&w, "t");
+    rw_jw_str(&w, "plug_fw_update_result");
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "req_id");
+    rw_jw_str(&w, req_id);
+    rw_jw_raw(&w, ",");
+    rw_jw_key(&w, "ok");
+    rw_jw_raw(&w, ok ? "true" : "false");
+    if (!ok) {
+        rw_jw_raw(&w, ",");
+        rw_jw_key(&w, "err");
+        rw_jw_str(&w, err);
+    }
+    rw_jw_raw(&w, "}");
+    rw_jw_finish(&w);
+    send_json(&w);
+}
+
 static void send_plug_scan_err(const char *req_id, const char *err) {
     rw_jw_t w;
     rw_jw_init(&w, s.out, sizeof(s.out));
@@ -758,8 +826,12 @@ static void plug_done(void *ctx, const rw_plug_outcome_t *outcome) {
         return;
     }
     s.plug_owned = false;
-    if (s.plug_is_status) {
+    if (s.plug_kind == PENDING_PLUG_STATUS) {
         send_plug_status_result(s.plug_req_id, outcome->ok, outcome->err, &outcome->st);
+    } else if (s.plug_kind == PENDING_PLUG_FW_CHECK) {
+        send_plug_fw_check_result(s.plug_req_id, outcome->ok, outcome->err, &outcome->fw);
+    } else if (s.plug_kind == PENDING_PLUG_FW_UPDATE) {
+        send_plug_fw_update_result(s.plug_req_id, outcome->ok, outcome->err);
     } else {
         send_plug_result(s.plug_req_id, outcome->ok, outcome->err, outcome->state_on);
     }
@@ -874,24 +946,37 @@ static void run_pending(void) {
             break;
 
         case PENDING_PLUG_SET:
-        case PENDING_PLUG_STATUS: {
+        case PENDING_PLUG_STATUS:
+        case PENDING_PLUG_FW_CHECK:
+        case PENDING_PLUG_FW_UPDATE: {
             /* Started here, answered from plug_done() when the driver finishes — the probe
              * arrangement, because a cycle holds seconds of deliberate waiting that must not
              * happen inside run_pending(). */
             snprintf(s.plug_req_id, sizeof(s.plug_req_id), "%s", s.req_id);
-            s.plug_is_status = (s.kind == PENDING_PLUG_STATUS);
-            s.plug_owned     = true;
-            const bool started =
-                s.plug_is_status
-                    ? rw_plug_status_start(s.mac, &s.plug_ip, s.plug_channel, plug_done, NULL)
-                    : rw_plug_set_start(s.mac, &s.plug_ip, s.plug_channel, s.plug_action,
-                                        s.plug_off_ms, plug_done, NULL);
+            s.plug_kind  = s.kind;
+            s.plug_owned = true;
+            bool started;
+            if (s.kind == PENDING_PLUG_STATUS) {
+                started = rw_plug_status_start(s.mac, &s.plug_ip, s.plug_channel, plug_done,
+                                               NULL);
+            } else if (s.kind == PENDING_PLUG_FW_CHECK) {
+                started = rw_plug_fw_check_start(s.mac, &s.plug_ip, plug_done, NULL);
+            } else if (s.kind == PENDING_PLUG_FW_UPDATE) {
+                started = rw_plug_fw_update_start(s.mac, &s.plug_ip, plug_done, NULL);
+            } else {
+                started = rw_plug_set_start(s.mac, &s.plug_ip, s.plug_channel, s.plug_action,
+                                            s.plug_off_ms, plug_done, NULL);
+            }
             if (!started) {
                 /* The driver is still finishing something — an orphaned cycle restoring its
                  * power survives reconnections by design. */
                 s.plug_owned = false;
-                if (s.plug_is_status) {
+                if (s.kind == PENDING_PLUG_STATUS) {
                     send_plug_status_result(s.req_id, false, "busy", NULL);
+                } else if (s.kind == PENDING_PLUG_FW_CHECK) {
+                    send_plug_fw_check_result(s.req_id, false, "busy", NULL);
+                } else if (s.kind == PENDING_PLUG_FW_UPDATE) {
+                    send_plug_fw_update_result(s.req_id, false, "busy");
                 } else {
                     send_plug_result(s.req_id, false, "busy", false);
                 }
@@ -1329,6 +1414,48 @@ static void handle_plug_status(const char *js, const jsmntok_t *tok, int count,
     s.plug_channel = channel;
 }
 
+/*
+ * The two `plugfw` frames share one handler because they share every field and every gate:
+ * `mac` and `ip` under `plug_set`'s identity rules, no `channel` — firmware is a fact about
+ * the device, however many feeds it carries; parse_plug_target's channel is read and
+ * discarded rather than forbidden, §2's additive rule. The error sender must match the kind:
+ * a caller correlates by req_id AND frame type, and a check answered with an update's frame
+ * shape is an answer it never hears.
+ */
+static void refuse_plug_fw(const char *req_id, pending_kind_t kind, const char *err) {
+    if (kind == PENDING_PLUG_FW_UPDATE) {
+        send_plug_fw_update_result(req_id, false, err);
+    } else {
+        send_plug_fw_check_result(req_id, false, err, NULL);
+    }
+}
+
+static void handle_plug_fw(const char *js, const jsmntok_t *tok, int count, const char *req_id,
+                           pending_kind_t kind) {
+    uint8_t     mac[6];
+    ip4_addr_t  ip;
+    int         channel;
+    const char *err;
+    if (!parse_plug_target(js, tok, count, mac, &ip, &channel, &err)) {
+        refuse_plug_fw(req_id, kind, err);
+        return;
+    }
+    if (!rw_net_ready()) {
+        refuse_plug_fw(req_id, kind, "no_link");
+        return;
+    }
+    if (!rw_plug_ip_local(&ip)) {
+        refuse_plug_fw(req_id, kind, "bad_frame");
+        return;
+    }
+    if (s.plug_owned || rw_plug_busy() || !queue(kind, req_id)) {
+        refuse_plug_fw(req_id, kind, "busy");
+        return;
+    }
+    memcpy(s.mac, mac, 6);
+    s.plug_ip = ip;
+}
+
 /* ── Updates ───────────────────────────────────────────────────────────────── */
 /*
  * An update arrives over this connection and no other. A second TLS session does not fit — one
@@ -1622,6 +1749,16 @@ static void on_text(rw_ws_client_t *ws, void *ctx, char *text, size_t len) {
             return;
         }
         handle_plug_status(text, tokens, count, req_id);
+    } else if (rw_json_eq(text, &tokens[t_idx], "plug_fw_check")) {
+        if (req_id[0] == '\0') {
+            return;
+        }
+        handle_plug_fw(text, tokens, count, req_id, PENDING_PLUG_FW_CHECK);
+    } else if (rw_json_eq(text, &tokens[t_idx], "plug_fw_update")) {
+        if (req_id[0] == '\0') {
+            return;
+        }
+        handle_plug_fw(text, tokens, count, req_id, PENDING_PLUG_FW_UPDATE);
     } else if (rw_json_eq(text, &tokens[t_idx], "ota_offer")) {
         /* Carries `id` rather than `req_id`: a transfer outlives the exchange that started it,
          * and the frames that follow are not answers to a request. */

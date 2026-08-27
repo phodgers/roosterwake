@@ -82,6 +82,7 @@ static bool harvest(const scan_slot_t *slot, const rw_lan_host_t *host, rw_shell
     snprintf(out->ip, sizeof(out->ip), "%s", ip4addr_ntoa(&host->ip));
     snprintf(out->model, sizeof(out->model), "%s", id.model);
     snprintf(out->name, sizeof(out->name), "%s", id.name);
+    snprintf(out->fw, sizeof(out->fw), "%s", id.fw);
     out->gen      = id.gen;
     out->channels = id.channels;
     return true;
@@ -163,6 +164,10 @@ typedef enum {
     PHASE_VERIFY, /* Gen2 only: the confirming Switch.GetStatus after a successful set —
                      Switch.Set answers was_on, the PREVIOUS state, which must never be
                      echoed as current */
+    PHASE_FW_INFO,   /* the running build: Gen1 GET /ota (which answers everything and ends
+                        the check), Gen2+ GET /rpc/Shelly.GetDeviceInfo */
+    PHASE_FW_LATEST, /* Gen2+ only: GET /rpc/Shelly.CheckForUpdate — the vendor's answer */
+    PHASE_FW_UPDATE, /* the install order; the 200 is the acceptance and the whole reply */
 } phase_t;
 
 /*
@@ -178,6 +183,9 @@ typedef enum {
 static struct {
     phase_t          phase;
     bool             is_status;
+    bool             is_fw_check;
+    bool             is_fw_update;
+    rw_shelly_fw_t   fw; /* a check's answer, assembled across its one or two reads */
     rw_plug_action_t action;
     uint32_t         off_ms;
     uint8_t          mac[6];
@@ -208,6 +216,7 @@ static void finish(bool ok, const char *err, bool state_on, const rw_shelly_stat
     outcome.ok       = ok;
     outcome.err      = err;
     outcome.state_on = state_on;
+    outcome.fw       = s.fw; /* zeroed except when a firmware check filled it */
     if (st != NULL) {
         outcome.st = *st;
     }
@@ -269,11 +278,17 @@ static const char *start_probe(void) {
 }
 
 /* The action request for where the operation is now: a status read (`plug_status`, or the
- * confirming read after a Gen2 set), a set to the target state, or the cycle's two legs —
- * ACT is the off, ACT2 the on. */
+ * confirming read after a Gen2 set), a firmware leg, a set to the target state, or the
+ * cycle's two legs — ACT is the off, ACT2 the on. */
 static const char *start_act(phase_t phase) {
     size_t len;
-    if (s.is_status || phase == PHASE_VERIFY) {
+    if (phase == PHASE_FW_INFO) {
+        len = rw_shelly_req_fw_info(s.req, sizeof(s.req), s.ip_text, s.gen);
+    } else if (phase == PHASE_FW_LATEST) {
+        len = rw_shelly_req_fw_check(s.req, sizeof(s.req), s.ip_text);
+    } else if (phase == PHASE_FW_UPDATE) {
+        len = rw_shelly_req_fw_update(s.req, sizeof(s.req), s.ip_text, s.gen);
+    } else if (s.is_status || phase == PHASE_VERIFY) {
         len = rw_shelly_req_status(s.req, sizeof(s.req), s.ip_text, s.gen, s.channel);
     } else {
         const bool on = (phase == PHASE_ACT2) || (s.action == RW_PLUG_ON);
@@ -360,6 +375,26 @@ bool rw_plug_status_start(const uint8_t mac[6], const ip4_addr_t *ip, int channe
     return true;
 }
 
+bool rw_plug_fw_check_start(const uint8_t mac[6], const ip4_addr_t *ip, rw_plug_done_t cb,
+                            void *ctx) {
+    if (!start_common(mac, ip, 0, cb, ctx)) {
+        return false;
+    }
+    s.is_fw_check = true;
+    run_leg(PHASE_PROBE);
+    return true;
+}
+
+bool rw_plug_fw_update_start(const uint8_t mac[6], const ip4_addr_t *ip, rw_plug_done_t cb,
+                             void *ctx) {
+    if (!start_common(mac, ip, 0, cb, ctx)) {
+        return false;
+    }
+    s.is_fw_update = true;
+    run_leg(PHASE_PROBE);
+    return true;
+}
+
 /* Split the finished exchange, demanding HTTP 200. Returns false with `*why` set. */
 static bool take_response(const char **body, size_t *body_len, const char **why) {
     if (rw_httpc_state(&s.http) != RW_HTTPC_DONE) {
@@ -394,7 +429,13 @@ static void probe_done(void) {
              * not as a stale address. */
             s.gen            = id.gen;
             s.addr_confirmed = true;
-            run_leg(PHASE_ACT);
+            if (s.is_fw_check) {
+                run_leg(PHASE_FW_INFO);
+            } else if (s.is_fw_update) {
+                run_leg(PHASE_FW_UPDATE);
+            } else {
+                run_leg(PHASE_ACT);
+            }
             return;
         }
         /* Something answered `/shelly` here, but it is not the plug that was named: either
@@ -418,6 +459,47 @@ static void probe_done(void) {
      */
     const bool pinned_but_wrong = s.addr_confirmed && identified;
     finish(false, pinned_but_wrong ? "plug_unsupported" : "plug_unreachable", false, NULL);
+}
+
+/*
+ * A firmware leg finished. No retry ladder here: nothing in a check or an update order has
+ * cut anybody's power, so a failure is simply reported — and an update that was ACCEPTED
+ * before the socket died still proceeds on the plug's own schedule, exactly as the reply
+ * contract says it may.
+ */
+static void fw_done(phase_t phase) {
+    const char *why;
+    const char *body;
+    size_t      body_len;
+    if (!take_response(&body, &body_len, &why)) {
+        finish(false, why, false, NULL);
+        return;
+    }
+
+    if (phase == PHASE_FW_UPDATE) {
+        /* The 200 is the acceptance — Gen2's success body is a bare `null`, Gen1's is the
+         * ota report again; neither holds anything the caller was promised. */
+        finish(true, NULL, false, NULL);
+        return;
+    }
+
+    if (phase == PHASE_FW_INFO && s.gen != 1) {
+        if (!rw_shelly_parse_device_ver(body, body_len, s.fw.current, sizeof(s.fw.current))) {
+            finish(false, "plug_unsupported", false, NULL);
+            return;
+        }
+        run_leg(PHASE_FW_LATEST);
+        return;
+    }
+
+    const bool parsed = (s.gen == 1)
+                            ? rw_shelly_parse_ota_report(body, body_len, &s.fw)
+                            : rw_shelly_parse_update_check(body, body_len, &s.fw);
+    if (!parsed) {
+        finish(false, "plug_unsupported", false, NULL);
+        return;
+    }
+    finish(true, NULL, false, NULL);
 }
 
 static void act_done(phase_t phase) {
@@ -510,6 +592,13 @@ void rw_plug_task(void) {
         case PHASE_VERIFY:
             if (rw_httpc_state(&s.http) != RW_HTTPC_ACTIVE) {
                 act_done(PHASE_VERIFY);
+            }
+            break;
+        case PHASE_FW_INFO:
+        case PHASE_FW_LATEST:
+        case PHASE_FW_UPDATE:
+            if (rw_httpc_state(&s.http) != RW_HTTPC_ACTIVE) {
+                fw_done(s.phase);
             }
             break;
     }

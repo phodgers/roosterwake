@@ -56,13 +56,14 @@ typedef enum {
 /*
  * How an operation ended. `err` is NULL on success, otherwise a §6 code: `plug_unreachable`,
  * `plug_unsupported`, or `internal`. For a set, `state_on` is the state the plug was left in;
- * for a status, `st` is the parsed channel state.
+ * for a status, `st` is the parsed channel state; for a firmware check, `fw` is the standing.
  */
 typedef struct {
     bool               ok;
     const char        *err;
     bool               state_on;
     rw_shelly_status_t st;
+    rw_shelly_fw_t     fw;
 } rw_plug_outcome_t;
 
 typedef void (*rw_plug_done_t)(void *ctx, const rw_plug_outcome_t *outcome);
@@ -86,6 +87,24 @@ bool rw_plug_set_start(const uint8_t mac[6], const ip4_addr_t *ip, int channel,
                        rw_plug_action_t action, uint32_t off_ms, rw_plug_done_t cb, void *ctx);
 bool rw_plug_status_start(const uint8_t mac[6], const ip4_addr_t *ip, int channel,
                           rw_plug_done_t cb, void *ctx);
+
+/*
+ * The firmware verbs (PROTOCOL.md §5 `plug_fw_check` / `plug_fw_update`). No channel:
+ * firmware is a fact about the device, however many feeds it carries. The check reads the
+ * running build and asks the plug ITSELF whether its vendor holds something newer — the
+ * device makes that check over its own internet route; this driver still speaks only local
+ * HTTP, and a plug firewalled off the internet simply answers "nothing newer", which is an
+ * answer, not a fault. The update orders the vendor's stable build and completes on
+ * ACCEPTANCE: the flash and reboot run on the plug's own schedule, and a driver that waited
+ * through them would report a timeout against an update that is working. Same identity
+ * ladder as set/status — cached IP confirmed by MAC, re-resolve on silence or mismatch —
+ * because a version read aimed at a reassigned lease would report an innocent device's
+ * firmware as the target's.
+ */
+bool rw_plug_fw_check_start(const uint8_t mac[6], const ip4_addr_t *ip, rw_plug_done_t cb,
+                            void *ctx);
+bool rw_plug_fw_update_start(const uint8_t mac[6], const ip4_addr_t *ip, rw_plug_done_t cb,
+                             void *ctx);
 
 /* Drive the state machine. Call from the main loop; cheap when idle. */
 void rw_plug_task(void);

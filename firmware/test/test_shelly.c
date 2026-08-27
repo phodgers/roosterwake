@@ -106,6 +106,7 @@ static void check_identify(void) {
     RW_CHECK_EQ_STR(id.model, "SHPLG-S");
     RW_CHECK_EQ_INT(id.channels, 1);
     RW_CHECK_EQ_STR(id.name, "");
+    RW_CHECK_EQ_STR(id.fw, "20230913-112003"); /* Gen1 `fw`, verbatim */
     const uint8_t mac1[6] = {0x00, 0x00, 0x5E, 0x00, 0x53, 0x01};
     RW_CHECK_EQ_MEM(id.mac, mac1, 6);
 
@@ -115,6 +116,7 @@ static void check_identify(void) {
     RW_CHECK_EQ_INT(id.channels, 1);
     /* `name` is null until an owner sets one; `id` stands in. */
     RW_CHECK_EQ_STR(id.name, "shellyplusplugs-00005e005302");
+    RW_CHECK_EQ_STR(id.fw, "1.3.3"); /* Gen2 `ver`, verbatim */
 
     /* A named Gen3 device: `gen` is carried through, the name wins over the id. */
     {
@@ -124,6 +126,8 @@ static void check_identify(void) {
         RW_CHECK(rw_shelly_identify(g3, strlen(g3), &id));
         RW_CHECK_EQ_INT(id.gen, 3);
         RW_CHECK_EQ_STR(id.name, "rack plug");
+        /* A body without `ver` is still a plug; the firmware is best-effort, not a gate. */
+        RW_CHECK_EQ_STR(id.fw, "");
     }
 
     /* Most of what answers port 80 is not a Shelly. */
@@ -173,6 +177,113 @@ static void check_requests(void) {
 
     /* A buffer too small reports 0 rather than a truncated request. */
     RW_CHECK_EQ_INT((int)rw_shelly_req_identify(buf, 10, "192.168.1.60"), 0);
+
+    /* The firmware verbs. Gen1 keeps the whole standing at `/ota`; Gen2+ speaks the
+     * direct-path RPC form, whose refusals arrive as non-200 rather than buried in an
+     * envelope's HTTP 200. */
+    RW_CHECK(rw_shelly_req_fw_info(buf, sizeof(buf), "192.168.1.60", 1) > 0);
+    RW_CHECK_EQ_STR(buf, "GET /ota HTTP/1.1\r\n"
+                         "Host: 192.168.1.60\r\n"
+                         "Connection: close\r\n\r\n");
+
+    RW_CHECK(rw_shelly_req_fw_info(buf, sizeof(buf), "10.0.0.9", 2) > 0);
+    RW_CHECK(strstr(buf, "GET /rpc/Shelly.GetDeviceInfo HTTP/1.1") == buf);
+
+    RW_CHECK(rw_shelly_req_fw_check(buf, sizeof(buf), "10.0.0.9") > 0);
+    RW_CHECK(strstr(buf, "GET /rpc/Shelly.CheckForUpdate HTTP/1.1") == buf);
+
+    RW_CHECK(rw_shelly_req_fw_update(buf, sizeof(buf), "192.168.1.60", 1) > 0);
+    RW_CHECK(strstr(buf, "GET /ota?update=true HTTP/1.1") == buf);
+
+    /* The Gen2 update order: direct-path POST, Content-Length exactly the body's length. */
+    RW_CHECK(rw_shelly_req_fw_update(buf, sizeof(buf), "10.0.0.9", 2) > 0);
+    RW_CHECK(strstr(buf, "POST /rpc/Shelly.Update HTTP/1.1") == buf);
+    {
+        const char *body = strstr(buf, "\r\n\r\n");
+        RW_CHECK(body != NULL);
+        body += 4;
+        RW_CHECK_EQ_STR(body, "{\"stage\":\"stable\"}");
+        char expect[32];
+        snprintf(expect, sizeof(expect), "Content-Length: %d\r\n", (int)strlen(body));
+        RW_CHECK(strstr(buf, expect) != NULL);
+    }
+}
+
+static void check_fw(void) {
+    rw_shelly_fw_t fw;
+
+    /* A Gen1 `/ota` with an update available: all three facts. */
+    {
+        const char *body =
+            "{\"status\":\"idle\",\"has_update\":true,"
+            "\"new_version\":\"20240625-123456/v1.14.1-gabcdef1\","
+            "\"old_version\":\"20230913-112003/v1.14.0-gcb84623\"}";
+        RW_CHECK(rw_shelly_parse_ota_report(body, strlen(body), &fw));
+        RW_CHECK_EQ_STR(fw.current, "20230913-112003/v1.14.0-gcb84623");
+        RW_CHECK_EQ_STR(fw.latest, "20240625-123456/v1.14.1-gabcdef1");
+        RW_CHECK(fw.has_update);
+    }
+
+    /* Up to date — and `/ota` still echoes `new_version`, which must NOT surface as
+     * `latest`: the device's own verdict decides, never a string comparison upstream. */
+    {
+        const char *body =
+            "{\"status\":\"idle\",\"has_update\":false,"
+            "\"new_version\":\"20230913-112003/v1.14.0-gcb84623\","
+            "\"old_version\":\"20230913-112003/v1.14.0-gcb84623\"}";
+        RW_CHECK(rw_shelly_parse_ota_report(body, strlen(body), &fw));
+        RW_CHECK_EQ_STR(fw.current, "20230913-112003/v1.14.0-gcb84623");
+        RW_CHECK_EQ_STR(fw.latest, "");
+        RW_CHECK(!fw.has_update);
+    }
+
+    /* Not the report's shape: no verdict, or no running build to name. */
+    {
+        const char *no_verdict = "{\"status\":\"idle\",\"old_version\":\"x\"}";
+        RW_CHECK(!rw_shelly_parse_ota_report(no_verdict, strlen(no_verdict), &fw));
+        const char *no_current = "{\"has_update\":false}";
+        RW_CHECK(!rw_shelly_parse_ota_report(no_current, strlen(no_current), &fw));
+        const char *html = "<!DOCTYPE html>";
+        RW_CHECK(!rw_shelly_parse_ota_report(html, strlen(html), &fw));
+    }
+
+    /* A direct-path Shelly.GetDeviceInfo: `ver` names the running build. */
+    {
+        char        ver[RW_SHELLY_FW_LEN];
+        const char *body =
+            "{\"name\":null,\"id\":\"shellyplusplugs-00005e005302\",\"mac\":\"00005E005302\","
+            "\"model\":\"SNPL-00112UK\",\"gen\":2,\"fw_id\":\"20250213-104904/1.4.4-g6d2a586\","
+            "\"ver\":\"1.4.4\",\"app\":\"PlusPlugS\"}";
+        RW_CHECK(rw_shelly_parse_device_ver(body, strlen(body), ver, sizeof(ver)));
+        RW_CHECK_EQ_STR(ver, "1.4.4");
+
+        const char *no_ver = "{\"gen\":2}";
+        RW_CHECK(!rw_shelly_parse_device_ver(no_ver, strlen(no_ver), ver, sizeof(ver)));
+    }
+
+    /* Shelly.CheckForUpdate: `{}` — no `stable` member at all — IS the up-to-date answer,
+     * the real firmware's shape, and must parse as ok rather than as a failure. */
+    {
+        memset(&fw, 0, sizeof(fw));
+        const char *current = "{}";
+        RW_CHECK(rw_shelly_parse_update_check(current, strlen(current), &fw));
+        RW_CHECK(!fw.has_update);
+        RW_CHECK_EQ_STR(fw.latest, "");
+
+        const char *newer =
+            "{\"stable\":{\"version\":\"2.0.0\",\"build_id\":\"20250715-104532/2.0.0-gf2d5c\"}}";
+        RW_CHECK(rw_shelly_parse_update_check(newer, strlen(newer), &fw));
+        RW_CHECK(fw.has_update);
+        RW_CHECK_EQ_STR(fw.latest, "2.0.0");
+
+        /* A beta on offer with no stable is still "nothing stable to move to". */
+        const char *beta_only = "{\"beta\":{\"version\":\"2.1.0-beta1\"}}";
+        RW_CHECK(rw_shelly_parse_update_check(beta_only, strlen(beta_only), &fw));
+        RW_CHECK(!fw.has_update);
+
+        const char *not_json = "Not Found";
+        RW_CHECK(!rw_shelly_parse_update_check(not_json, strlen(not_json), &fw));
+    }
 }
 
 static void check_status_gen1(void) {
@@ -305,12 +416,14 @@ static rw_shelly_plug_t plug(const char *ip, uint8_t last, const char *name) {
 }
 
 static void check_json_plugs(void) {
-    /* Everything fits: exact frame text, name omitted where the device offered none. */
+    /* Everything fits: exact frame text; name and fw omitted where the device offered none,
+     * present verbatim where it did. */
     {
         rw_shelly_plug_t plugs[2] = {
             plug("192.168.1.60", 0x02, "rack plug"),
             plug("192.168.1.61", 0x03, ""),
         };
+        snprintf(plugs[0].fw, sizeof(plugs[0].fw), "2.0.0");
         char    buf[512];
         rw_jw_t w;
         rw_jw_init(&w, buf, sizeof(buf));
@@ -322,7 +435,7 @@ static void check_json_plugs(void) {
                         "{\"plugs\":["
                         "{\"mac\":\"00:00:5E:00:53:02\",\"ip\":\"192.168.1.60\","
                         "\"model\":\"SNPL-00112UK\",\"gen\":2,\"name\":\"rack plug\","
-                        "\"channels\":1},"
+                        "\"channels\":1,\"fw\":\"2.0.0\"},"
                         "{\"mac\":\"00:00:5E:00:53:03\",\"ip\":\"192.168.1.61\","
                         "\"model\":\"SNPL-00112UK\",\"gen\":2,\"channels\":1}"
                         "]}");
@@ -361,6 +474,7 @@ void test_shelly(void) {
     check_split();
     check_identify();
     check_requests();
+    check_fw();
     check_status_gen1();
     check_status_gen2();
     check_milli();

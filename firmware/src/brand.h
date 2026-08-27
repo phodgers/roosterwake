@@ -71,7 +71,7 @@ _Static_assert(sizeof(RW_SETUP_SSID_PREFIX) - 1 + RW_SETUP_SSID_SUFFIX_LEN <= 32
 #define RW_USBCFG_VERSION 2
 
 /* Firmware version reported in `hello`, `status_result` and `INFO`. */
-#define RW_FW_VERSION "2.4.0"
+#define RW_FW_VERSION "2.5.0"
 
 /*
  * Board identifier reported in `hello` (PROTOCOL.md §4) and `INFO` (usbcfg.md §4).
@@ -95,10 +95,15 @@ _Static_assert(sizeof(RW_SETUP_SSID_PREFIX) - 1 + RW_SETUP_SSID_SUFFIX_LEN <= 32
  *   wake   -> `wake`          status -> `status`
  *   probe  -> `probe`         scan   -> `scan`
  *   ota    -> `ota_offer`     plug   -> `plug_scan`, `plug_set`, `plug_status`
+ *   plugfw -> `plug_fw_check`, `plug_fw_update`
+ *
+ * `plugfw` is deliberately its own capability rather than a fourth frame under `plug`: every
+ * `plug` build released before the firmware verbs existed would otherwise be sent a question
+ * it silently ignores, and a capability refusal is the clean answer an old actor gives.
  *
  * `sched` is reserved by the protocol and has no command yet, so it is not advertised. There
  * is no `log` capability: diagnostics are enabled locally and no frame can turn them on.
  */
-#define RW_CAPS_JSON "[\"wake\",\"status\",\"probe\",\"scan\",\"ota\",\"plug\"]"
+#define RW_CAPS_JSON "[\"wake\",\"status\",\"probe\",\"scan\",\"ota\",\"plug\",\"plugfw\"]"
 
 #endif /* RW_BRAND_H */

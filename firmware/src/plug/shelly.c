@@ -265,6 +265,9 @@ bool rw_shelly_identify(const char *body, size_t len, rw_shelly_id_t *out) {
              * there and is at least recognisable across the room. */
             copy_str(body, s_tok, count, 0, "id", out->name, sizeof(out->name));
         }
+        /* Best-effort: `ver` rides in every Gen2+ `/shelly`, but a body without it is still a
+         * plug — the scan reports the firmware where it can, it does not gate on it. */
+        copy_str(body, s_tok, count, 0, "ver", out->fw, sizeof(out->fw));
         if (out->model[0] == '\0') {
             return false;
         }
@@ -275,6 +278,7 @@ bool rw_shelly_identify(const char *body, size_t len, rw_shelly_id_t *out) {
         }
         out->gen = 1;
         copy_str(body, s_tok, count, 0, "type", out->model, sizeof(out->model));
+        copy_str(body, s_tok, count, 0, "fw", out->fw, sizeof(out->fw));
         if (out->model[0] == '\0') {
             return false;
         }
@@ -366,6 +370,44 @@ size_t rw_shelly_req_status(char *buf, size_t cap, const char *host, int gen, in
                                "Content-Length: %d\r\n"
                                "Connection: close\r\n\r\n%s",
                                host, body_len, body));
+}
+
+size_t rw_shelly_req_fw_info(char *buf, size_t cap, const char *host, int gen) {
+    return finish_req(cap,
+                      snprintf(buf, cap,
+                               "GET %s HTTP/1.1\r\n"
+                               "Host: %s\r\n"
+                               "Connection: close\r\n\r\n",
+                               gen == 1 ? "/ota" : "/rpc/Shelly.GetDeviceInfo", host));
+}
+
+size_t rw_shelly_req_fw_check(char *buf, size_t cap, const char *host) {
+    return finish_req(cap,
+                      snprintf(buf, cap,
+                               "GET /rpc/Shelly.CheckForUpdate HTTP/1.1\r\n"
+                               "Host: %s\r\n"
+                               "Connection: close\r\n\r\n",
+                               host));
+}
+
+size_t rw_shelly_req_fw_update(char *buf, size_t cap, const char *host, int gen) {
+    if (gen == 1) {
+        return finish_req(cap,
+                          snprintf(buf, cap,
+                                   "GET /ota?update=true HTTP/1.1\r\n"
+                                   "Host: %s\r\n"
+                                   "Connection: close\r\n\r\n",
+                                   host));
+    }
+    static const char body[] = "{\"stage\":\"stable\"}";
+    return finish_req(cap,
+                      snprintf(buf, cap,
+                               "POST /rpc/Shelly.Update HTTP/1.1\r\n"
+                               "Host: %s\r\n"
+                               "Content-Type: application/json\r\n"
+                               "Content-Length: %d\r\n"
+                               "Connection: close\r\n\r\n%s",
+                               host, (int)(sizeof(body) - 1), body));
 }
 
 /* ── Responses ─────────────────────────────────────────────────────────────── */
@@ -480,6 +522,59 @@ bool rw_shelly_parse_set(const char *body, size_t len, int gen, bool *have_state
     return rpc_result(body, count) >= 0;
 }
 
+/* ── Firmware standing ─────────────────────────────────────────────────────── */
+
+bool rw_shelly_parse_ota_report(const char *body, size_t len, rw_shelly_fw_t *out) {
+    int count = parse_body(body, len);
+    if (count < 0) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+
+    int hu = obj_find(body, s_tok, count, 0, "has_update");
+    if (hu < 0 || !tok_bool(body, &s_tok[hu], &out->has_update)) {
+        return false;
+    }
+    copy_str(body, s_tok, count, 0, "old_version", out->current, sizeof(out->current));
+    if (out->current[0] == '\0') {
+        return false; /* a report that cannot name the running build is not the report */
+    }
+    if (out->has_update) {
+        /* Only repeated under the device's own verdict — `/ota` echoes `new_version` even
+         * when nothing is newer, and `latest` must never be an echo of `current`. */
+        copy_str(body, s_tok, count, 0, "new_version", out->latest, sizeof(out->latest));
+    }
+    return true;
+}
+
+bool rw_shelly_parse_device_ver(const char *body, size_t len, char *ver, size_t cap) {
+    int count = parse_body(body, len);
+    if (count < 0) {
+        return false;
+    }
+    ver[0] = '\0';
+    copy_str(body, s_tok, count, 0, "ver", ver, cap);
+    return ver[0] != '\0';
+}
+
+bool rw_shelly_parse_update_check(const char *body, size_t len, rw_shelly_fw_t *out) {
+    int count = parse_body(body, len);
+    if (count < 0) {
+        return false;
+    }
+    out->latest[0]  = '\0';
+    out->has_update = false;
+
+    /* `{}` — no `stable` member at all — is the real up-to-date answer, not a failure. */
+    int stable = obj_find(body, s_tok, count, 0, "stable");
+    if (stable < 0 || s_tok[stable].type != JSMN_OBJECT) {
+        return true;
+    }
+    copy_str(body, s_tok, count, stable, "version", out->latest, sizeof(out->latest));
+    out->has_update = out->latest[0] != '\0';
+    return true;
+}
+
 /* ── The scan list ─────────────────────────────────────────────────────────── */
 
 /* The scan_json arrangement: a write is undone by putting the length back, and `ok` travels
@@ -512,6 +607,13 @@ static void write_plug(rw_jw_t *w, const rw_shelly_plug_t *p, bool first) {
     rw_jw_raw(w, ",");
     rw_jw_key(w, "channels");
     rw_jw_int(w, p->channels);
+    /* `fw` rides the same omitted-when-absent rule (§4): a service holding a minimum-version
+     * policy reads it, and an empty string would impersonate a version nobody reported. */
+    if (p->fw[0] != '\0') {
+        rw_jw_raw(w, ",");
+        rw_jw_key(w, "fw");
+        rw_jw_str(w, p->fw);
+    }
     rw_jw_raw(w, "}");
 }
 
