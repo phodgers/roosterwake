@@ -308,16 +308,21 @@ static void check_status_gen1(void) {
     RW_CHECK(st.have_energy);
     RW_CHECK_EQ_INT(st.energy_mwh, 275000);
     RW_CHECK(!st.have_voltage);
+    /* The Wi-Fi signal rides in the same body, under `wifi_sta`. */
+    RW_CHECK(st.have_rssi);
+    RW_CHECK_EQ_INT((int)st.rssi, -52);
 
     /* A channel the device does not have is a refusal, not channel 0's answer. */
     RW_CHECK(!rw_shelly_parse_status(body, strlen(body), 1, 1, &st));
 
-    /* A relay with no meter behind it: state parses, metering stays absent. */
+    /* A relay with no meter behind it: state parses, metering stays absent — and so does
+     * the signal, when the body carries no `wifi_sta` (an Ethernet-attached Pro, say). */
     {
         const char *bare = "{\"relays\":[{\"ison\":false}],\"meters\":[]}";
         RW_CHECK(rw_shelly_parse_status(bare, strlen(bare), 1, 0, &st));
         RW_CHECK(!st.on);
         RW_CHECK(!st.have_apower && !st.have_energy && !st.have_voltage);
+        RW_CHECK(!st.have_rssi);
     }
 }
 
@@ -339,6 +344,8 @@ static void check_status_gen2(void) {
     RW_CHECK_EQ_INT(st.voltage_mv, 237500);
     RW_CHECK(st.have_energy);
     RW_CHECK_EQ_INT(st.energy_mwh, 6532);
+    /* Switch.GetStatus never carries the signal — the driver's Wifi.GetStatus leg does. */
+    RW_CHECK(!st.have_rssi);
 
     /* The RPC's refusal arrives as HTTP 200 with an `error` member — a bad channel id. It
      * must never read as "off". */
@@ -382,6 +389,39 @@ static void check_status_gen2(void) {
         RW_CHECK(rw_shelly_parse_status(bare, strlen(bare), 2, 0, &st));
         RW_CHECK(!st.on);
         RW_CHECK(!st.have_apower && !st.have_voltage && !st.have_energy);
+    }
+}
+
+/* The Wi-Fi signal leg: the Gen2 request and the direct-path answer's `rssi`. Gen1 needs
+ * neither — its `/status` states the signal in the body check_status_gen1 already proves. */
+static void check_wifi(void) {
+    char buf[256];
+    RW_CHECK(rw_shelly_req_wifi_status(buf, sizeof(buf), "10.0.0.9") > 0);
+    RW_CHECK_EQ_STR(buf, "GET /rpc/Wifi.GetStatus HTTP/1.1\r\n"
+                         "Host: 10.0.0.9\r\n"
+                         "Connection: close\r\n\r\n");
+    RW_CHECK_EQ_INT((int)rw_shelly_req_wifi_status(buf, 10, "10.0.0.9"), 0);
+
+    long rssi = 0;
+    {
+        const char *body =
+            "{\"sta_ip\":\"192.168.1.61\",\"status\":\"got ip\",\"ssid\":\"net\",\"rssi\":-84}";
+        RW_CHECK(rw_shelly_parse_wifi_rssi(body, strlen(body), &rssi));
+        RW_CHECK_EQ_INT((int)rssi, -84);
+    }
+
+    /* A body without the member, one whose member is null, and one that is not JSON at all
+     * are each "the device did not say" — the caller's rule turns that into an omitted
+     * field, never a failed status. */
+    {
+        const char *no_rssi = "{\"sta_ip\":null,\"status\":\"disconnected\",\"ssid\":null}";
+        RW_CHECK(!rw_shelly_parse_wifi_rssi(no_rssi, strlen(no_rssi), &rssi));
+
+        const char *null_rssi = "{\"status\":\"disconnected\",\"rssi\":null}";
+        RW_CHECK(!rw_shelly_parse_wifi_rssi(null_rssi, strlen(null_rssi), &rssi));
+
+        const char *html = "Not Found";
+        RW_CHECK(!rw_shelly_parse_wifi_rssi(html, strlen(html), &rssi));
     }
 }
 
@@ -477,6 +517,7 @@ void test_shelly(void) {
     check_fw();
     check_status_gen1();
     check_status_gen2();
+    check_wifi();
     check_milli();
     check_json_plugs();
 }

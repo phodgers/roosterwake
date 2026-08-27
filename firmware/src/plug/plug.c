@@ -164,6 +164,8 @@ typedef enum {
     PHASE_VERIFY, /* Gen2 only: the confirming Switch.GetStatus after a successful set —
                      Switch.Set answers was_on, the PREVIOUS state, which must never be
                      echoed as current */
+    PHASE_WIFI,   /* Gen2 status only: Wifi.GetStatus for the rssi, after the switch state is
+                     already in hand — a leg whose failure must never fail the status */
     PHASE_FW_INFO,   /* the running build: Gen1 GET /ota (which answers everything and ends
                         the check), Gen2+ GET /rpc/Shelly.GetDeviceInfo */
     PHASE_FW_LATEST, /* Gen2+ only: GET /rpc/Shelly.CheckForUpdate — the vendor's answer */
@@ -186,6 +188,9 @@ static struct {
     bool             is_fw_check;
     bool             is_fw_update;
     rw_shelly_fw_t   fw; /* a check's answer, assembled across its one or two reads */
+    /* A status read's answer, held while PHASE_WIFI runs its extra exchange — the switch
+     * state is complete before that leg starts and must survive it. */
+    rw_shelly_status_t st;
     rw_plug_action_t action;
     uint32_t         off_ms;
     uint8_t          mac[6];
@@ -196,6 +201,15 @@ static struct {
     /* The current address came from a resolve that positively mapped the MAC to it, rather
      * than from the caller's cache. Decides how a failure at it is reported. */
     bool             addr_confirmed;
+    /* The target's MAC was POSITIVELY seen on the segment during this operation — an
+     * identity-confirmed probe answer, or an active ARP answer from the resolve sweep.
+     * Never set from the arplearn cache: passive history is not presence. Decides whether
+     * a `plug_unreachable` reports the plug as mute or absent. */
+    bool             mac_seen;
+    /* An active ARP sweep actually ran. Only such a sweep can testify to absence — a resolve
+     * satisfied from the arplearn cache searched nothing, so a failure after it must report
+     * unknown, not absent. */
+    bool             sweep_ran;
     bool             resolved_once;
     absolute_time_t  wait_until;
     phase_t          after_wait; /* which leg PHASE_WAIT starts when the timer lands */
@@ -219,6 +233,16 @@ static void finish(bool ok, const char *err, bool state_on, const rw_shelly_stat
     outcome.fw       = s.fw; /* zeroed except when a firmware check filled it */
     if (st != NULL) {
         outcome.st = *st;
+    }
+    /* Only `plug_unreachable` carries a presence verdict — it is the one error whose remedy
+     * depends on whether the plug is even there. A MAC seen during this attempt means the
+     * plug is powered and associated but not speaking HTTP; an active sweep that missed it
+     * means it is off the segment; anything less — no resolve at all, or one satisfied from
+     * the arplearn cache without sweeping — has earned neither claim. */
+    if (!ok && err != NULL && strcmp(err, "plug_unreachable") == 0) {
+        outcome.presence = s.mac_seen ? RW_PLUG_PRESENCE_MUTE
+                                      : (s.sweep_ran ? RW_PLUG_PRESENCE_ABSENT
+                                                     : RW_PLUG_PRESENCE_UNKNOWN);
     }
     if (s.cb != NULL) {
         s.cb(s.ctx, &outcome);
@@ -258,14 +282,21 @@ static bool resolve_by_mac(void) {
     ip4_addr_t fresh;
     if (rw_arp_lookup(s.mac, &fresh) &&
         ip4_addr_get_u32(&fresh) != ip4_addr_get_u32(&s.ip)) {
+        /* Deliberately NOT mac_seen: arplearn is a passive cache, and a stale entry would
+         * report a vanished plug as mute. Only an answer earned this moment counts. */
         set_ip(&fresh);
         return true;
     }
 
     static rw_lan_host_t hosts[RW_LAN_SCAN_MAX];
     const int            n = rw_lan_sweep(hosts, RW_LAN_SCAN_MAX);
+    /* A completed sweep — even an empty one — is testimony about the segment; a negative
+     * return means nothing was searched and absence cannot be claimed. */
+    s.sweep_ran = n >= 0;
     for (int i = 0; i < n; i++) {
         if (memcmp(hosts[i].mac, s.mac, 6) == 0) {
+            /* An active ARP answer, moments old: the plug is on the segment right now. */
+            s.mac_seen = true;
             set_ip(&hosts[i].ip);
             return true;
         }
@@ -288,6 +319,8 @@ static const char *start_act(phase_t phase) {
         len = rw_shelly_req_fw_check(s.req, sizeof(s.req), s.ip_text);
     } else if (phase == PHASE_FW_UPDATE) {
         len = rw_shelly_req_fw_update(s.req, sizeof(s.req), s.ip_text, s.gen);
+    } else if (phase == PHASE_WIFI) {
+        len = rw_shelly_req_wifi_status(s.req, sizeof(s.req), s.ip_text);
     } else if (s.is_status || phase == PHASE_VERIFY) {
         len = rw_shelly_req_status(s.req, sizeof(s.req), s.ip_text, s.gen, s.channel);
     } else {
@@ -429,6 +462,7 @@ static void probe_done(void) {
              * not as a stale address. */
             s.gen            = id.gen;
             s.addr_confirmed = true;
+            s.mac_seen       = true;
             if (s.is_fw_check) {
                 run_leg(PHASE_FW_INFO);
             } else if (s.is_fw_update) {
@@ -526,6 +560,18 @@ static void act_done(phase_t phase) {
         /* For a verify this reports what the confirming read SAW, which on a healthy plug is
          * the requested state — and on an unhealthy one (overpower protection re-tripping,
          * say) is the truth the caller needs instead. */
+        if (s.is_status && s.gen != 1 && phase != PHASE_VERIFY) {
+            /* A status read earns one more exchange for the Wi-Fi signal — Gen1 already
+             * stated it in this body, Gen2 keeps it behind Wifi.GetStatus. Only a status:
+             * a set's confirming read stays fast, so PHASE_VERIFY never rides this. And
+             * only as a bonus: a leg that cannot even start still answers with the switch
+             * state already in hand — the metering read is the product, the rssi a bonus
+             * fact that must never cost the answer. */
+            s.st = st;
+            if (start_act(PHASE_WIFI) == NULL) {
+                return;
+            }
+        }
         finish(true, NULL, st.on, &st);
         return;
     }
@@ -560,6 +606,26 @@ static void act_done(phase_t phase) {
     }
 }
 
+/*
+ * The Wi-Fi leg finished, well or badly — and either way the status succeeds. The switch
+ * state in s.st was complete before this leg started; the rssi is a bonus fact, and a plug
+ * that answered its metering read but not Wifi.GetStatus (older firmware, a mid-exchange
+ * blip) has still answered the question the caller asked. Failing the status here would
+ * trade a real answer for a decoration.
+ */
+static void wifi_done(void) {
+    const char *why;
+    const char *body;
+    size_t      body_len;
+    long        rssi;
+    if (take_response(&body, &body_len, &why) &&
+        rw_shelly_parse_wifi_rssi(body, body_len, &rssi)) {
+        s.st.rssi      = rssi;
+        s.st.have_rssi = true;
+    }
+    finish(true, NULL, s.st.on, &s.st);
+}
+
 void rw_plug_task(void) {
     if (s.phase == PHASE_IDLE) {
         return;
@@ -592,6 +658,11 @@ void rw_plug_task(void) {
         case PHASE_VERIFY:
             if (rw_httpc_state(&s.http) != RW_HTTPC_ACTIVE) {
                 act_done(PHASE_VERIFY);
+            }
+            break;
+        case PHASE_WIFI:
+            if (rw_httpc_state(&s.http) != RW_HTTPC_ACTIVE) {
+                wifi_done();
             }
             break;
         case PHASE_FW_INFO:

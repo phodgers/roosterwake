@@ -615,13 +615,29 @@ static void run_scan(const char *req_id) {
 /* ── Plug frames ───────────────────────────────────────────────────────────── */
 
 /*
+ * Append `presence` to a failing plug result. Only `plug_unreachable` carries it — the field
+ * answers "is the plug even there?", a question no other error asks — and only when the
+ * driver actually knows; the refusal paths (bad_frame, busy, no_link) never ran a resolve
+ * and pass UNKNOWN, which is the omission PROTOCOL.md §4 specifies.
+ */
+static void jw_plug_presence(rw_jw_t *w, const char *err, rw_plug_presence_t presence) {
+    if (presence == RW_PLUG_PRESENCE_UNKNOWN || strcmp(err, "plug_unreachable") != 0) {
+        return;
+    }
+    rw_jw_raw(w, ",");
+    rw_jw_key(w, "presence");
+    rw_jw_str(w, presence == RW_PLUG_PRESENCE_MUTE ? "mute" : "absent");
+}
+
+/*
  * PROTOCOL.md §4 `plug_result`. Sent AFTER the action completes — the one deliberate
  * inversion of `power`'s reply-before-action rule, and it is honest rather than convenient:
  * the actor is not the machine being acted on, so nothing here destroys the process that
  * replies, and a caller about to trust that a hung machine has been power-cycled deserves the
  * strong claim. `state` is the state the plug was left in, present only on success.
  */
-static void send_plug_result(const char *req_id, bool ok, const char *err, bool on) {
+static void send_plug_result(const char *req_id, bool ok, const char *err, bool on,
+                             rw_plug_presence_t presence) {
     rw_jw_t w;
     rw_jw_init(&w, s.out, sizeof(s.out));
     rw_jw_raw(&w, "{");
@@ -641,6 +657,7 @@ static void send_plug_result(const char *req_id, bool ok, const char *err, bool 
         rw_jw_raw(&w, ",");
         rw_jw_key(&w, "err");
         rw_jw_str(&w, err);
+        jw_plug_presence(&w, err, presence);
     }
     rw_jw_raw(&w, "}");
     rw_jw_finish(&w);
@@ -651,7 +668,8 @@ static void send_plug_result(const char *req_id, bool ok, const char *err, bool 
  * hardware has none: zero watts is a reading, and "cannot read watts" must not impersonate
  * it. */
 static void send_plug_status_result(const char *req_id, bool ok, const char *err,
-                                    const rw_shelly_status_t *st) {
+                                    const rw_shelly_status_t *st,
+                                    rw_plug_presence_t presence) {
     rw_jw_t w;
     rw_jw_init(&w, s.out, sizeof(s.out));
     rw_jw_raw(&w, "{");
@@ -667,6 +685,7 @@ static void send_plug_status_result(const char *req_id, bool ok, const char *err
         rw_jw_raw(&w, ",");
         rw_jw_key(&w, "err");
         rw_jw_str(&w, err);
+        jw_plug_presence(&w, err, presence);
     } else {
         rw_jw_raw(&w, ",");
         rw_jw_key(&w, "on");
@@ -686,6 +705,13 @@ static void send_plug_status_result(const char *req_id, bool ok, const char *err
             rw_jw_key(&w, "energy_wh");
             rw_jw_milli(&w, st->energy_mwh);
         }
+        /* Same omitted-not-zeroed rule: a signal the device did not report is absent, and
+         * dBm is a plain integer — whole decibels are all the devices measure. */
+        if (st->have_rssi) {
+            rw_jw_raw(&w, ",");
+            rw_jw_key(&w, "rssi");
+            rw_jw_int(&w, st->rssi);
+        }
     }
     rw_jw_raw(&w, "}");
     rw_jw_finish(&w);
@@ -699,7 +725,7 @@ static void send_plug_status_result(const char *req_id, bool ok, const char *err
  * new_version-echo mistake one layer up.
  */
 static void send_plug_fw_check_result(const char *req_id, bool ok, const char *err,
-                                      const rw_shelly_fw_t *fw) {
+                                      const rw_shelly_fw_t *fw, rw_plug_presence_t presence) {
     rw_jw_t w;
     rw_jw_init(&w, s.out, sizeof(s.out));
     rw_jw_raw(&w, "{");
@@ -715,6 +741,7 @@ static void send_plug_fw_check_result(const char *req_id, bool ok, const char *e
         rw_jw_raw(&w, ",");
         rw_jw_key(&w, "err");
         rw_jw_str(&w, err);
+        jw_plug_presence(&w, err, presence);
     } else {
         rw_jw_raw(&w, ",");
         rw_jw_key(&w, "current");
@@ -735,7 +762,8 @@ static void send_plug_fw_check_result(const char *req_id, bool ok, const char *e
 
 /* PROTOCOL.md §4 `plug_fw_update_result`. `ok` means the plug ACCEPTED the order and nothing
  * more — the flash and reboot run on the device's own schedule, watched via later checks. */
-static void send_plug_fw_update_result(const char *req_id, bool ok, const char *err) {
+static void send_plug_fw_update_result(const char *req_id, bool ok, const char *err,
+                                       rw_plug_presence_t presence) {
     rw_jw_t w;
     rw_jw_init(&w, s.out, sizeof(s.out));
     rw_jw_raw(&w, "{");
@@ -751,6 +779,7 @@ static void send_plug_fw_update_result(const char *req_id, bool ok, const char *
         rw_jw_raw(&w, ",");
         rw_jw_key(&w, "err");
         rw_jw_str(&w, err);
+        jw_plug_presence(&w, err, presence);
     }
     rw_jw_raw(&w, "}");
     rw_jw_finish(&w);
@@ -827,13 +856,17 @@ static void plug_done(void *ctx, const rw_plug_outcome_t *outcome) {
     }
     s.plug_owned = false;
     if (s.plug_kind == PENDING_PLUG_STATUS) {
-        send_plug_status_result(s.plug_req_id, outcome->ok, outcome->err, &outcome->st);
+        send_plug_status_result(s.plug_req_id, outcome->ok, outcome->err, &outcome->st,
+                                outcome->presence);
     } else if (s.plug_kind == PENDING_PLUG_FW_CHECK) {
-        send_plug_fw_check_result(s.plug_req_id, outcome->ok, outcome->err, &outcome->fw);
+        send_plug_fw_check_result(s.plug_req_id, outcome->ok, outcome->err, &outcome->fw,
+                                  outcome->presence);
     } else if (s.plug_kind == PENDING_PLUG_FW_UPDATE) {
-        send_plug_fw_update_result(s.plug_req_id, outcome->ok, outcome->err);
+        send_plug_fw_update_result(s.plug_req_id, outcome->ok, outcome->err,
+                                   outcome->presence);
     } else {
-        send_plug_result(s.plug_req_id, outcome->ok, outcome->err, outcome->state_on);
+        send_plug_result(s.plug_req_id, outcome->ok, outcome->err, outcome->state_on,
+                         outcome->presence);
     }
 }
 
@@ -972,13 +1005,17 @@ static void run_pending(void) {
                  * power survives reconnections by design. */
                 s.plug_owned = false;
                 if (s.kind == PENDING_PLUG_STATUS) {
-                    send_plug_status_result(s.req_id, false, "busy", NULL);
+                    send_plug_status_result(s.req_id, false, "busy", NULL,
+                                            RW_PLUG_PRESENCE_UNKNOWN);
                 } else if (s.kind == PENDING_PLUG_FW_CHECK) {
-                    send_plug_fw_check_result(s.req_id, false, "busy", NULL);
+                    send_plug_fw_check_result(s.req_id, false, "busy", NULL,
+                                              RW_PLUG_PRESENCE_UNKNOWN);
                 } else if (s.kind == PENDING_PLUG_FW_UPDATE) {
-                    send_plug_fw_update_result(s.req_id, false, "busy");
+                    send_plug_fw_update_result(s.req_id, false, "busy",
+                                               RW_PLUG_PRESENCE_UNKNOWN);
                 } else {
-                    send_plug_result(s.req_id, false, "busy", false);
+                    send_plug_result(s.req_id, false, "busy", false,
+                                     RW_PLUG_PRESENCE_UNKNOWN);
                 }
             }
             break;
@@ -1324,7 +1361,7 @@ static void handle_plug_set(const char *js, const jsmntok_t *tok, int count, con
     int         channel;
     const char *err;
     if (!parse_plug_target(js, tok, count, mac, &ip, &channel, &err)) {
-        send_plug_result(req_id, false, err, false);
+        send_plug_result(req_id, false, err, false, RW_PLUG_PRESENCE_UNKNOWN);
         return;
     }
 
@@ -1337,7 +1374,7 @@ static void handle_plug_set(const char *js, const jsmntok_t *tok, int count, con
     rw_plug_action_t action;
     int              st_idx = rw_json_find(js, tok, count, "state");
     if (st_idx < 0) {
-        send_plug_result(req_id, false, "bad_frame", false);
+        send_plug_result(req_id, false, "bad_frame", false, RW_PLUG_PRESENCE_UNKNOWN);
         return;
     }
     if (rw_json_eq(js, &tok[st_idx], "on")) {
@@ -1347,7 +1384,7 @@ static void handle_plug_set(const char *js, const jsmntok_t *tok, int count, con
     } else if (rw_json_eq(js, &tok[st_idx], "cycle")) {
         action = RW_PLUG_CYCLE;
     } else {
-        send_plug_result(req_id, false, "bad_frame", false);
+        send_plug_result(req_id, false, "bad_frame", false, RW_PLUG_PRESENCE_UNKNOWN);
         return;
     }
 
@@ -1365,7 +1402,7 @@ static void handle_plug_set(const char *js, const jsmntok_t *tok, int count, con
     }
 
     if (!rw_net_ready()) {
-        send_plug_result(req_id, false, "no_link", false);
+        send_plug_result(req_id, false, "no_link", false, RW_PLUG_PRESENCE_UNKNOWN);
         return;
     }
     /* Refused before any socket exists. The driver speaks plain unauthenticated HTTP wherever
@@ -1373,11 +1410,11 @@ static void handle_plug_set(const char *js, const jsmntok_t *tok, int count, con
      * — it is a request to be an HTTP client somewhere this protocol has no business, and it
      * is answered like any other field that could never legitimately be meant. */
     if (!rw_plug_ip_local(&ip)) {
-        send_plug_result(req_id, false, "bad_frame", false);
+        send_plug_result(req_id, false, "bad_frame", false, RW_PLUG_PRESENCE_UNKNOWN);
         return;
     }
     if (s.plug_owned || rw_plug_busy() || !queue(PENDING_PLUG_SET, req_id)) {
-        send_plug_result(req_id, false, "busy", false);
+        send_plug_result(req_id, false, "busy", false, RW_PLUG_PRESENCE_UNKNOWN);
         return;
     }
     memcpy(s.mac, mac, 6);
@@ -1394,19 +1431,19 @@ static void handle_plug_status(const char *js, const jsmntok_t *tok, int count,
     int         channel;
     const char *err;
     if (!parse_plug_target(js, tok, count, mac, &ip, &channel, &err)) {
-        send_plug_status_result(req_id, false, err, NULL);
+        send_plug_status_result(req_id, false, err, NULL, RW_PLUG_PRESENCE_UNKNOWN);
         return;
     }
     if (!rw_net_ready()) {
-        send_plug_status_result(req_id, false, "no_link", NULL);
+        send_plug_status_result(req_id, false, "no_link", NULL, RW_PLUG_PRESENCE_UNKNOWN);
         return;
     }
     if (!rw_plug_ip_local(&ip)) {
-        send_plug_status_result(req_id, false, "bad_frame", NULL);
+        send_plug_status_result(req_id, false, "bad_frame", NULL, RW_PLUG_PRESENCE_UNKNOWN);
         return;
     }
     if (s.plug_owned || rw_plug_busy() || !queue(PENDING_PLUG_STATUS, req_id)) {
-        send_plug_status_result(req_id, false, "busy", NULL);
+        send_plug_status_result(req_id, false, "busy", NULL, RW_PLUG_PRESENCE_UNKNOWN);
         return;
     }
     memcpy(s.mac, mac, 6);
@@ -1424,9 +1461,9 @@ static void handle_plug_status(const char *js, const jsmntok_t *tok, int count,
  */
 static void refuse_plug_fw(const char *req_id, pending_kind_t kind, const char *err) {
     if (kind == PENDING_PLUG_FW_UPDATE) {
-        send_plug_fw_update_result(req_id, false, err);
+        send_plug_fw_update_result(req_id, false, err, RW_PLUG_PRESENCE_UNKNOWN);
     } else {
-        send_plug_fw_check_result(req_id, false, err, NULL);
+        send_plug_fw_check_result(req_id, false, err, NULL, RW_PLUG_PRESENCE_UNKNOWN);
     }
 }
 

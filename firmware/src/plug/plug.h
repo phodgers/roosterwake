@@ -54,9 +54,27 @@ typedef enum {
 } rw_plug_action_t;
 
 /*
+ * How a `plug_unreachable` failure relates to the plug's presence on the segment. MUTE means
+ * the target's MAC was POSITIVELY seen during THIS attempt — an identity-confirmed probe
+ * answer, or an active ARP answer from the resolve mini-sweep — yet the operation still
+ * failed: powered and associated, but not speaking HTTP. ABSENT means an active re-resolve
+ * sweep ran and did not find the MAC on the segment. UNKNOWN covers everything neither
+ * verdict was earned for: failures before any resolve could run (a local fault like an empty
+ * pcb pool), and a resolve that never swept — a fresh address straight from the arplearn
+ * cache proves nothing about presence, in either direction. A cached arplearn entry is never
+ * "seen": the cache is passive and a stale entry would report a vanished plug as merely mute.
+ */
+typedef enum {
+    RW_PLUG_PRESENCE_UNKNOWN = 0,
+    RW_PLUG_PRESENCE_MUTE,
+    RW_PLUG_PRESENCE_ABSENT,
+} rw_plug_presence_t;
+
+/*
  * How an operation ended. `err` is NULL on success, otherwise a §6 code: `plug_unreachable`,
  * `plug_unsupported`, or `internal`. For a set, `state_on` is the state the plug was left in;
  * for a status, `st` is the parsed channel state; for a firmware check, `fw` is the standing.
+ * `presence` is meaningful only when `err` is `plug_unreachable`; see rw_plug_presence_t.
  */
 typedef struct {
     bool               ok;
@@ -64,6 +82,7 @@ typedef struct {
     bool               state_on;
     rw_shelly_status_t st;
     rw_shelly_fw_t     fw;
+    rw_plug_presence_t presence;
 } rw_plug_outcome_t;
 
 typedef void (*rw_plug_done_t)(void *ctx, const rw_plug_outcome_t *outcome);

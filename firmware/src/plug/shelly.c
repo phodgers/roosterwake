@@ -390,6 +390,15 @@ size_t rw_shelly_req_fw_check(char *buf, size_t cap, const char *host) {
                                host));
 }
 
+size_t rw_shelly_req_wifi_status(char *buf, size_t cap, const char *host) {
+    return finish_req(cap,
+                      snprintf(buf, cap,
+                               "GET /rpc/Wifi.GetStatus HTTP/1.1\r\n"
+                               "Host: %s\r\n"
+                               "Connection: close\r\n\r\n",
+                               host));
+}
+
 size_t rw_shelly_req_fw_update(char *buf, size_t cap, const char *host, int gen) {
     if (gen == 1) {
         return finish_req(cap,
@@ -478,6 +487,15 @@ bool rw_shelly_parse_status(const char *body, size_t len, int gen, int channel,
             }
         }
         /* No voltage: Gen1 plugs do not measure it, and inventing 230 would be a reading. */
+        /* The Wi-Fi signal rides in the same body, under `wifi_sta` — optional like the
+         * metering: a body without it still answers the question that was asked. */
+        int wifi = obj_find(body, s_tok, count, 0, "wifi_sta");
+        if (wifi >= 0) {
+            int r = obj_find(body, s_tok, count, wifi, "rssi");
+            if (r >= 0 && rw_json_int(body, &s_tok[r], &out->rssi)) {
+                out->have_rssi = true;
+            }
+        }
         return true;
     }
 
@@ -496,6 +514,15 @@ bool rw_shelly_parse_status(const char *body, size_t len, int gen, int channel,
         read_milli(body, s_tok, count, aenergy, "total", &out->have_energy, &out->energy_mwh);
     }
     return true;
+}
+
+bool rw_shelly_parse_wifi_rssi(const char *body, size_t len, long *rssi) {
+    int count = parse_body(body, len);
+    if (count < 0) {
+        return false;
+    }
+    int idx = obj_find(body, s_tok, count, 0, "rssi");
+    return idx >= 0 && rw_json_int(body, &s_tok[idx], rssi);
 }
 
 bool rw_shelly_parse_set(const char *body, size_t len, int gen, bool *have_state,

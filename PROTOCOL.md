@@ -738,7 +738,7 @@ that means the reply arrives only after the *on* leg, several seconds after the 
 
 ```json
 { "t": "plug_result", "req_id": "…", "ok": true, "state": "on" }
-{ "t": "plug_result", "req_id": "…", "ok": false, "err": "plug_unreachable" }
+{ "t": "plug_result", "req_id": "…", "ok": false, "err": "plug_unreachable", "presence": "absent" }
 ```
 
 `state` is the state the plug was left in, present only on success — and it is **observed,
@@ -756,13 +756,23 @@ machine left off at the wall over one lost segment. `ok: false` after that budge
 restore really could not be confirmed, and carries `err` from §6, including the two
 plug-specific codes.
 
+When `err` is `plug_unreachable` — and only then — the frame MAY carry **`presence`**, which
+says how the reach failed: `"mute"` means the plug's MAC was positively seen on the segment
+during this attempt (an identity-confirmed probe answer, or an active ARP answer from the
+re-resolve) yet the operation still failed — powered and associated, but not speaking HTTP;
+`"absent"` means a re-resolve ran and the MAC was not found on the segment at all. Omitted
+means unknown — the failure was local, before any resolve could run. A cached ARP entry MUST
+NOT count as seen: passive history is not presence, and a stale entry would report a vanished
+plug as merely mute. The field is additive: devices predating it never send it, and a
+consumer MUST tolerate its absence.
+
 ### `plug_status_result`
 
 Sent once, in answer to `plug_status`.
 
 ```json
 { "t": "plug_status_result", "req_id": "…", "ok": true, "on": true,
-  "apower_w": 41.25, "voltage": 237.5, "energy_wh": 6.5 }
+  "apower_w": 41.25, "voltage": 237.5, "energy_wh": 6.5, "rssi": -52 }
 { "t": "plug_status_result", "req_id": "…", "ok": false, "err": "plug_unreachable" }
 ```
 
@@ -773,6 +783,16 @@ is a finding), and "this plug cannot read watts" must not impersonate it. Gen1 p
 power and energy but not voltage; Gen1 energy counters are converted from the device's
 watt-minutes before they get here, so the unit on the wire is always watt-hours. Values are
 plain JSON numbers with at most three decimal places.
+
+`rssi` is the plug's own Wi-Fi signal in dBm, a plain integer, present only on successful
+results and only when the device reported it — Gen1 states it in the `/status` body itself,
+Gen2+ answers a separate `Wifi.GetStatus` read whose failure never fails the status: the
+switch state and metering are the product, the signal a bonus fact. Omitted under the same
+rule as the metering fields, and additive — older devices never send it, and a consumer MUST
+tolerate its absence.
+
+An `err` of `plug_unreachable` carries the optional `presence` field under `plug_result`'s
+rules.
 
 ```json
 { "t": "ota_accept", "id": "6f1c…", "slot": 1 }
@@ -807,6 +827,9 @@ own boolean because the DEVICE saw the vendor's answer and the relay did not: a 
 reply echoes `new_version` even when nothing is newer, and deriving the flag by comparison
 upstream would re-learn that mistake.
 
+An `err` of `plug_unreachable` carries the optional `presence` field under `plug_result`'s
+rules.
+
 ### `plug_fw_update_result`
 
 Sent once, in answer to `plug_fw_update`, on acceptance.
@@ -819,7 +842,8 @@ Sent once, in answer to `plug_fw_update`, on acceptance.
 `ok: true` means the plug ACCEPTED the update order and nothing more. The flash and the
 reboot happen on the device's own schedule; the reads that follow will fail while it does,
 and that failing is the update working. `ok: false` carries `err` from §6 including the two
-plug-specific codes.
+plug-specific codes; an `err` of `plug_unreachable` carries the optional `presence` field
+under `plug_result`'s rules.
 
 ### `ota_result`
 

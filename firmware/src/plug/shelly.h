@@ -106,18 +106,29 @@ size_t rw_shelly_req_fw_check(char *buf, size_t cap, const char *host);
 size_t rw_shelly_req_fw_update(char *buf, size_t cap, const char *host, int gen);
 
 /*
+ * The Wi-Fi signal read, Gen2+ only: `GET /rpc/Wifi.GetStatus`, direct-path like the firmware
+ * verbs. Gen1 needs no request of its own — its `/status` states `wifi_sta.rssi` in the same
+ * body the status parse already reads.
+ */
+size_t rw_shelly_req_wifi_status(char *buf, size_t cap, const char *host);
+
+/*
  * One relay channel's state, with thousandths for the metering fields so no float crosses
  * this layer (see rw_jw_milli). A field the hardware does not meter is reported absent, not
  * zero: zero watts is a reading, and "this plug cannot read watts" must not impersonate it.
+ * `rssi` is the plug's own Wi-Fi signal — a plain integer of dBm, not thousandths, because
+ * the devices report whole decibels and a milli-dBm would be precision nobody measured.
  */
 typedef struct {
     bool on;
     bool have_apower;
     bool have_voltage;
     bool have_energy;
+    bool have_rssi;
     long apower_mw;   /* milliwatts */
     long voltage_mv;  /* millivolts */
     long energy_mwh;  /* milliwatt-hours; Gen1 counts watt-minutes and is converted here */
+    long rssi;        /* dBm, e.g. -52 */
 } rw_shelly_status_t;
 
 /*
@@ -129,6 +140,14 @@ typedef struct {
  */
 bool rw_shelly_parse_status(const char *body, size_t len, int gen, int channel,
                             rw_shelly_status_t *out);
+
+/*
+ * Parse a direct-path `Wifi.GetStatus` answer's top-level `rssi`
+ * (`{"sta_ip":…,"status":"got ip","ssid":…,"rssi":-52,…}`). Returns false when the body is
+ * not an object carrying an integer `rssi` — which the caller treats as "the device did not
+ * say", never as a failed status.
+ */
+bool rw_shelly_parse_wifi_rssi(const char *body, size_t len, long *rssi);
 
 /*
  * A plug's firmware standing, PROTOCOL.md §4 `plug_fw_check_result`'s three facts. `latest`
