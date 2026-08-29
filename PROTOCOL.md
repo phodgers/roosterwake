@@ -342,6 +342,7 @@ Defined capabilities, each naming the relay→device command it gates:
 | `wake` | `wake` |
 | `power` | `power` |
 | `rdp` | `rdp_enable` |
+| `awake` | `hold_awake`, `release_awake` |
 | `status` | `status` |
 | `probe` | `probe` |
 | `scan` | `scan` |
@@ -370,6 +371,14 @@ the frame leaves.
 It is one capability rather than one per command for the same reason `power` is: a device that can
 turn Remote Desktop on is a device that could turn it off, so splitting them would advertise a
 subset a relay then has to reason about, for no gain.
+
+`awake` says the device can hold its host machine out of idle sleep for a bounded time, and gates
+both verbs of that arrangement — the hold and its release — as one capability, on `power`'s
+reasoning: a device that can stake the hold can clear it. It is gated like `power` and `rdp`
+rather than advertised everywhere like `plug`, and for their reason: what it gates changes the
+host machine's own behaviour, and our agent implements it on Windows alone. A caller told "this
+machine will stay up" about a machine whose agent could only refuse would sleep through exactly
+the window the frame existed to protect.
 
 `plug` says the device can drive smart plugs on its own segment over local HTTP — discover
 them, switch them, read them. It is one capability rather than three for `power`'s reason: a
@@ -582,6 +591,33 @@ A device that receives an `rdp_enable` with no `req_id` answers **nothing at all
 echoed verbatim and a frame without one has nowhere for an answer to go. Same rule as `wake` and
 `power`, same silence.
 
+### `awake_result`
+
+```json
+{ "t": "awake_result", "req_id": "…", "ok": true, "held": true, "until": 1756400000 }
+```
+
+Answers both `hold_awake` and `release_awake` (§5) — one frame type, because the two commands
+report the same fact: whether a keep-awake hold now stands, and until when.
+
+**Sent after the work, on `rdp_enable_result`'s reasoning rather than `power_result`'s.** Nothing
+about staking or clearing an idle hold destroys the process that replies — a machine held awake
+is a machine that is conspicuously still running — so `ok: true` means the state is **set**,
+never that a request was accepted. The sentence a caller builds from it, "this machine will stay
+up until then", has to be true when it is printed.
+
+`held` says which state was set: `true` with `until` for a placed hold, `false` with no `until`
+for a release. `until` is unix seconds, the deadline the device actually armed — a caller SHOULD
+read it back rather than recomputing `now + seconds` on its own clock, because the device's clock
+is the one the deadline lives on.
+
+A release that finds no hold standing is still `ok: true, held: false`: it cleared a state that
+was already clear, and there is deliberately no error for it — the caller asked for a machine
+that may sleep, and has one.
+
+On failure: `{"t":"awake_result","req_id":"…","ok":false,"err":"bad_frame","held":false}`. A
+failed hold changes nothing — no state was set, no deadline armed — so it is safe to retry.
+
 ### `status_result`
 
 ```json
@@ -629,6 +665,18 @@ wrong in the direction that costs a journey.
 
 `sessions` is advisory and exists so a caller can say "somebody is logged in" before it shuts a
 machine down. It counts sessions, never people, and never reports who they are.
+
+A device that advertises `awake` adds **`awake_until`** — unix seconds — while a keep-awake hold
+stands, and omits it otherwise:
+
+```json
+"awake_until": 1756400000
+```
+
+This is the honest oracle for a dashboard, and the reason it exists beside `awake_result.until`:
+the reply was true when it was sent, but the hold it reported may since have been replaced,
+released or expired, and this field says what stands **now**. Absence means no hold — never
+"cannot tell", because the device is the side that owns the deadline.
 
 ### `probe_result`
 
@@ -1103,6 +1151,60 @@ because they cannot reach the machine; switching it off is a thing they can do f
 this command gave them, and a remote verb for it would be a way to lock somebody out of their own
 machine from the internet.
 
+### `hold_awake`
+
+```json
+{ "t": "hold_awake", "req_id": "…", "seconds": 3600 }
+```
+
+Asks the device to keep its host machine out of **idle** sleep for a bounded time — the long
+download, the overnight render, the remote session that must not die under its user — answered
+`awake_result` (§4) after the hold is actually staked. Only sent to devices advertising the
+`awake` capability.
+
+`seconds` is **required**: one minute to one day, `60`–`86400` inclusive. Anything else — a
+missing field, a value outside the range, a non-integer, a string — is answered
+`ok:false, err:"bad_frame"`, **never clamped and never defaulted**, on `power.action`'s
+reasoning: a device that silently shortened "keep it up for a week" to a day would leave
+somebody's overnight job dead on a machine they were told would stay awake. The ceiling exists
+because an unbounded hold is a machine that never sleeps again on the say-so of one frame; a
+caller with a longer genuine need re-asks, which keeps the deadline a standing decision rather
+than a forgotten one.
+
+**A new hold REPLACES any hold already standing, and that is the extend mechanism.** One
+deadline stands at a time — always the most recently asked for, in either direction, so a short
+new hold shortens a long old one too. There is no `busy` here and no queue: there is nothing to
+interleave when the second request's whole meaning is "forget the first".
+
+The hold restrains the **idle** timers and nothing stronger. A person at the machine — closing
+the lid, pressing the power button, picking Sleep from a menu — wins immediately, and a `power`
+frame's commanded sleep wins too: the hold is a stay against the machine drifting off on its
+own, not an argument with anybody's hand. A device MUST NOT keep the display awake to keep the
+system awake.
+
+The bound is enforced on the device, in two layers, and the second is the one to trust. While
+the process lives, its own timer releases the hold at the deadline — across relay reconnects,
+which the hold deliberately survives, and across a device restart, from which the device
+re-arms **the remainder** of the stated bound. And the OS-level state a hold sets **dies with
+the process by construction**, so there is no failure mode — crash, kill, update, power cut —
+that leaves a machine pinned awake by a promise nobody is keeping. The fail-safe direction is
+always toward sleep: the worst a lost timer can cost is a machine that dozed off on schedule
+after all.
+
+### `release_awake`
+
+```json
+{ "t": "release_awake", "req_id": "…" }
+```
+
+Withdraws the hold, answered `awake_result` with `held: false`. **Idempotent**: releasing with
+no hold standing clears a state that was already clear, and is answered as a success — the
+caller asked for a machine that may sleep, and has one. It takes no parameters; there is exactly
+one hold to release, or none.
+
+A device that receives either frame with no `req_id` answers **nothing at all** — the `wake`
+rule, the same silence.
+
 ### `status`
 
 ```json
@@ -1322,9 +1424,9 @@ is the less important direction.
 
 ## 6. Error codes
 
-Returned in `err` on `wake_result`, `power_result`, `rdp_enable_result`, `probe_result`,
-`scan_result`, `plug_scan_result`, `plug_result`, `plug_status_result`, `hello_ack`,
-`adopt_ack`, `ota_reject` and `ota_result`.
+Returned in `err` on `wake_result`, `power_result`, `rdp_enable_result`, `awake_result`,
+`probe_result`, `scan_result`, `plug_scan_result`, `plug_result`, `plug_status_result`,
+`hello_ack`, `adopt_ack`, `ota_reject` and `ota_result`.
 
 | Code | Meaning |
 |---|---|
@@ -1596,6 +1698,7 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 
 | Version | Date | Change |
 |---|---|---|
+| 2 | 2026-08-29 | **Holding a machine awake, for as long as somebody said.** One new capability, `awake`, and the two commands it gates — `hold_awake` and `release_awake` — answered by one new frame, `awake_result`. Everything above this row changes which power state a machine is IN; this holds it in the one it has, for the download, the render or the remote session that must not die under its user because the idle timer ran out. The reply follows `rdp_enable_result`'s rule, not `power_result`'s: nothing here destroys the replier, so `ok:true` means the hold is SET and `until` is the deadline the device actually armed — read back, never recomputed on the caller's clock. `seconds` is required and bounded (60–86400 inclusive), refused `bad_frame` outside, never clamped: a device that silently shortened a week to a day would leave an overnight job dead on a machine somebody was told would stay up. A new hold REPLACES the standing one — that is the extend mechanism, one deadline at a time and always the most recent — and release is idempotent, because "may sleep now" is not a request that can fail by already being true. The hold restrains the IDLE timers only: a lid, a power button or a commanded `power` sleep wins immediately, and the display is never kept lit. The bound is enforced device-side in two layers — a timer that survives reconnects and re-arms the REMAINDER across a restart, and an OS state that dies with the process by construction — so every failure mode falls toward sleep, never toward a machine pinned awake by a promise nobody is keeping. `status_result` gains `awake_until`, present exactly while a hold stands: the honest oracle, since a reply's `until` can be stale the moment a later hold replaces it. Additive throughout: `v` stays 2. |
 | 2 | 2026-08-21 | **Hard power, from beside the machine.** One new capability, `plug`, and the three frame pairs it gates — `plug_scan`/`plug_scan_result`, `plug_set`/`plug_result`, `plug_status`/`plug_status_result` — plus two error codes, `plug_unreachable` and `plug_unsupported`. Everything above this row moves a machine's own switches; this is the rung below all of it, for the machine whose kernel is hung and whose adapter never armed: a smart plug on the same segment cuts and restores the AC, driven by the device over plain local HTTP (Shelly Gen1 REST and Gen2+ JSON-RPC), with no vendor cloud and no internet route to the plug at all. **The reply is the protocol's one deliberate inversion of `power`'s rule**: `power_result` is sent before the action because the action destroys the replier, but a plug's actor stands beside the machine, not behind it, so `plug_result` arrives AFTER the work and its `state` is read back, never assumed — Gen2's `Switch.Set` answers the PREVIOUS state, which is exactly the trap the confirming read exists to step over. `cycle`'s `off_ms` has a floor because a PSU's hold-up capacitors can ride out a short cut, and a ceiling because an unbounded dwell holds a machine dark on one frame's say-so; a device that has cut power retries the restore on a short budget before admitting failure, and completes it even when the relay connection has died under the command — past the cut, giving up is not an error report but a machine left off at the wall. Identity is the plug's MAC with the IP a hint: every set re-confirms who answers at the address before driving it, because DHCP reassigns leases to appliances that must not lose power for it. The target address MUST be on the device's own subnet, refused `bad_frame` before any socket opens — the driver is an unauthenticated HTTP client, and this rule is what keeps a compromised relay from aiming it. Additive throughout: `v` stays 2. |
 | 2 | 2026-08-15 | **Deliberate silence, announced.** One new optional device→relay frame, `bye` (`reason`: `suspend`, `shutdown` or `stop`), fire-and-forget with no reply and no capability — capabilities gate relay→device commands, and nothing here invites one. A software emitter runs on a machine whose whole reason for carrying it is to be asleep most of the time, and a relay watching for silence cannot otherwise tell that ordinary night from a crash: the frame is the difference, sent in the milliseconds the OS grants between "the system is suspending" and the freeze. The specification deliberately bounds what a relay may do with it — set expectations, nothing more — because the claim is cheap to make and impossible to verify; and it deliberately notes that a dongle never sends it, because firmware cannot see a power cut coming, which is exactly why absence-of-`bye` stays meaningful. A relay treats the announcement as spent on the device's next completed authentication. Additive under §10: `v` stays 2, old relays ignore it. |
 | 2 | 2026-08-11 | **Switching Remote Desktop on.** One new capability, `rdp`, and the frame pair it gates — `rdp_enable` and `rdp_enable_result`. A device that runs *on* a machine can already tell a service that the machine's Remote Desktop is switched off; this is the button beside that sentence, and the alternative it replaces is talking somebody through an elevated registry edit on a machine they cannot see, from a phone. **It is a frame of its own rather than a fourth `power` action, and the reason is the reply.** `power_result` is an acceptance sent BEFORE the action, because the action destroys the process that would otherwise send it — that is the strongest claim available there. Nothing about enabling a listener destroys anything, so `rdp_enable_result` is sent AFTER the work and `ok:true` means the change is made. It has to: "Remote Desktop is on" is a sentence somebody acts on by opening a client against a machine they cannot see, and one frame type cannot carry two opposite meanings for a receiver to tell apart. The reply also carries **`step`** — `policy`, `nla` or `firewall`, which of the three settings stopped it — and **`note`**, the tool's or policy's own sentence. `step` exists for one row of its own table: a `firewall` stop leaves Remote Desktop switched ON behind a firewall that still drops it, which from a client is indistinguishable from a machine that is switched off, and a caller that flattened the three into "it failed" would send somebody to diagnose a dead machine that is in fact listening. **The command takes no parameters, and that is a security property**: network-level authentication MUST be required and MUST be set before connections are admitted (the reverse order leaves a listener that establishes a session before authenticating, created by a button in somebody's product), and nothing beyond the local network may be opened — private and domain firewall profiles only, never public, no router, no UPnP, no port forward. Those rules bind any implementation of this verb, because a capability string is all a caller has to go on: a device that would do something less safe under this name should implement a different frame and let the difference be visible. `rdp` is separate from `power` because the two differ in availability rather than in privilege — our agent implements this on Windows alone — and §4's rule then keeps the command off every other socket, instead of leaving a Linux agent to silently ignore a frame whose caller waits out a timeout. Additive throughout: `v` stays 2. |
