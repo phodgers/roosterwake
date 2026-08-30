@@ -343,6 +343,7 @@ Defined capabilities, each naming the relay→device command it gates:
 | `power` | `power` |
 | `rdp` | `rdp_enable` |
 | `awake` | `hold_awake`, `release_awake` |
+| `session` | `session_start`, `session_stop`, and the advisory `workspaces` push |
 | `status` | `status` |
 | `probe` | `probe` |
 | `scan` | `scan` |
@@ -379,6 +380,16 @@ rather than advertised everywhere like `plug`, and for their reason: what it gat
 host machine's own behaviour, and our agent implements it on Windows alone. A caller told "this
 machine will stay up" about a machine whose agent could only refuse would sleep through exactly
 the window the frame existed to protect.
+
+`session` says the device can launch a remote AI coding session — the `claude remote-control`
+server — on its host, as the machine's signed-in user, in a workspace directory the account
+holder registered in advance. It gates both verbs and the `workspaces` push as one capability,
+on `power`'s reasoning: a device that can start the session can stop it, and a list pushed to a
+device that could do neither would be configuration for nobody. It is gated like `awake` rather
+than advertised everywhere like `plug`, and harder than anything else in this table, because
+what it gates runs a process AS THE USER — the launch machinery exists on Windows alone in our
+agent, and a platform that advertised it without the machinery would be promising somebody's
+coding session with nothing behind the promise.
 
 `plug` says the device can drive smart plugs on its own segment over local HTTP — discover
 them, switch them, read them. It is one capability rather than three for `power`'s reason: a
@@ -618,6 +629,42 @@ that may sleep, and has one.
 On failure: `{"t":"awake_result","req_id":"…","ok":false,"err":"bad_frame","held":false}`. A
 failed hold changes nothing — no state was set, no deadline armed — so it is safe to retry.
 
+### `session_result`
+
+```json
+{ "t": "session_result", "req_id": "…", "ok": true, "running": true,
+  "env_url": "https://claude.ai/code?environment=env_01AB23CD", "workspace_id": 7,
+  "started_at": 1756480000, "hold_until": 1756494400 }
+```
+
+Answers both `session_start` and `session_stop` (§5) — one frame type, the `awake_result`
+precedent: the two commands report the same fact, whether a remote AI session now runs on this
+machine, and under what URL.
+
+**Sent after the work, on `rdp_enable_result`'s reasoning rather than `power_result`'s.**
+Nothing about launching or killing the session destroys the process that replies — the session
+is a child, detached on purpose — so `ok: true` on a start means the session is **running** and
+`env_url` was read from the CLI's own output, never assembled from anything else. The sentence
+a caller builds from it — "continue coding at this URL" — has to be true when it is printed.
+
+`running` says which state was set: `true` with the session's facts for a start, `false` with
+none of them for a stop. A stop that finds nothing running is still `ok: true, running: false`
+— the caller asked for a machine with no session, and has one; `release_awake`'s idempotence
+rule exactly.
+
+`started_at` and `hold_until` are unix seconds on the **device's** clock, the clock the
+deadlines live on — read back, never recomputed on the caller's. `hold_until` is the same
+deadline the `awake` machinery reports as `awake_until`: a session start stakes the one
+keep-awake hold, replacing any hold already standing (§5 `session_start` says why that is the
+right rudeness).
+
+On failure: `{"t":"session_result","req_id":"…","ok":false,"err":"…","running":false}`, with
+the `err` vocabulary of §6's session table. `detail` rides only on `err: "session_failed"` —
+one line of the CLI's own words, the tool's sentence rather than a paraphrase, untrusted like
+every string in §4, bounded by the device (reference behaviour is 200 characters) and well
+inside §1's frame ceiling. A failed start changes nothing — no process left running, no hold
+staked, no state recorded — so it is safe to retry.
+
 ### `status_result`
 
 ```json
@@ -677,6 +724,20 @@ This is the honest oracle for a dashboard, and the reason it exists beside `awak
 the reply was true when it was sent, but the hold it reported may since have been replaced,
 released or expired, and this field says what stands **now**. Absence means no hold — never
 "cannot tell", because the device is the side that owns the deadline.
+
+A device that advertises `session` adds a **`session`** block while a remote AI session runs,
+and omits it otherwise — `awake_until`'s reasoning, one member over:
+
+```json
+"session": { "workspace_id": 7, "env_url": "https://claude.ai/code?environment=env_01AB23CD",
+             "started_at": 1756480000, "hold_until": 1756494400 }
+```
+
+A `session_result` was true when it was sent, but the session it reported may since have been
+stopped, died on its own, or outlived an agent restart — the session deliberately survives one
+(§5 `session_start`) — and this block reports what stands at the moment of asking, from state
+the device verified against the actual process at startup. Absence means no session; never
+"cannot tell".
 
 ### `probe_result`
 
@@ -1005,6 +1066,34 @@ a device that never receives one simply keeps reporting what it was told at conn
 Sent whenever the set changes, not on a schedule — a device on a plan nobody has touched in a
 year receives exactly one of these, in its `hello_ack`.
 
+### `workspaces`
+
+```json
+{ "t": "workspaces", "list": [
+  { "id": 7, "label": "cloud-cut", "path": "C:\\Users\\phili\\Documents\\cloud-cut",
+    "provider": "claude" }
+] }
+```
+
+The directories a remote AI session may be started in, pushed to devices advertising `session`
+— the `features` shape exactly: advisory, no reply, no `req_id`, sent whenever the account
+holder's list changes and once at connection time, and **`list` REPLACES the previous list
+whole**. It is the entire truth, never a delta; an entry the push no longer carries is a
+workspace the owner deleted, gone from the device too.
+
+The split between this push and `session_start` is the security arrangement, and it is the
+point: the command names only an `id`, and the directory that id resolves to arrived HERE, from
+the service, out of the account holder's own configuration — so no command, however confused or
+hostile its origin, can aim the device's CLI at a path by naming one. A device SHOULD persist
+the list, because the push and the command travel at different times and a start arriving on a
+fresh connection must resolve against what the relay said last.
+
+Bounds a device MUST hold the list to: at most 32 entries, `label` at most 64 characters,
+`path` at most 512. An entry past any bound is **dropped, with a local log line** — never
+truncated, because a truncated path is a different directory and a session started in almost
+the right place is worse than one refused. `label` and `path` are the owner's own words and
+paths, untrusted like every string in §4; `provider` names whose CLI serves the workspace.
+
 ### `adopt_ack`
 
 ```json
@@ -1201,6 +1290,60 @@ Withdraws the hold, answered `awake_result` with `held: false`. **Idempotent**: 
 no hold standing clears a state that was already clear, and is answered as a success — the
 caller asked for a machine that may sleep, and has one. It takes no parameters; there is exactly
 one hold to release, or none.
+
+A device that receives either frame with no `req_id` answers **nothing at all** — the `wake`
+rule, the same silence.
+
+### `session_start`
+
+```json
+{ "t": "session_start", "req_id": "…", "workspace_id": 7, "provider": "claude",
+  "hold_seconds": 14400 }
+```
+
+Asks the device to launch a remote AI coding session on its host — `claude remote-control`, run
+**as the machine's signed-in user**, in the workspace `workspace_id` names — and answered
+`session_result` (§4) after the session is actually running and its environment URL captured.
+Only sent to devices advertising the `session` capability, and **one session per machine**: a
+start while one runs is answered `already_running`, whichever workspace it names, because the
+caller's remedy is the session that exists.
+
+`workspace_id` resolves against the last `workspaces` push and nothing else — the command
+carries no path, deliberately (§5 `workspaces` carries the whole argument). An id the synced
+list does not hold is `unknown_workspace`, its own code because its remedy (check the workspace
+list) is not `bad_frame`'s (fix the frame). `provider` MUST be `claude`; a device answers any
+other value `bad_frame` rather than launching the wrong tool under the right reply.
+
+`hold_seconds` is **required**: `60`–`86400` inclusive, whole seconds, refused `bad_frame`
+outside — never clamped and never defaulted, `hold_awake.seconds`' rule for `hold_awake`'s
+reason. The service is the side that owns the default; a device that invented one would decide
+how long somebody's machine stays up on a frame that failed to say. A successful start stakes
+**the one keep-awake hold** (the `awake` machinery, same hold, same fail-safes), and the
+session's deadline REPLACES any hold already standing — one deadline at a time, always the most
+recently asked for, which is §5 `hold_awake`'s replacement rule applied across capabilities. A
+remote session on a machine that dozes off mid-thought is the exact fault the hold exists for.
+
+The launched session is **detached from the device's own process on purpose**: an agent update
+or crash MUST NOT kill a conversation somebody is mid-thought in. The device records the
+session persistently, verifies the process still runs when it restarts, re-adopts one that does
+— `status_result.session` keeps reporting it — and buries one that died, releasing its hold: a
+dead session's hold serves nobody. The device MUST NOT grant the CLI's own directory trust or
+any consent beyond remote control's; a workspace the person never trusted in their own terminal
+is answered `not_trusted`, and trust stays theirs to grant.
+
+### `session_stop`
+
+```json
+{ "t": "session_stop", "req_id": "…" }
+```
+
+Kills the running session's process **tree** — not one PID; the spawn is a shell running a shim
+running a server, and killing the root alone would orphan the part that matters — releases the
+keep-awake hold, clears the recorded state, and answers `session_result` with `running: false`.
+**Idempotent**: stopping with nothing running kills nothing, releases nothing (a hold standing
+at that point is `hold_awake`'s, staked by somebody who never mentioned a session), and is
+answered as a success — the caller asked for a machine with no session, and has one. It takes
+no parameters; there is exactly one session to stop, or none.
 
 A device that receives either frame with no `req_id` answers **nothing at all** — the `wake`
 rule, the same silence.
@@ -1425,8 +1568,8 @@ is the less important direction.
 ## 6. Error codes
 
 Returned in `err` on `wake_result`, `power_result`, `rdp_enable_result`, `awake_result`,
-`probe_result`, `scan_result`, `plug_scan_result`, `plug_result`, `plug_status_result`,
-`hello_ack`, `adopt_ack`, `ota_reject` and `ota_result`.
+`session_result`, `probe_result`, `scan_result`, `plug_scan_result`, `plug_result`,
+`plug_status_result`, `hello_ack`, `adopt_ack`, `ota_reject` and `ota_result`.
 
 | Code | Meaning |
 |---|---|
@@ -1444,6 +1587,22 @@ Returned in `err` on `wake_result`, `power_result`, `rdp_enable_result`, `awake_
 person reading it can act on: install the device as a system service, or run it with the rights
 it needs. Folded into `internal` it would read as a defect in the software and be reported as
 one.
+
+Remote-session codes, on `session_result` only, from devices advertising `session`. Each is
+separate for `no_privilege`'s reason — it is the code that names the remedy:
+
+| Code | Meaning — and whose move it is |
+|---|---|
+| `unknown_workspace` | `workspace_id` is not in the synced list. Check the workspace list; the frame itself is well-formed |
+| `already_running` | One session per machine, and this machine has one. The remedy is the session that exists — stop it, or use it |
+| `no_user_session` | Nobody is signed in at the console, so there is no user to run the CLI as. Somebody signs in at the machine |
+| `not_trusted` | The CLI refused the workspace directory. Trust is granted by the person, in their own terminal, once per directory — never by the device |
+| `version_old` | The installed CLI predates remote control (needs ≥ 2.1.139). Update the CLI |
+| `session_failed` | Everything else. The reply carries `detail` — one line of the CLI's own words — because a launch that failed for none of the named reasons is diagnosed from what the tool actually said |
+
+A relay that predates these folds all six into `internal`, which the rule above this table
+makes safe. A failed start leaves nothing behind — no process, no hold, no recorded state — so
+none of them poisons a retry.
 
 Adoption-specific codes, on `adopt_ack` only, and only from a relay that implements the §4
 token path:
@@ -1698,6 +1857,7 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 
 | Version | Date | Change |
 |---|---|---|
+| 2 | 2026-08-29 | **A coding session on the machine, started from anywhere.** One new capability, `session`, the two commands it gates — `session_start` and `session_stop`, answered by one new frame, `session_result` — and one advisory push, `workspaces`. Everything above this row moves a machine between power states or holds it in one; this is the first frame that starts WORK on it: the device launches `claude remote-control` as the machine's signed-in user, captures the environment URL from the CLI's own output, and hands it back, so the owner continues coding from the mobile app against a machine they may just have woken. **The split between the push and the command is the security arrangement**: `session_start` names only a workspace id, and the directory it resolves to arrived in `workspaces` — the account holder's own configuration, replaced whole on every push, persisted device-side, bounded (32 entries, label 64, path 512, oversize entries dropped never truncated) — so no command can aim the CLI at a path by naming one. The reply follows `rdp_enable_result`'s rule: nothing here destroys the replier, so `ok:true` means the session is RUNNING and `env_url` was read, not assembled. `hold_seconds` is required and bounded (60–86400), refused `bad_frame` outside, never defaulted — the service owns the default — and a successful start stakes the ONE keep-awake hold, replacing any standing deadline, because a remote session on a machine that dozes off mid-thought is the exact fault the hold exists for. The session is deliberately DETACHED from the device process: an agent update must not kill a conversation, so the device persists the session, re-adopts a survivor at startup by checking the actual process, and buries a dead one hold-and-all. One session per machine; stop kills the process TREE, is idempotent, and releases the hold. Six new codes on `session_result` only — `unknown_workspace`, `already_running`, `no_user_session`, `not_trusted`, `version_old`, `session_failed` (with `detail`: the CLI's own line) — each separate because each names a different mover, and directory trust stays the person's to grant: the device never answers the CLI's trust prompt, only remote control's own consent. `status_result` gains a `session` block, present exactly while one runs — the `awake_until` oracle one member over. Additive throughout: `v` stays 2. |
 | 2 | 2026-08-29 | **Holding a machine awake, for as long as somebody said.** One new capability, `awake`, and the two commands it gates — `hold_awake` and `release_awake` — answered by one new frame, `awake_result`. Everything above this row changes which power state a machine is IN; this holds it in the one it has, for the download, the render or the remote session that must not die under its user because the idle timer ran out. The reply follows `rdp_enable_result`'s rule, not `power_result`'s: nothing here destroys the replier, so `ok:true` means the hold is SET and `until` is the deadline the device actually armed — read back, never recomputed on the caller's clock. `seconds` is required and bounded (60–86400 inclusive), refused `bad_frame` outside, never clamped: a device that silently shortened a week to a day would leave an overnight job dead on a machine somebody was told would stay up. A new hold REPLACES the standing one — that is the extend mechanism, one deadline at a time and always the most recent — and release is idempotent, because "may sleep now" is not a request that can fail by already being true. The hold restrains the IDLE timers only: a lid, a power button or a commanded `power` sleep wins immediately, and the display is never kept lit. The bound is enforced device-side in two layers — a timer that survives reconnects and re-arms the REMAINDER across a restart, and an OS state that dies with the process by construction — so every failure mode falls toward sleep, never toward a machine pinned awake by a promise nobody is keeping. `status_result` gains `awake_until`, present exactly while a hold stands: the honest oracle, since a reply's `until` can be stale the moment a later hold replaces it. Additive throughout: `v` stays 2. |
 | 2 | 2026-08-21 | **Hard power, from beside the machine.** One new capability, `plug`, and the three frame pairs it gates — `plug_scan`/`plug_scan_result`, `plug_set`/`plug_result`, `plug_status`/`plug_status_result` — plus two error codes, `plug_unreachable` and `plug_unsupported`. Everything above this row moves a machine's own switches; this is the rung below all of it, for the machine whose kernel is hung and whose adapter never armed: a smart plug on the same segment cuts and restores the AC, driven by the device over plain local HTTP (Shelly Gen1 REST and Gen2+ JSON-RPC), with no vendor cloud and no internet route to the plug at all. **The reply is the protocol's one deliberate inversion of `power`'s rule**: `power_result` is sent before the action because the action destroys the replier, but a plug's actor stands beside the machine, not behind it, so `plug_result` arrives AFTER the work and its `state` is read back, never assumed — Gen2's `Switch.Set` answers the PREVIOUS state, which is exactly the trap the confirming read exists to step over. `cycle`'s `off_ms` has a floor because a PSU's hold-up capacitors can ride out a short cut, and a ceiling because an unbounded dwell holds a machine dark on one frame's say-so; a device that has cut power retries the restore on a short budget before admitting failure, and completes it even when the relay connection has died under the command — past the cut, giving up is not an error report but a machine left off at the wall. Identity is the plug's MAC with the IP a hint: every set re-confirms who answers at the address before driving it, because DHCP reassigns leases to appliances that must not lose power for it. The target address MUST be on the device's own subnet, refused `bad_frame` before any socket opens — the driver is an unauthenticated HTTP client, and this rule is what keeps a compromised relay from aiming it. Additive throughout: `v` stays 2. |
 | 2 | 2026-08-15 | **Deliberate silence, announced.** One new optional device→relay frame, `bye` (`reason`: `suspend`, `shutdown` or `stop`), fire-and-forget with no reply and no capability — capabilities gate relay→device commands, and nothing here invites one. A software emitter runs on a machine whose whole reason for carrying it is to be asleep most of the time, and a relay watching for silence cannot otherwise tell that ordinary night from a crash: the frame is the difference, sent in the milliseconds the OS grants between "the system is suspending" and the freeze. The specification deliberately bounds what a relay may do with it — set expectations, nothing more — because the claim is cheap to make and impossible to verify; and it deliberately notes that a dongle never sends it, because firmware cannot see a power cut coming, which is exactly why absence-of-`bye` stays meaningful. A relay treats the announcement as spent on the device's next completed authentication. Additive under §10: `v` stays 2, old relays ignore it. |
