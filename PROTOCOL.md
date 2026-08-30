@@ -344,6 +344,7 @@ Defined capabilities, each naming the relay→device command it gates:
 | `rdp` | `rdp_enable` |
 | `awake` | `hold_awake`, `release_awake` |
 | `session` | `session_start`, `session_stop`, and the advisory `workspaces` push |
+| `ready` | `wake_prepare` |
 | `status` | `status` |
 | `probe` | `probe` |
 | `scan` | `scan` |
@@ -390,6 +391,15 @@ than advertised everywhere like `plug`, and harder than anything else in this ta
 what it gates runs a process AS THE USER — the launch machinery exists on Windows alone in our
 agent, and a platform that advertised it without the machinery would be promising somebody's
 coding session with nothing behind the promise.
+
+`ready` says the device can PREPARE its host machine to be woken — switch off the settings
+that quietly defeat a magic packet (on Windows: Fast Startup, and the adapter's magic-packet
+switch and wake arming) — and gates the one command that does it, `wake_prepare`. It is gated
+like `rdp` and for `rdp`'s reason: same order of privilege as `power`, different availability —
+the settings it writes exist on Windows alone in our agent — and §4's rule keeps the frame off
+every socket whose device could only refuse it. The wake-readiness FACTS a device reports
+beside its connect facts need no capability: facts are answers, not commands, and they ride
+`status_result` under §10's additive rule whether or not the fix verb is available.
 
 `plug` says the device can drive smart plugs on its own segment over local HTTP — discover
 them, switch them, read them. It is one capability rather than three for `power`'s reason: a
@@ -543,11 +553,15 @@ A failure is reported before anything is attempted, so it is safe to retry.
 ### `rdp_enable_result`
 
 ```json
-{ "t": "rdp_enable_result", "req_id": "…", "ok": true }
+{ "t": "rdp_enable_result", "req_id": "…", "ok": true, "note": "firewall group enabled" }
 ```
 
-Answers `rdp_enable` (§5). On success there are no other fields: the command has one outcome and
-it either happened or it did not.
+Answers `rdp_enable` (§5). On success the only other field is `note`, which names which of the
+two firewall paths succeeded — `firewall group enabled` for the built-in Remote Desktop rule
+group, `firewall rule added` for the device's own explicit fallback rule (§5 says when the
+fallback runs). The two leave different artefacts behind in the machine's firewall console, and
+the reply is the only place that answer survives for whoever diagnoses the machine later. There
+are no other success fields: the command has one outcome and it either happened or it did not.
 
 **`ok: true` means the change is DONE — the exact opposite of `power_result` above, and the
 difference is not an inconsistency between the two.** `power_result` precedes its action only
@@ -601,6 +615,45 @@ machine as a settled one.
 A device that receives an `rdp_enable` with no `req_id` answers **nothing at all** — `req_id` is
 echoed verbatim and a frame without one has nowhere for an answer to go. Same rule as `wake` and
 `power`, same silence.
+
+### `wake_prepare_result`
+
+```json
+{ "t": "wake_prepare_result", "req_id": "…", "ok": true,
+  "steps": { "fast_startup": "done", "adapter": "done" },
+  "note": "the driver's magic-packet setting takes effect after the adapter restarts or the next boot" }
+```
+
+Answers `wake_prepare` (§5), **after** the work — `rdp_enable_result`'s rule exactly: nothing
+about writing power settings destroys the process that replies, so `ok: true` means the
+machine's wake settings ARE what the caller asked for, never that a request was accepted.
+
+`steps` is the per-step ledger, always present with both members, each one of three values:
+
+| Value | Meaning |
+|---|---|
+| `done` | The device changed the setting. |
+| `already` | The setting was already right; nothing was written. |
+| `failed` | The device could not put the setting right. |
+
+`already` counts toward success — the caller asked for a machine in this state and has one, and
+"changed nothing" is the evidence a previous attempt landed. **`ok` is `false` exactly when
+either step is `failed`**, with `err` carrying a §6 code (`unsupported`, `no_privilege`, `busy`
+or `internal`); both steps still arrive on failure, because a caller must see which half to
+diagnose AND whether the other half landed — a machine with Fast Startup now off but an adapter
+that will not arm is half-repaired, and flattening that into "it failed" hides a repair that
+happened. An unrecognised step value MUST be treated as `failed`, never as a success.
+
+`note` carries the one truth a success must not bury. A changed driver property is read at
+driver start, so it takes effect only after the adapter restarts or the machine next boots — and
+a device MUST NOT restart the adapter itself, because its own relay connection runs over that
+adapter and the restart would cut the socket mid-reply, turning a repair into an outage. The
+note says so in a person's words. On failure it carries the failing step's own sentence instead.
+Untrusted like every string in §4; bounded well inside §1's ceiling.
+
+A second `wake_prepare` while one runs is answered `busy` rather than queued (`rdp_enable`'s
+grounds), and a frame with no `req_id` is answered nothing at all — the same silence as every
+acting command here.
 
 ### `awake_result`
 
@@ -1230,6 +1283,16 @@ Our own agent implements this on Windows only — `fDenyTSConnections`, the RDP-
 other platform simply does not advertise `rdp`. §4's rule keeps the command off those sockets
 rather than leaving the device to refuse a frame it should never have been sent.
 
+The built-in group is matched by display name, and real machines miss it: a Windows in another
+display language localises the name, and machines exist whose group has been renamed or
+stripped outright. Where the group cannot be matched — and only for that reason, never to route
+around a privilege refusal — a device MAY fall back to adding **one explicit inbound rule of
+its own** for the configured RDP port, under **exactly the same profile restriction** (private
+and domain, never public), idempotently (any previous rule of the same name removed first). The
+reply's `note` names which path succeeded (§4), because the two leave different artefacts for
+whoever inspects the firewall later. A fallback that widened the scope would make the machine's
+safety depend on which error path the command happened to take, which rule 2 exists to forbid.
+
 Where Group Policy already answers the question, a device SHOULD answer `unsupported` rather than
 `no_privilege`: a policy is not something elevation overcomes, and sending somebody to run their
 agent as an administrator against a decision their organisation made wastes their evening.
@@ -1239,6 +1302,52 @@ frame that turns Remote Desktop off. Switching a listener on is a thing an absen
 because they cannot reach the machine; switching it off is a thing they can do from the session
 this command gave them, and a remote verb for it would be a way to lock somebody out of their own
 machine from the internet.
+
+### `wake_prepare`
+
+```json
+{ "t": "wake_prepare", "req_id": "…" }
+```
+
+Asks the device to prepare its host machine to be WOKEN — to switch off the settings that
+quietly defeat the magic packet this whole protocol exists to deliver. Only sent to devices
+advertising the `ready` capability, and answered `wake_prepare_result` (§4) **after** the work.
+
+The command exists because the two usual culprits are locally fixable in milliseconds and
+remotely undiagnosable forever. On Windows they are, and the two `steps` of the reply name them:
+
+- **`fast_startup`** — `HiberbootEnabled`, the setting that turns "shut down" into a hybrid
+  hibernate most adapters will not wake from. The device sets it to 0.
+- **`adapter`** — the wake-target adapter's `*WakeOnMagicPacket` driver property, and the power
+  manager's arming of the device (`powercfg /deviceenablewake`). The device switches the
+  property on and arms the adapter.
+
+The adapter the device prepares is the one carrying the MAC it reports **first** in
+`hello.macs` — the address a service registers as the machine's wake target — so the fix lands
+on the interface a wake would actually arrive on, not merely some interface.
+
+**It takes no parameters, `rdp_enable`'s reasoning**: there is no field with which a relay
+could aim the writes at a different adapter or a different setting, and the two rules are the
+device's own. A driver whose property does not exist is a `failed` adapter step with its own
+sentence, never a guess — writing a property the driver never exposed configures nothing.
+
+Like `rdp_enable`, this verb changes the machine rather than merely reading it, so the same
+posture applies: a device MUST NOT restart the adapter to make the driver property bite (the
+reply's `note` tells the truth about when it takes effect instead), MUST answer a concurrent
+`wake_prepare` with `busy`, and SHOULD re-read the facts it just changed so its next
+`status_result` describes the machine as it now is rather than as it was cached.
+
+A device that advertises `ready` also reports the **wake-readiness facts** beside the connect
+facts it already carries in `status_result` — additive members under §2/§10's unknown-field
+rule: `fastStartup` (boolean), `wakeReady` (boolean: the wake-target adapter is armed AND its
+driver's magic-packet switch is on), and `wakeDetail` (one bounded sentence naming the failing
+half, present only beside a false `wakeReady`; reference bound 120 characters). Absent members
+mean "could not read", never a guess — the block's standing rule. The facts are what give this
+command a button to sit behind; the command is what makes the facts actionable.
+
+There is deliberately no `wake_unprepare`. Preparing a machine to be woken is what an absent
+owner asks for because a wake failed; the reverse is a hand-on-the-machine preference, and a
+remote verb for it would be a way to strand somebody's machine from the internet.
 
 ### `hold_awake`
 
@@ -1857,6 +1966,7 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 
 | Version | Date | Change |
 |---|---|---|
+| 2 | 2026-08-30 | **Making the wake actually land.** One new capability, `ready`, the one command it gates — `wake_prepare`, answered by `wake_prepare_result` — and three wake-readiness facts beside the connect facts in `status_result`: `fastStartup`, `wakeReady`, and `wakeDetail` (one bounded sentence naming the failing half). Everything above this row assumes the magic packet works; this row is for the machine where it silently does not, and the two usual culprits are locally fixable in milliseconds and remotely undiagnosable forever — Fast Startup turning "shut down" into a hybrid hibernate most adapters will not wake from, and the adapter's own Wake-on-Magic-Packet being off in the driver or un-armed in the power manager. Born from a live failure: a real desktop ignoring every wake sent to it. The facts diagnose (against the adapter carrying the FIRST `hello.macs` entry — the machine's registered wake target, so the sentence is about the interface a wake would actually arrive on); the command repairs, and its reply is a per-step ledger (`fast_startup`, `adapter`: `done`/`already`/`failed`) because a half-repaired machine must arrive as exactly that, never flattened into "it failed". `already` counts as success; `ok` is false exactly when a step failed. One deliberate physical truth rides the reply's `note`: a changed driver property bites only after the adapter restarts or the next boot, and the device MUST NOT restart the adapter — its own relay connection runs over it. No parameters, no `wake_unprepare` (a remote verb for making a machine unwakeable would be a way to strand it). **The same change hardens `rdp_enable`'s firewall step** for another live failure: where the built-in Remote Desktop rule group cannot be MATCHED (localised or stripped display name — seen on a real machine), the device may fall back to adding one explicit inbound rule of its own on the configured RDP port, same profiles (private and domain, never public), idempotent by delete-then-add — and `rdp_enable_result` gains a success `note` naming which path succeeded (`firewall group enabled` / `firewall rule added`), because the two leave different artefacts in wf.msc. Additive throughout: `v` stays 2. |
 | 2 | 2026-08-29 | **A coding session on the machine, started from anywhere.** One new capability, `session`, the two commands it gates — `session_start` and `session_stop`, answered by one new frame, `session_result` — and one advisory push, `workspaces`. Everything above this row moves a machine between power states or holds it in one; this is the first frame that starts WORK on it: the device launches `claude remote-control` as the machine's signed-in user, captures the environment URL from the CLI's own output, and hands it back, so the owner continues coding from the mobile app against a machine they may just have woken. **The split between the push and the command is the security arrangement**: `session_start` names only a workspace id, and the directory it resolves to arrived in `workspaces` — the account holder's own configuration, replaced whole on every push, persisted device-side, bounded (32 entries, label 64, path 512, oversize entries dropped never truncated) — so no command can aim the CLI at a path by naming one. The reply follows `rdp_enable_result`'s rule: nothing here destroys the replier, so `ok:true` means the session is RUNNING and `env_url` was read, not assembled. `hold_seconds` is required and bounded (60–86400), refused `bad_frame` outside, never defaulted — the service owns the default — and a successful start stakes the ONE keep-awake hold, replacing any standing deadline, because a remote session on a machine that dozes off mid-thought is the exact fault the hold exists for. The session is deliberately DETACHED from the device process: an agent update must not kill a conversation, so the device persists the session, re-adopts a survivor at startup by checking the actual process, and buries a dead one hold-and-all. One session per machine; stop kills the process TREE, is idempotent, and releases the hold. Six new codes on `session_result` only — `unknown_workspace`, `already_running`, `no_user_session`, `not_trusted`, `version_old`, `session_failed` (with `detail`: the CLI's own line) — each separate because each names a different mover, and directory trust stays the person's to grant: the device never answers the CLI's trust prompt, only remote control's own consent. `status_result` gains a `session` block, present exactly while one runs — the `awake_until` oracle one member over. Additive throughout: `v` stays 2. |
 | 2 | 2026-08-29 | **Holding a machine awake, for as long as somebody said.** One new capability, `awake`, and the two commands it gates — `hold_awake` and `release_awake` — answered by one new frame, `awake_result`. Everything above this row changes which power state a machine is IN; this holds it in the one it has, for the download, the render or the remote session that must not die under its user because the idle timer ran out. The reply follows `rdp_enable_result`'s rule, not `power_result`'s: nothing here destroys the replier, so `ok:true` means the hold is SET and `until` is the deadline the device actually armed — read back, never recomputed on the caller's clock. `seconds` is required and bounded (60–86400 inclusive), refused `bad_frame` outside, never clamped: a device that silently shortened a week to a day would leave an overnight job dead on a machine somebody was told would stay up. A new hold REPLACES the standing one — that is the extend mechanism, one deadline at a time and always the most recent — and release is idempotent, because "may sleep now" is not a request that can fail by already being true. The hold restrains the IDLE timers only: a lid, a power button or a commanded `power` sleep wins immediately, and the display is never kept lit. The bound is enforced device-side in two layers — a timer that survives reconnects and re-arms the REMAINDER across a restart, and an OS state that dies with the process by construction — so every failure mode falls toward sleep, never toward a machine pinned awake by a promise nobody is keeping. `status_result` gains `awake_until`, present exactly while a hold stands: the honest oracle, since a reply's `until` can be stale the moment a later hold replaces it. Additive throughout: `v` stays 2. |
 | 2 | 2026-08-21 | **Hard power, from beside the machine.** One new capability, `plug`, and the three frame pairs it gates — `plug_scan`/`plug_scan_result`, `plug_set`/`plug_result`, `plug_status`/`plug_status_result` — plus two error codes, `plug_unreachable` and `plug_unsupported`. Everything above this row moves a machine's own switches; this is the rung below all of it, for the machine whose kernel is hung and whose adapter never armed: a smart plug on the same segment cuts and restores the AC, driven by the device over plain local HTTP (Shelly Gen1 REST and Gen2+ JSON-RPC), with no vendor cloud and no internet route to the plug at all. **The reply is the protocol's one deliberate inversion of `power`'s rule**: `power_result` is sent before the action because the action destroys the replier, but a plug's actor stands beside the machine, not behind it, so `plug_result` arrives AFTER the work and its `state` is read back, never assumed — Gen2's `Switch.Set` answers the PREVIOUS state, which is exactly the trap the confirming read exists to step over. `cycle`'s `off_ms` has a floor because a PSU's hold-up capacitors can ride out a short cut, and a ceiling because an unbounded dwell holds a machine dark on one frame's say-so; a device that has cut power retries the restore on a short budget before admitting failure, and completes it even when the relay connection has died under the command — past the cut, giving up is not an error report but a machine left off at the wall. Identity is the plug's MAC with the IP a hint: every set re-confirms who answers at the address before driving it, because DHCP reassigns leases to appliances that must not lose power for it. The target address MUST be on the device's own subnet, refused `bad_frame` before any socket opens — the driver is an unauthenticated HTTP client, and this rule is what keeps a compromised relay from aiming it. Additive throughout: `v` stays 2. |

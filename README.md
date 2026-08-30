@@ -54,6 +54,13 @@ the one thing a dongle sitting *beside* a machine can never do.
 platform keys and checksum verification — no account needed, and the builds work against a
 self-hosted relay — are documented in [`docs/DOWNLOADS.md`](docs/DOWNLOADS.md).
 
+Like the dongle, the agent only ever dials out: nothing listens on the network, nothing is
+forwarded, and nothing is exposed to the internet. The one listener it holds is deliberately
+*off* the network — a loopback-only identity beacon on `127.0.0.1:47653` that tells this
+machine's **own** browser which emitter it is sitting at, so the dashboard can frame the page
+accordingly. It serves nothing but the device id (the public half of the identity, never the
+token), and it is unreachable from the LAN, the router, or anywhere else on the wire.
+
 To be precise about what is open here: the protocol is public and
 [`relay-reference/`](relay-reference/) is a real implementation of the relay half of it; the
 agent itself is ours — closed source, free. If you want an open software emitter,
