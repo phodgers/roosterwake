@@ -178,14 +178,17 @@ bool rw_net_init(void) {
     rw_radio_trace_enable();
 
     /*
-     * CYW43_PERFORMANCE_PM, never CYW43_AGGRESSIVE_PM.
+     * Power save OFF entirely — not CYW43_PERFORMANCE_PM, and never CYW43_AGGRESSIVE_PM.
      *
-     * The aggressive profile parks the radio between beacons and drops inbound frames that
-     * arrive in the gap. For a device whose entire job is to be reachable, that turns wakes
-     * into a coin flip and the resulting bug report — "it works sometimes" — is close to
-     * undiagnosable. The power saved is milliwatts on a mains-powered dongle.
+     * Any power-save mode makes inbound delivery depend on the ACCESS POINT buffering frames
+     * and releasing them when this radio wakes — a contract some APs fumble. Benched on a real
+     * mesh node (2026-08-31): association held at −40 dBm and our own transmissions flowed,
+     * while inbound unicast dropped 48–83% — pongs died, the §9 silence rule tore the link
+     * down, and rejoins starved on the AP's own DHCP. With power save off the radio listens
+     * continuously and no AP-side buffering is involved at all. For a device whose entire job
+     * is to be reachable, that immunity costs milliwatts on a mains-powered dongle.
      */
-    int rc = cyw43_wifi_pm(&cyw43_state, CYW43_PERFORMANCE_PM);
+    int rc = cyw43_wifi_pm(&cyw43_state, cyw43_pm_value(CYW43_NO_POWERSAVE_MODE, 20, 1, 1, 1));
     if (rc != 0) {
         /* Not fatal: the radio still works on the default profile, which is the same value. */
         RW_LOG_WARN("wifi: could not set power mode (%d)", rc);

@@ -251,12 +251,17 @@ than assumes. A `probe` naming an unparseable MAC returns `ok:false, err:"bad_ma
 
 ## 9. Power management
 
-`CYW43_PERFORMANCE_PM`, never `CYW43_AGGRESSIVE_PM`.
+Power save OFF (`CYW43_NO_POWERSAVE_MODE`) — not `CYW43_PERFORMANCE_PM`, and never
+`CYW43_AGGRESSIVE_PM`.
 
-The aggressive profile parks the radio between beacons and drops inbound frames that arrive in
-the gap. For a device whose entire job is to be reachable, that turns wakes into a coin flip,
-and the resulting report — "it works sometimes" — is close to undiagnosable. The power saved is
-milliwatts on a mains-powered dongle.
+Any power-save mode makes inbound delivery depend on the access point honouring the 802.11
+power-save contract: buffer while the client sleeps, release when it wakes. Some APs fumble it.
+Benched against a real mesh node (2026-08-31, fw 2.6.1): the association held at −40 dBm and the
+dongle's own transmissions flowed, while inbound unicast dropped 48–83% — keepalive pongs died,
+the §9 silence rule tore the link down, and every rejoin starved on the same AP's DHCP. The
+device looked "stuck" for hours over what was AP-side buffering. With power save off the radio
+listens continuously and no AP buffering is involved at all. For a device whose entire job is to
+be reachable, that immunity costs milliwatts on a mains-powered dongle.
 
 ---
 
