@@ -22,9 +22,10 @@ It draws about half a watt.
 bill of materials, and a self-hostable relay. You do not need us for any of it, and you never
 will.
 
-**Buy it.** If you would rather not print a case and source parts, we sell a kit —
-a Pico 2 W, an official Raspberry Pi power supply, and the case, pre-flashed and ready.
-[roosterwake.com](https://roosterwake.com)
+**Source it.** We do not sell hardware. If you would rather buy the parts than hunt for
+them, [roosterwake.com/dongle-kit](https://roosterwake.com/dongle-kit) lists exactly what to
+order — a Pico 2 W, a case and a power supply, about £17 — with current links for the UK, the
+US and the EU. You buy from those shops, not from us, and you flash the firmware here.
 
 **Subscribe.** Our hosted relay is free for basic remote wake — one machine, one emitter, and
 voice included: "Alexa, wake my PC" is on every plan, because your own Echo broadcasts the
@@ -114,7 +115,7 @@ browser and registers the device to your account: [`docs/HOSTED-SETUP.md`](docs/
 
 ## Will this actually wake my PC?
 
-Usually, and the honest answer depends mostly on your PC rather than on us.
+Usually, and the answer depends mostly on your PC rather than on us.
 
 **Wired Ethernet targets are reliable.** You will typically need to enable Wake-on-LAN in the
 BIOS, enable "Wake on Magic Packet" on the network adapter, and turn off Windows fast
