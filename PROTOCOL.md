@@ -46,9 +46,10 @@ subtly wrong.
   a hard part of the contract, not a suggestion.
   Most frames are nowhere near it: every frame that carries a fixed set of fields is a few
   hundred bytes. The frames that can reach the ceiling are `scan_result` and
-  `plug_scan_result`, whose lists are as long as the segment is busy — which is why both are
-  specified to drop entries and say so rather than to grow. A single symmetric bound is easier
-  to implement correctly than two, and lets both sides size one receive buffer.
+  `plug_scan_result`, whose lists are as long as the segment is busy, and `folders_result`,
+  whose list is as long as somebody's working life — which is why all three are specified to
+  drop entries rather than to grow. A single symmetric bound is easier to implement correctly
+  than two, and lets both sides size one receive buffer.
 - **Encoding** is UTF-8. Relays MUST NOT assume ASCII: the account address in `adopt` is text a
   person typed into a captive portal.
 
@@ -357,6 +358,7 @@ Defined capabilities, each naming the relay→device command it gates:
 | `status` | `status` |
 | `probe` | `probe` |
 | `scan` | `scan` |
+| `folders` | `folders` |
 | `plug` | `plug_scan`, `plug_set`, `plug_status` |
 | `plugfw` | `plug_fw_check`, `plug_fw_update` |
 | `ota` | `ota_offer`, and the binary frames that follow it |
@@ -421,6 +423,20 @@ not break §5's no-powering-down-peers rule: a plug is an actuator whose entire 
 contract is to be switched by whoever shares its network, not a machine with an owner's
 session on it. The agreement `power` refuses to invent is one the plug's own vendor already
 made.
+
+`folders` says the device can list the directories the Claude Code CLI already trusts on its
+host — read from the signed-in user's own `~/.claude.json` and from nothing else — so a caller
+can offer a picker where it would otherwise ask for a typed path, and register only workspaces a
+`session_start` will be admitted to rather than refused `not_trusted`. It is a capability of its
+own rather than a widening of `session`, and deliberately NOT gated with it: the list is worth
+having on a platform where the launcher does not yet exist, because a workspace registered
+today is one a session starts in the day the launcher lands there. What gates it instead is the
+device's ability to resolve the signed-in user's profile at all — a device that cannot answers
+`no_user`, which is a refusal and not a lie. A device advertising it MUST read that one file and
+nothing else on disk, and MUST NOT list any folder the file does not name: the capability
+exists to say what the CLI trusts, never to browse a machine. An emitter-only device — one
+whose `hello` describes nothing about its own host — does not advertise it, on the same grounds
+that it omits `macs` and `host`.
 
 A device advertising `power` or `rdp` SHOULD also advertise `macs`. Without it a service can
 dispatch the command but cannot tell which machine it would land on.
@@ -857,6 +873,68 @@ joined to a network, `busy` when another operation holds the radio.
 
 ```json
 { "t": "scan_result", "req_id": "…", "ok": false, "err": "no_link" }
+```
+
+### `folders_result`
+
+Sent once, in answer to `folders`.
+
+```json
+{
+  "t": "folders_result",
+  "req_id": "…",
+  "ok": true,
+  "user": "phili",
+  "folders": [
+    { "path": "C:\\Users\\phili\\Documents\\cloud-cut", "name": "cloud-cut",
+      "trusted": true, "used_at": 1756950000 },
+    { "path": "C:\\Users\\phili\\Documents\\scratch", "name": "scratch",
+      "trusted": false, "used_at": null }
+  ]
+}
+```
+
+`user` is the bare account name — no domain, no provider prefix, the `connect.user` spelling —
+of the signed-in console user whose profile was read: the same user a `session_start` runs as,
+resolved the same way, so the list a caller picks from is the list a session will be admitted
+to. `folders` is every directory that user's own `~/.claude.json` names **and that exists on
+disk at the moment of asking** — the device stats each one and drops the ones that are gone,
+because a picker offering a folder that no longer exists is a `session_start` that fails
+later for a reason the person cannot see. `[]`, never null, when the file names nothing that
+survives.
+
+Per folder: `path` is the absolute directory in the host's own spelling, `name` its last
+segment (a root shows as itself), `trusted` the CLI's own trust-dialog flag for that
+directory — `false` when the build that wrote the file recorded none, never guessed from
+anything else — and `used_at` unix seconds of the newest timestamp the file carries for the
+folder, or **`null` when it carries none**. Null is present, not omitted, and never zero: a
+caller must be able to tell "never stamped" from "stamped at the epoch" and from a field it
+does not know about. Current CLI builds stamp nothing per folder, so `null` is the common
+case and the order below falls to name.
+
+`folders` is ordered `used_at` newest first, unstamped folders after every stamped one, then
+by `name`. **At most 64 entries, and never past §1's ceiling** — which binds first at any
+plausible path length. Whichever bound binds, a device MUST drop entries rather than exceed
+either, and SHOULD drop **untrusted folders first, oldest first within each**: the list exists
+so somebody can start a session, and a session starts only in a trusted folder. There is no
+`truncated` flag, deliberately — a folder the device could not carry is one the person can
+still type, and the picker is a convenience over the path field, not a replacement for it.
+
+**The privacy contract, stated whole.** A device answering this frame reads exactly one file
+— `~/.claude.json` of the resolved user — and stats the directories it names. It reads no
+directory, no other file, no other user's profile, and nothing about any folder's contents;
+what leaves the machine is the path, its last segment, the CLI's own flag and the CLI's own
+timestamp. `path` and `name` are the person's own paths, untrusted text under §4's rule: a
+relay MUST bound them (reference behaviour: a path at most 512 bytes, the `workspaces` bound)
+and MUST NOT treat one as anything but a candidate for the person to register.
+
+`ok: false` carries `err` from §6 in place of `user` and `folders` — `no_user` when there is no
+signed-in console user whose profile could be resolved, `no_claude` when that profile has no
+`~/.claude.json`, `unreadable` when it has one the device cannot parse, `internal` otherwise.
+A refusal carries no path and no detail: the code names the remedy and nothing about the disk.
+
+```json
+{ "t": "folders_result", "req_id": "…", "ok": false, "err": "no_user" }
 ```
 
 ### `plug_scan_result`
@@ -1523,6 +1601,30 @@ A device MUST answer a second `scan` that arrives while one is running with `bus
 queueing it: the sweep already bounds itself in time, and queueing turns one slow command into
 an unbounded backlog of them.
 
+### `folders`
+
+```json
+{ "t": "folders", "req_id": "…" }
+```
+
+Asks the device which directories the Claude Code CLI already trusts on its host, so that a
+caller can offer a list to choose from instead of asking somebody to type a path — and so the
+workspace it registers is one a `session_start` will be admitted to rather than refused
+`not_trusted`. Trust is granted by the person, in their own terminal, once per directory, and
+the CLI records it in the signed-in user's own `~/.claude.json`; this command reads that record
+and nothing else. Answered `folders_result` (§4) after the read.
+
+It takes no parameters. There is nothing to parameterise: the user is the device's signed-in
+console user, resolved exactly as `session_start` resolves the user it spawns as — never a
+name the caller supplies, because a frame that could name a user could read a profile nobody
+consented to — and the file is the one the CLI writes. A device MUST NOT accept a path, a
+user or a file name on this frame, and MUST ignore any it finds.
+
+The device answers exactly once and promptly — one file and a stat per folder it names — so a
+relay MAY hold the caller's request open for it, unlike `scan`. Only sent to devices
+advertising the `folders` capability. Two arriving together are answered independently; there
+is nothing here for a second to conflict with, and no `busy`.
+
 ### `plug_scan`
 
 ```json
@@ -1701,8 +1803,8 @@ is the less important direction.
 ## 6. Error codes
 
 Returned in `err` on `wake_result`, `power_result`, `rdp_enable_result`, `awake_result`,
-`session_result`, `probe_result`, `scan_result`, `plug_scan_result`, `plug_result`,
-`plug_status_result`, `hello_ack`, `adopt_ack`, `ota_reject` and `ota_result`.
+`session_result`, `probe_result`, `scan_result`, `folders_result`, `plug_scan_result`,
+`plug_result`, `plug_status_result`, `hello_ack`, `adopt_ack`, `ota_reject` and `ota_result`.
 
 | Code | Meaning |
 |---|---|
@@ -1736,6 +1838,18 @@ separate for `no_privilege`'s reason — it is the code that names the remedy:
 A relay that predates these folds all six into `internal`, which the rule above this table
 makes safe. A failed start leaves nothing behind — no process, no hold, no recorded state — so
 none of them poisons a retry.
+
+Folder-list codes, on `folders_result` only, from devices advertising `folders`. Each names a
+remedy, and none names a path:
+
+| Code | Meaning — and whose move it is |
+|---|---|
+| `no_user` | There is no signed-in console user whose profile could be resolved — nobody signed in, a sign-in screen, a headless host. Somebody signs in at the machine |
+| `no_claude` | The profile resolved, and has no `~/.claude.json` in it: the CLI has never been opened as that user. Open Claude Code once at the keyboard, in a folder |
+| `unreadable` | The file is there and the device could not read it as JSON — a write in progress, a permission, a shape the device does not understand. The person looks at the file; nothing about it travels |
+
+A relay that predates these folds all three into `internal`, which the rule above makes safe.
+A refusal changes nothing on the device, so none of them poisons a retry.
 
 Adoption-specific codes, on `adopt_ack` only, and only from a relay that implements the §4
 token path:
@@ -1967,8 +2081,8 @@ A relay is v2-conformant if it:
 6. Never sends a frame larger than 2048 bytes.
 7. Enforces one live connection per `device_id`, closing the displaced one with `4001`.
 
-Everything else — `status`, `power`, `rdp_enable`, `probe`, `scan`, `plug_scan`, `plug_set`,
-`plug_status`, `log`, `enrol`, `adopt`, `ota_offer` — is optional. A relay that implements `rdp_enable` MUST read `rdp_enable_result` as a
+Everything else — `status`, `power`, `rdp_enable`, `probe`, `scan`, `folders`, `plug_scan`,
+`plug_set`, `plug_status`, `log`, `enrol`, `adopt`, `ota_offer` — is optional. A relay that implements `rdp_enable` MUST read `rdp_enable_result` as a
 completion rather than an acceptance (§4) and MUST NOT send the command to a device that did not
 advertise `rdp`; implementing it as a fourth `power` action is not conformant, because the reply
 semantics of the two are opposite.
@@ -1990,6 +2104,7 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 
 | Version | Date | Change |
 |---|---|---|
+| 2 | 2026-09-03 | **The folders the CLI already trusts.** One new capability, `folders`, and the frame pair it gates — `folders` and `folders_result` — plus three error codes, `no_user`, `no_claude` and `unreadable`. A remote AI session can only start in a directory the person opened in Claude Code once at the keyboard and trusted there, and registering a workspace meant typing that path from memory and learning at `session_start` whether it was one of them; the device can read the CLI's own record and say. The capability is its own rather than a widening of `session`, and deliberately not gated with it, because the list is worth having on a platform whose launcher does not exist yet. The command carries no parameters and a device MUST refuse to take any — the user is the signed-in console user resolved exactly as `session_start` resolves its spawn identity, and the file is the one the CLI writes — because a frame that could name a user or a path would be a frame that reads a profile nobody consented to. The privacy contract is stated whole in §4: one file read, one stat per folder it names, nothing else on disk listed, nothing about any folder's contents sent. `folders_result` joins `scan_result` as a frame whose natural size reaches §1's ceiling; it drops untrusted entries first, then oldest, and carries no `truncated` flag because the path field the picker sits over still accepts anything the device could not carry. `used_at` is `null` where the CLI stamped nothing — present, never omitted — so a caller can tell "never stamped" from a field it does not know. Additive: `v` stays 2. |
 | 2 | 2026-09-02 | **The email path reports `machine` too.** No frame shape changes and no new field: `machine` (§13, 2026-08-10) was specified as an `enrol_token` adopt's own answer, and a relay MAY now also send it on a `bound` reached by the plain email path — the service-side auto-create leg runs there now as well, for the same reason the token path always had one: a device that can name its own host and hardware address has already told the service everything a machine row needs. A device that does not understand the field on this path ignores it exactly as it already does on the token path, per §10. Nothing here is a breaking change; it corrects an asymmetry where the email path's `bound` device silently got less than the token path's. |
 | 2 | 2026-08-30 | **Making the wake actually land.** One new capability, `ready`, the one command it gates — `wake_prepare`, answered by `wake_prepare_result` — and three wake-readiness facts beside the connect facts in `status_result`: `fastStartup`, `wakeReady`, and `wakeDetail` (one bounded sentence naming the failing half). Everything above this row assumes the magic packet works; this row is for the machine where it silently does not, and the two usual culprits are locally fixable in milliseconds and remotely undiagnosable forever — Fast Startup turning "shut down" into a hybrid hibernate most adapters will not wake from, and the adapter's own Wake-on-Magic-Packet being off in the driver or un-armed in the power manager. Born from a live failure: a real desktop ignoring every wake sent to it. The facts diagnose (against the adapter carrying the FIRST `hello.macs` entry — the machine's registered wake target, so the sentence is about the interface a wake would actually arrive on); the command repairs, and its reply is a per-step ledger (`fast_startup`, `adapter`: `done`/`already`/`failed`) because a half-repaired machine must arrive as exactly that, never flattened into "it failed". `already` counts as success; `ok` is false exactly when a step failed. One deliberate physical truth rides the reply's `note`: a changed driver property bites only after the adapter restarts or the next boot, and the device MUST NOT restart the adapter — its own relay connection runs over it. No parameters, no `wake_unprepare` (a remote verb for making a machine unwakeable would be a way to strand it). **The same change hardens `rdp_enable`'s firewall step** for another live failure: where the built-in Remote Desktop rule group cannot be MATCHED (localised or stripped display name — seen on a real machine), the device may fall back to adding one explicit inbound rule of its own on the configured RDP port, same profiles (private and domain, never public), idempotent by delete-then-add — and `rdp_enable_result` gains a success `note` naming which path succeeded (`firewall group enabled` / `firewall rule added`), because the two leave different artefacts in wf.msc. Additive throughout: `v` stays 2. |
 | 2 | 2026-09-01 | **The machine says its name.** One optional `hello` field, `host`: the hostname of the machine a software emitter runs on, at most 64 characters, omitted by dongles for `macs`'s own reason — they do not run on anything. Presentation, never identity: a service may label the machine with it (a picker's "STUDY-PC — aa:bb:…" instead of a device id) and suggest it as a machine's default name, and MUST NOT match, authenticate or relate devices by it — hostnames collide, and anyone can set one. Stored-not-acted like `macs`; an empty string is the field being absent. Additive under §10: `v` stays 2, and a relay that predates the field ignores it. |
