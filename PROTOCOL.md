@@ -873,7 +873,9 @@ and a `remoteTools` entry is installed, the power manager's request ledger (`pow
 tool's is that tool holding the machine awake — and an entry from anything else, a browser
 playing a video or a game, is not a session and does not count. A ledger the device was refused
 is an absent `activeSession`, not a `false` one. Additive under §10: `v` stays 2, and a
-service that predates the kind keeps reading the boolean it always had.
+service that predates the kind keeps reading the boolean it always had. A change in this pair
+between samples is the one event our agent announces on its own, with a `report` (below),
+rather than leaving it to the next sample.
 
 ### `probe_result`
 
@@ -1222,6 +1224,50 @@ so the worst a lying device achieves is its own retirement. A relay MAY therefor
 sending device on `uninstall` — and MUST NOT let it reach any other device, account or record. A dongle has no reason to send
 it: firmware cannot see a power cut coming, and that asymmetry is the signal's value — absence
 of a `bye` before silence is what distinguishes a failure worth reporting.
+
+### `report` — optional
+
+```json
+{ "t": "report",
+  "machine": { "host": "studio-pc", "os": "windows 10.0.26200", "wake_from_off": "no" },
+  "connect": { "os": "windows", "user": "phili", "remoteTools": ["chrome-remote-desktop"],
+               "activeSession": false },
+  "awake_until": 1756400000 }
+```
+
+A status sample the device sends **unprompted**, because something in it has just changed. It
+carries the `machine` block and the `connect` block a `status_result` would carry at that
+moment — the same members under the same rules, and a device MUST build them by the same means
+it builds them for `status_result`, so that a `report` can never say what the next sample would
+not — and `awake_until` on exactly `status_result`'s terms: present while a keep-awake hold
+stands, absent otherwise. Nothing else: no `req_id` (nothing answers it), no `uptime_s`, `ip`,
+`fw` or `session`. A relay MAY treat the frame as a status sample that arrived early.
+
+**Sent at most on a change.** A device MUST NOT send `report` periodically, and MUST NOT send
+one whose blocks it has no reason to believe differ from the last it sent or answered with —
+the relay's own `status` sample is the cadence for everything else, and a device that reported
+on a timer would have reinvented the sample with worse manners. What counts as a change is the
+device's business; our agent (since 0.16.3) sends it for exactly one kind today: the
+`connect.activeSession` pair — a remote session starting, ending, or changing kind — because
+that is the one fact the dashboard renders the moment it arrives and the one a person notices
+being minutes stale. A session ending also puts ten minutes of keep-awake grace on the meter
+(never shortening a longer hold that already stands), and the report carries the resulting
+`awake_until`, so the deadline the relay tracks is right on the same frame that clears the
+chip. The transition semantics our agent applies, for the next implementer: the first reading
+after the device starts SEEDS its picture without a report (an agent that starts mid-session
+does not announce that session as beginning, nor one it found absent as ending); a reading the
+device could not make is never a transition in either direction and never disturbs the last
+one; and a change seen while the device has no authenticated connection is not queued — the
+report is dropped, and the next `status_result` carries the truth.
+
+Fire-and-forget, `bye`'s arrangement exactly: no reply, no `req_id`, the sender waits for
+nothing, and no capability advertises it — capabilities gate relay→device commands, and this
+travels the other way. Additive under §2/§10: a relay that does not understand it MUST ignore
+it, and a relay MUST NOT require it or infer anything from its absence — a device that never
+sends one is a device whose facts it learns at the sample cadence, which was the whole contract
+before this frame existed. A relay that acts on it SHOULD do with the blocks exactly what it
+does with `status_result`'s: persist the `connect` facts, take the deadline, refresh whatever it
+renders from them.
 
 ---
 
@@ -2173,6 +2219,7 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 
 | Version | Date | Change |
 |---|---|---|
+| 2 | 2026-09-04 | **A status the device sends because something changed.** One new optional device→relay frame, `report`: the `machine` and `connect` blocks a `status_result` would carry at that moment, and `awake_until` on the same terms, sent unprompted and at most on a change — never periodically, never with a `req_id`, never awaited, and under no capability, `bye`'s arrangement exactly. It exists because the previous row's "in use" chip is read from a sample the relay takes at connect and every few minutes, and the fact behind it changes in a second: the machine this was built on showed "in use — Chrome Remote Desktop" for minutes after its owner had closed the window, and a refresh could not help because the relay had nothing newer to show. The frame is specified as a status sample that arrived early, and a device MUST build its blocks by the same means it builds `status_result`'s, so the next sample can only agree with it. Our agent sends it for one kind of change today — a remote session starting, ending or changing kind, watched on a twenty-second poll of the cheap legs with the power manager's ledger held to once a minute — with the transition rules stated under the frame: the first reading seeds without a report, an unreadable one is never a transition, and a change seen with no connection up is dropped for the next sample to carry. The same change puts ten minutes of keep-awake grace on the meter when a session ENDS — the resume grace's number, for the same person by a different door — never shortening a longer hold, and the report carries the resulting deadline so the relay's self-healing `awake_until` is right at once. Additive: `v` stays 2, and a relay that ignores the frame keeps the sample cadence it always had. |
 | 2 | 2026-09-04 | **"In use" for every remote tool, not only Remote Desktop.** No new frame and no new capability: the `connect` block's `activeSession` widens from "a live Remote Desktop session" to "a live remote session of any kind the device can see", and gains one additive member, `activeSessionKind` — a closed vocabulary of `rdp` plus the five `remoteTools` names — sent when, and only when, `activeSession` is `true`. Born from a live miss on the machine the chip was built for: its owner connected by Chrome Remote Desktop, which streams the console over WebRTC and creates no Windows remote session, and the chip that exists to say "somebody is on this machine, do not let the meter run down" said nothing. The boolean's honesty rule is unchanged — a signed-in console that somebody locked and walked away from is never a session — and its absence still means "could not read", which for our agent now includes a request ledger it was refused. The kind is a separate member rather than a widening of the boolean's type so that a service which predates it keeps reading the boolean it always had. Our Windows agent's three-question order is recorded under `status_result` for the next implementer, with the one rule worth restating: a power request held by anything that is not a remote-desktop tool — a browser playing a video, a game — is not a session. Additive: `v` stays 2. |
 | 2 | 2026-09-03 | **Wake from off, answered by the adapters.** No new frame and no new capability: `status_result.machine.wake_from_off` keeps its three values and its meaning, and the `connect` block gains two additive members, `wakeFromOff` and `wakeNote`, that repeat the machine block's answer verbatim from the same read. They exist because of WHEN the answer is needed: a machine that no packet can wake once it is off has to be brought back by the smart plug that feeds it, and the moment a dashboard must choose between the packet and the plug is exactly the moment the machine cannot be asked — so the answer has to have been persisted while the machine was up, and the connect block is the block a service persists. `unknown` is sent, never omitted, so "could not say" stays distinguishable from "never reported". The same change replaces how our Windows agent derives the answer (0.16.1): Fast Startup on stays `no`, on Microsoft's own statement that a hybrid shutdown is the transition on which Windows explicitly disables wake-on-LAN; with it off, the adapters are read rather than guessed at — wired, driver set to wake on a magic packet, a firmware-declared deepest wake state that reaches S4, and the driver's own shutdown-wake switch on is `yes`; a Wi-Fi-only machine is `no`, born from a real all-in-one that nothing woke after a shutdown; a wired vendor whose switch the agent cannot name is `unknown`, because not knowing a spelling is not evidence about hardware. Additive: `v` stays 2. |
 | 2 | 2026-09-03 | **The folders the CLI already trusts.** One new capability, `folders`, and the frame pair it gates — `folders` and `folders_result` — plus three error codes, `no_user`, `no_claude` and `unreadable`. A remote AI session can only start in a directory the person opened in Claude Code once at the keyboard and trusted there, and registering a workspace meant typing that path from memory and learning at `session_start` whether it was one of them; the device can read the CLI's own record and say. The capability is its own rather than a widening of `session`, and deliberately not gated with it, because the list is worth having on a platform whose launcher does not exist yet. The command carries no parameters and a device MUST refuse to take any — the user is the signed-in console user resolved exactly as `session_start` resolves its spawn identity, and the file is the one the CLI writes — because a frame that could name a user or a path would be a frame that reads a profile nobody consented to. The privacy contract is stated whole in §4: one file read, one stat per folder it names, nothing else on disk listed, nothing about any folder's contents sent. `folders_result` joins `scan_result` as a frame whose natural size reaches §1's ceiling; it drops untrusted entries first, then oldest, and carries no `truncated` flag because the path field the picker sits over still accepts anything the device could not carry. `used_at` is `null` where the CLI stamped nothing — present, never omitted — so a caller can tell "never stamped" from a field it does not know. Additive: `v` stays 2. |
