@@ -774,7 +774,7 @@ A device that advertises `power` MAY add a `machine` block describing the host i
 | `host` | The machine's own name, for display. Untrusted, like every name in §4. |
 | `os` | Operating system and version, one short string. |
 | `wake_from_off` | `yes`, `no` or `unknown` — can this machine be woken again once it is fully off? |
-| `wake_note` | One sentence naming what the device actually found, when it found something. |
+| `wake_note` | One sentence (at most 200 characters) naming what the device actually found, when it found something. |
 | `sessions` | Interactive user sessions, or absent when the device cannot tell. |
 
 `wake_from_off` is the field this block exists for, and it is a **safety** field rather than a
@@ -787,6 +787,17 @@ without reading this is offering to strand somebody's machine somewhere they can
 that read these settings are not present on every system and do not always answer honestly; a
 device that cannot tell says so, and a caller that guesses on its behalf will eventually guess
 wrong in the direction that costs a journey.
+
+How a device arrives at the answer is its own business; for the record, our Windows agent
+derives it since 0.16.1 from the network adapters themselves rather than from Fast Startup
+alone. Fast Startup on is still `no`, on Microsoft's documentation that a hybrid shutdown is the
+transition on which Windows explicitly disables wake-on-LAN. With it off, an adapter counts when
+it is wired, its driver is set to wake on a magic packet, the deepest wake state Windows recorded
+for it from the firmware reaches S4, and the driver's own shutdown-wake switch (`S5WakeOnLan` on
+Realtek silicon, `EnablePME` on Intel's) is on — `yes` if any adapter counts, `no` if none can (a
+Wi-Fi-only machine is `no`: a radio holds no association through a power-off), and `unknown` for
+a wired adapter whose vendor's switch the agent cannot name, because not knowing a spelling is
+not evidence about hardware. The note names the adapter that settled it and why.
 
 `sessions` is advisory and exists so a caller can say "somebody is logged in" before it shuts a
 machine down. It counts sessions, never people, and never reports who they are.
@@ -816,6 +827,53 @@ stopped, died on its own, or outlived an agent restart — the session deliberat
 (§5 `session_start`) — and this block reports what stands at the moment of asking, from state
 the device verified against the actual process at startup. Absence means no session; never
 "cannot tell".
+
+A software device — one that runs ON a machine rather than beside it — also reports a
+**`connect`** block: the facts an owner needs to reach the machine from outside (its bare
+`user`, the addresses worth typing, whether Remote Desktop is on and listening, the
+remote-desktop tools installed under `remoteTools` — a closed vocabulary: `chrome-remote-desktop`,
+`anydesk`, `parsec`, `rustdesk`, `teamviewer` — and the wake-readiness members §5
+`wake_prepare` describes). Its members are camelCase, and every one is optional under
+`machine`'s rule: an absent member means the device could not read the fact, never a guess.
+Two of them answer a LIVE question, and are specified here because a dashboard acts on them
+the moment they arrive:
+
+```json
+"connect": { "os": "windows", "user": "phili", "remoteTools": ["chrome-remote-desktop"],
+             "activeSession": true, "activeSessionKind": "chrome-remote-desktop" }
+```
+
+**`activeSession`** (boolean) is whether a remote session of ANY kind the device knows how to
+see is connected and active right now — the state that genuinely keeps a machine from
+sleeping, and the one a dashboard swaps its keep-awake meter for an "in use" chip on. A merely
+signed-in console — somebody who locked the screen and walked away — MUST NOT be reported as
+one: nothing about that session keeps the machine awake, and "in use" against it would be a
+confident answer to the wrong question. Absent means the device could not read it; `false`
+means it looked and found none. It began as Windows Remote Desktop alone, and that was found
+wanting on the machine the chip was built for: Chrome Remote Desktop streams the console over
+WebRTC and creates no Windows remote session, so its owner connected by it and the chip never
+fired. Since agent 0.16.2 it covers every tool the device can see a live connection for, and
+gains a companion:
+
+**`activeSessionKind`** names which — exactly one of `rdp`, `chrome-remote-desktop`,
+`anydesk`, `parsec`, `rustdesk`, `teamviewer`: Remote Desktop, then the `remoteTools`
+vocabulary verbatim. It is sent when, and only when, `activeSession` is `true`; a device MUST
+omit it beside `false` or an absent `activeSession`, and a caller MUST NOT infer a session from
+a kind alone. The vocabulary is closed for the reason every enum in this document is — a
+service renders what it can name — and a device that can see a session it has no name in this
+list for sends `true` with no kind, never a name outside the list.
+
+How a device arrives at the answer is its own business; for the record, our Windows agent asks
+three questions in order and stops at the first yes: the session manager's own Remote Desktop
+state; then whether a tool's per-connection process is running (Chrome Remote Desktop's
+`remoting_desktop.exe`, which exists exactly while a client is connected — its always-on
+service process proves only that the tool is installed); then, only when those found nothing
+and a `remoteTools` entry is installed, the power manager's request ledger (`powercfg
+/requests`), where a `[PROCESS]` entry under SYSTEM or DISPLAY whose executable is a known
+tool's is that tool holding the machine awake — and an entry from anything else, a browser
+playing a video or a game, is not a session and does not count. A ledger the device was refused
+is an absent `activeSession`, not a `false` one. Additive under §10: `v` stays 2, and a
+service that predates the kind keeps reading the boolean it always had.
 
 ### `probe_result`
 
@@ -1446,6 +1504,17 @@ driver's magic-packet switch is on), and `wakeDetail` (one bounded sentence nami
 half, present only beside a false `wakeReady`; reference bound 120 characters). Absent members
 mean "could not read", never a guess — the block's standing rule. The facts are what give this
 command a button to sit behind; the command is what makes the facts actionable.
+
+Two more members ride the connect block since agent 0.16.1, additive under the same rule:
+**`wakeFromOff`** and **`wakeNote`** — the `machine` block's `wake_from_off` and `wake_note`
+(§4 `status_result`), repeated verbatim from the same read, so the two blocks of one frame can
+never disagree. They are repeated here because the connect facts are what a service persists
+against the machine, and the answer is needed at exactly the moment the machine is off and
+cannot be asked: a dashboard deciding whether a wake press sends a magic packet or switches the
+smart plug that feeds the machine. `wakeFromOff` is `yes`, `no` or `unknown`, and `unknown` is
+SENT rather than omitted — a service must be able to tell "the device could not say" from "the
+device never reported"; `wakeNote` is at most 200 characters and absent when there is nothing
+to say. Any device that reports a `machine` block SHOULD carry the pair here as well.
 
 There is deliberately no `wake_unprepare`. Preparing a machine to be woken is what an absent
 owner asks for because a wake failed; the reverse is a hand-on-the-machine preference, and a
@@ -2104,6 +2173,8 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 
 | Version | Date | Change |
 |---|---|---|
+| 2 | 2026-09-04 | **"In use" for every remote tool, not only Remote Desktop.** No new frame and no new capability: the `connect` block's `activeSession` widens from "a live Remote Desktop session" to "a live remote session of any kind the device can see", and gains one additive member, `activeSessionKind` — a closed vocabulary of `rdp` plus the five `remoteTools` names — sent when, and only when, `activeSession` is `true`. Born from a live miss on the machine the chip was built for: its owner connected by Chrome Remote Desktop, which streams the console over WebRTC and creates no Windows remote session, and the chip that exists to say "somebody is on this machine, do not let the meter run down" said nothing. The boolean's honesty rule is unchanged — a signed-in console that somebody locked and walked away from is never a session — and its absence still means "could not read", which for our agent now includes a request ledger it was refused. The kind is a separate member rather than a widening of the boolean's type so that a service which predates it keeps reading the boolean it always had. Our Windows agent's three-question order is recorded under `status_result` for the next implementer, with the one rule worth restating: a power request held by anything that is not a remote-desktop tool — a browser playing a video, a game — is not a session. Additive: `v` stays 2. |
+| 2 | 2026-09-03 | **Wake from off, answered by the adapters.** No new frame and no new capability: `status_result.machine.wake_from_off` keeps its three values and its meaning, and the `connect` block gains two additive members, `wakeFromOff` and `wakeNote`, that repeat the machine block's answer verbatim from the same read. They exist because of WHEN the answer is needed: a machine that no packet can wake once it is off has to be brought back by the smart plug that feeds it, and the moment a dashboard must choose between the packet and the plug is exactly the moment the machine cannot be asked — so the answer has to have been persisted while the machine was up, and the connect block is the block a service persists. `unknown` is sent, never omitted, so "could not say" stays distinguishable from "never reported". The same change replaces how our Windows agent derives the answer (0.16.1): Fast Startup on stays `no`, on Microsoft's own statement that a hybrid shutdown is the transition on which Windows explicitly disables wake-on-LAN; with it off, the adapters are read rather than guessed at — wired, driver set to wake on a magic packet, a firmware-declared deepest wake state that reaches S4, and the driver's own shutdown-wake switch on is `yes`; a Wi-Fi-only machine is `no`, born from a real all-in-one that nothing woke after a shutdown; a wired vendor whose switch the agent cannot name is `unknown`, because not knowing a spelling is not evidence about hardware. Additive: `v` stays 2. |
 | 2 | 2026-09-03 | **The folders the CLI already trusts.** One new capability, `folders`, and the frame pair it gates — `folders` and `folders_result` — plus three error codes, `no_user`, `no_claude` and `unreadable`. A remote AI session can only start in a directory the person opened in Claude Code once at the keyboard and trusted there, and registering a workspace meant typing that path from memory and learning at `session_start` whether it was one of them; the device can read the CLI's own record and say. The capability is its own rather than a widening of `session`, and deliberately not gated with it, because the list is worth having on a platform whose launcher does not exist yet. The command carries no parameters and a device MUST refuse to take any — the user is the signed-in console user resolved exactly as `session_start` resolves its spawn identity, and the file is the one the CLI writes — because a frame that could name a user or a path would be a frame that reads a profile nobody consented to. The privacy contract is stated whole in §4: one file read, one stat per folder it names, nothing else on disk listed, nothing about any folder's contents sent. `folders_result` joins `scan_result` as a frame whose natural size reaches §1's ceiling; it drops untrusted entries first, then oldest, and carries no `truncated` flag because the path field the picker sits over still accepts anything the device could not carry. `used_at` is `null` where the CLI stamped nothing — present, never omitted — so a caller can tell "never stamped" from a field it does not know. Additive: `v` stays 2. |
 | 2 | 2026-09-02 | **The email path reports `machine` too.** No frame shape changes and no new field: `machine` (§13, 2026-08-10) was specified as an `enrol_token` adopt's own answer, and a relay MAY now also send it on a `bound` reached by the plain email path — the service-side auto-create leg runs there now as well, for the same reason the token path always had one: a device that can name its own host and hardware address has already told the service everything a machine row needs. A device that does not understand the field on this path ignores it exactly as it already does on the token path, per §10. Nothing here is a breaking change; it corrects an asymmetry where the email path's `bound` device silently got less than the token path's. |
 | 2 | 2026-08-30 | **Making the wake actually land.** One new capability, `ready`, the one command it gates — `wake_prepare`, answered by `wake_prepare_result` — and three wake-readiness facts beside the connect facts in `status_result`: `fastStartup`, `wakeReady`, and `wakeDetail` (one bounded sentence naming the failing half). Everything above this row assumes the magic packet works; this row is for the machine where it silently does not, and the two usual culprits are locally fixable in milliseconds and remotely undiagnosable forever — Fast Startup turning "shut down" into a hybrid hibernate most adapters will not wake from, and the adapter's own Wake-on-Magic-Packet being off in the driver or un-armed in the power manager. Born from a live failure: a real desktop ignoring every wake sent to it. The facts diagnose (against the adapter carrying the FIRST `hello.macs` entry — the machine's registered wake target, so the sentence is about the interface a wake would actually arrive on); the command repairs, and its reply is a per-step ledger (`fast_startup`, `adapter`: `done`/`already`/`failed`) because a half-repaired machine must arrive as exactly that, never flattened into "it failed". `already` counts as success; `ok` is false exactly when a step failed. One deliberate physical truth rides the reply's `note`: a changed driver property bites only after the adapter restarts or the next boot, and the device MUST NOT restart the adapter — its own relay connection runs over it. No parameters, no `wake_unprepare` (a remote verb for making a machine unwakeable would be a way to strand it). **The same change hardens `rdp_enable`'s firewall step** for another live failure: where the built-in Remote Desktop rule group cannot be MATCHED (localised or stripped display name — seen on a real machine), the device may fall back to adding one explicit inbound rule of its own on the configured RDP port, same profiles (private and domain, never public), idempotent by delete-then-add — and `rdp_enable_result` gains a success `note` naming which path succeeded (`firewall group enabled` / `firewall rule added`), because the two leave different artefacts in wf.msc. Additive throughout: `v` stays 2. |
