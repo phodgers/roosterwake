@@ -1288,7 +1288,8 @@ renders from them.
   "proof_s": "b1946ac92492d2347c6235b4d2611184",
   "server": "roosterwake-relay/1.0",
   "now": 1785283200,
-  "features": ["wake", "status"]
+  "features": ["wake", "status"],
+  "meter_end": "sleep"
 }
 ```
 
@@ -1308,6 +1309,14 @@ the say-so of whatever it is connected to. The service is the only side that can
 will do, so it decides at the point of sending. A relay that reports no `features` is telling a
 device nothing, which is what a self-hosted relay with no account model should say.
 
+`meter_end` is optional and carries the `meter_end` verdict (§5) for devices advertising
+`awake`: what the device does when a keep-awake hold runs out and nobody is using the machine.
+It rides the acknowledgement so a hold re-armed from the device's own persistent state at
+startup — which may expire before any other frame arrives — obeys the service's current word.
+The same value is sent on every `hold_awake` and pushed as its own frame whenever it changes;
+absence here means the service has said nothing, and a device that has never been told does
+nothing at expiry.
+
 Rejection: `{ "t": "hello_ack", "ok": false, "err": "auth" }` followed by close `1008`.
 
 ### `features`
@@ -1322,6 +1331,53 @@ a device that never receives one simply keeps reporting what it was told at conn
 
 Sent whenever the set changes, not on a schedule — a device on a plan nobody has touched in a
 year receives exactly one of these, in its `hello_ack`.
+
+### `meter_end`
+
+```json
+{ "t": "meter_end", "action": "sleep" }
+```
+
+What the device does when a keep-awake hold runs out and nobody is using the machine — `sleep`,
+`shutdown` or `leave` — pushed to devices advertising `awake` in the `features` shape exactly:
+advisory, no reply, no `req_id`, replace semantics, sent at connection time in `hello_ack`, on
+every `hold_awake`, and as this frame whenever the verdict changes. A device SHOULD persist the
+last value it was told, for the reason `hello_ack` gives: the hold that expires first after a
+restart is the one re-armed from the device's own state, and it must obey the word the service
+gave last.
+
+**The verdict is the service's, and the reason is what it knows.** A hold that lapses tells the
+operating system nothing — the idle timers simply resume from wherever the machine's own policy
+left them, and on a great many machines that policy is "never" — so the machine a person woke
+from a phone for ten minutes' work is still up the next morning. The right thing to do at expiry
+is to put the machine back where it was found, and *where it can be found again* is a fact about
+the machine's adapters and about what feeds it, which the service holds and the device does not:
+a wired machine a magic packet wakes goes back to `sleep`; a Wi-Fi-only machine whose radio holds
+no association through sleep, fed by a smart plug the service knows about, gets a clean
+`shutdown` — the plug stays on, and the next wake is the plug's; a Wi-Fi-only machine with
+nothing feeding it is `leave`, because putting it into any state it cannot be rescued from is
+the one outcome worse than leaving it up. `leave` is also what the account holder chooses when
+they would rather the operating system decided, and what a service sends a device it cannot
+place on any machine.
+
+**Idle is the device's finding, and every leg is required.** A device MUST act only when it has
+established, at the moment the hold lapses, that: no remote session of any kind it can see is
+connected (the `activeSession` question, answered `true` or `false` — a reading it could not
+make is not `false`); no remote AI session it started is running; nobody has used the machine's
+input devices since the hold began or within the last ten minutes, whichever is the shorter
+window; and nothing else holds a power request against the machine — a playing audio stream, a
+download, another program's stay — beyond the device's own hold, which it has just released. A
+leg it cannot read is a leg that failed: the device leaves the machine up and says why in its
+own log, because "could not tell" is not evidence that nobody is there. The action itself runs
+the device's own power path — the `bye` first, the same reason `power` would give — and is
+never reported on the wire as a command's outcome, because no command asked for it: the
+service sees the goodbye and the silence, exactly as it sees a machine that slept on its own.
+
+**What the verdict never does.** It never touches the plug — a `shutdown` verdict is a clean
+operating-system shutdown by the device on the machine it runs on, and the switch feeding that
+machine stays on. And it never forces: a hold placed by anybody — the service, the device's own
+graces — that is still standing is simply not expired, and the person adding time from a
+dashboard is the person the verdict yields to.
 
 ### `workspaces`
 
@@ -1569,7 +1625,7 @@ remote verb for it would be a way to strand somebody's machine from the internet
 ### `hold_awake`
 
 ```json
-{ "t": "hold_awake", "req_id": "…", "seconds": 3600 }
+{ "t": "hold_awake", "req_id": "…", "seconds": 3600, "meter_end": "sleep" }
 ```
 
 Asks the device to keep its host machine out of **idle** sleep for a bounded time — the long
@@ -1605,6 +1661,14 @@ the process by construction**, so there is no failure mode — crash, kill, upda
 that leaves a machine pinned awake by a promise nobody is keeping. The fail-safe direction is
 always toward sleep: the worst a lost timer can cost is a machine that dozed off on schedule
 after all.
+
+`meter_end` is optional and carries the §5 `meter_end` verdict — `sleep`, `shutdown` or
+`leave` — for this hold's expiry and every expiry after it, replacing whatever the device was
+told before, exactly as the `meter_end` frame does; it rides the command because the moment a
+deadline is set is the moment the answer is freshest. A value outside the vocabulary is ignored
+and the hold is staked regardless: the verdict is advice about what happens *after* the promise,
+and a promise must not fail for the sake of a footnote to it. Absent, the device keeps the
+verdict it holds.
 
 ### `release_awake`
 
@@ -2219,6 +2283,7 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 
 | Version | Date | Change |
 |---|---|---|
+| 2 | 2026-09-04 | **Putting the machine back when the meter runs out.** One new optional relay→device advisory frame, `meter_end` (`action`: `sleep`, `shutdown` or `leave`), the same value as an optional field on `hello_ack` and on `hold_awake`, for devices advertising `awake` — the `features` arrangement: no reply, no `req_id`, replace semantics, sent at connect, with every hold, and on change. Everything the `awake` row above promises ends at the deadline: the hold lapses and the operating system's own idle policy resumes, which on a great many machines is "never", so a machine woken for ten minutes' work is still up the next morning. The verdict is the SERVICE's because the answer depends on what it alone knows — where the machine can be found again: a wired machine goes back to `sleep`; a Wi-Fi-only machine fed by a smart plug the service knows about gets a clean `shutdown` with the plug left on; a Wi-Fi-only machine with nothing feeding it is `leave`, as is any machine whose owner would rather Windows decided. Idle is the DEVICE's finding and every leg is required — no remote session, no remote AI session, no input since the hold began or in the last ten minutes, nothing else holding a power request — and a leg it cannot read is a leg that failed. The action is the device's own power path with the `bye` first and is never reported as a command's outcome; the plug is never touched, and a standing hold is never overridden. Additive: `v` stays 2, and a device that ignores the field does at expiry exactly what it always did. |
 | 2 | 2026-09-04 | **A status the device sends because something changed.** One new optional device→relay frame, `report`: the `machine` and `connect` blocks a `status_result` would carry at that moment, and `awake_until` on the same terms, sent unprompted and at most on a change — never periodically, never with a `req_id`, never awaited, and under no capability, `bye`'s arrangement exactly. It exists because the previous row's "in use" chip is read from a sample the relay takes at connect and every few minutes, and the fact behind it changes in a second: the machine this was built on showed "in use — Chrome Remote Desktop" for minutes after its owner had closed the window, and a refresh could not help because the relay had nothing newer to show. The frame is specified as a status sample that arrived early, and a device MUST build its blocks by the same means it builds `status_result`'s, so the next sample can only agree with it. Our agent sends it for one kind of change today — a remote session starting, ending or changing kind, watched on a twenty-second poll of the cheap legs with the power manager's ledger held to once a minute — with the transition rules stated under the frame: the first reading seeds without a report, an unreadable one is never a transition, and a change seen with no connection up is dropped for the next sample to carry. The same change puts ten minutes of keep-awake grace on the meter when a session ENDS — the resume grace's number, for the same person by a different door — never shortening a longer hold, and the report carries the resulting deadline so the relay's self-healing `awake_until` is right at once. Additive: `v` stays 2, and a relay that ignores the frame keeps the sample cadence it always had. |
 | 2 | 2026-09-04 | **"In use" for every remote tool, not only Remote Desktop.** No new frame and no new capability: the `connect` block's `activeSession` widens from "a live Remote Desktop session" to "a live remote session of any kind the device can see", and gains one additive member, `activeSessionKind` — a closed vocabulary of `rdp` plus the five `remoteTools` names — sent when, and only when, `activeSession` is `true`. Born from a live miss on the machine the chip was built for: its owner connected by Chrome Remote Desktop, which streams the console over WebRTC and creates no Windows remote session, and the chip that exists to say "somebody is on this machine, do not let the meter run down" said nothing. The boolean's honesty rule is unchanged — a signed-in console that somebody locked and walked away from is never a session — and its absence still means "could not read", which for our agent now includes a request ledger it was refused. The kind is a separate member rather than a widening of the boolean's type so that a service which predates it keeps reading the boolean it always had. Our Windows agent's three-question order is recorded under `status_result` for the next implementer, with the one rule worth restating: a power request held by anything that is not a remote-desktop tool — a browser playing a video, a game — is not a session. Additive: `v` stays 2. |
 | 2 | 2026-09-03 | **Wake from off, answered by the adapters.** No new frame and no new capability: `status_result.machine.wake_from_off` keeps its three values and its meaning, and the `connect` block gains two additive members, `wakeFromOff` and `wakeNote`, that repeat the machine block's answer verbatim from the same read. They exist because of WHEN the answer is needed: a machine that no packet can wake once it is off has to be brought back by the smart plug that feeds it, and the moment a dashboard must choose between the packet and the plug is exactly the moment the machine cannot be asked — so the answer has to have been persisted while the machine was up, and the connect block is the block a service persists. `unknown` is sent, never omitted, so "could not say" stays distinguishable from "never reported". The same change replaces how our Windows agent derives the answer (0.16.1): Fast Startup on stays `no`, on Microsoft's own statement that a hybrid shutdown is the transition on which Windows explicitly disables wake-on-LAN; with it off, the adapters are read rather than guessed at — wired, driver set to wake on a magic packet, a firmware-declared deepest wake state that reaches S4, and the driver's own shutdown-wake switch on is `yes`; a Wi-Fi-only machine is `no`, born from a real all-in-one that nothing woke after a shutdown; a wired vendor whose switch the agent cannot name is `unknown`, because not knowing a spelling is not evidence about hardware. Additive: `v` stays 2. |
