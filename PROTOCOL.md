@@ -1632,8 +1632,11 @@ two halves are — armed AND the driver's switch on; the wake-on-LAN flag AND th
 wakeup switch; Wake for network access AND a wired target), and `wakeDetail` (one bounded
 sentence naming the failing half, present only beside a false `wakeReady`; reference bound
 120 characters). Absent members mean "could not read", never a guess — the block's standing
-rule. The facts are what give this command a button to sit behind; the command is what makes
-the facts actionable.
+rule; on Linux the kernel hands the read of the wake-on-LAN flags, like the write, to a process
+with CAP_NET_ADMIN alone, so a device running without it (a copy started by hand as an ordinary
+user) sends no `wakeReady` at all rather than a guess, and answers `wake_prepare` with
+`no_privilege`. The facts are what give this command a button to sit behind; the command is
+what makes the facts actionable.
 
 Two more members ride the connect block since agent 0.16.1, additive under the same rule:
 **`wakeFromOff`** and **`wakeNote`** — the `machine` block's `wake_from_off` and `wake_note`
