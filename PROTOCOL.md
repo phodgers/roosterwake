@@ -837,12 +837,22 @@ the device verified against the actual process at startup. Absence means no sess
 
 A software device — one that runs ON a machine rather than beside it — also reports a
 **`connect`** block: the facts an owner needs to reach the machine from outside (its bare
-`user`, the addresses worth typing, whether Remote Desktop is on and listening, the
-remote-desktop tools installed under `remoteTools` — a closed vocabulary: `chrome-remote-desktop`,
-`anydesk`, `parsec`, `rustdesk`, `teamviewer` — and the wake-readiness members §5
-`wake_prepare` describes). Its members are camelCase, and every one is optional under
-`machine`'s rule: an absent member means the device could not read the fact, never a guess.
-Two of them answer a LIVE question, and are specified here because a dashboard acts on them
+`user`, the addresses worth typing, whether Remote Desktop is on and listening, whether an SSH
+daemon is listening and on which port, the remote-desktop tools installed under `remoteTools`
+— a closed vocabulary: `chrome-remote-desktop`, `anydesk`, `parsec`, `rustdesk`, `teamviewer`
+— and the wake-readiness members §5 `wake_prepare` describes). Its members are camelCase, and
+every one is optional under `machine`'s rule: an absent member means the device could not
+read the fact, never a guess.
+
+The SSH pair (agent 0.19.0), read on Windows, macOS and Linux alike: **`sshListening`**
+(boolean) is whether a TCP listener is up on the SSH port right now, and **`sshPort`**
+(integer, 1–65535) is the port the machine's `sshd_config` names — 22 when it names none.
+Both are omitted when there is no `sshd_config` to read, so a missing pair is "no SSH daemon
+we could find", never "port 22, not listening". They are `rdpListening`/`rdpPort` for the
+second daemon, and a dashboard that shows one pair beside the Remote Desktop facts shows the
+other in the same place.
+
+Three of them answer a LIVE question, and are specified here because a dashboard acts on them
 the moment they arrive:
 
 ```json
@@ -862,39 +872,88 @@ WebRTC and creates no Windows remote session, so its owner connected by it and t
 fired. Since agent 0.16.2 it covers every tool the device can see a live connection for, and
 gains a companion:
 
-**`activeSessionKind`** names which — exactly one of `rdp`, `claude-code`,
-`chrome-remote-desktop`, `anydesk`, `parsec`, `rustdesk`, `teamviewer`: Remote Desktop, a
-Claude Code remote-control session, then the `remoteTools` vocabulary verbatim. `claude-code`
-(agent 0.17.0) is the odd one out: not a connection to the machine but a process running on it
-— the `claude remote-control` CLI, driven from a phone — which holds no power request of its
-own, so a device that reports it SHOULD hold the machine awake itself for as long as the
-process runs (ours stakes a ten-minute `hold_awake` floor and renews it). It is sent when, and
-only when, `activeSession` is `true`; a device MUST
+**`activeSessionKind`** names which — exactly one of `rdp`, `claude-code`, `ssh`,
+`ssh-transfer`, `chrome-remote-desktop`, `anydesk`, `parsec`, `rustdesk`, `teamviewer`: Remote
+Desktop, a Claude Code remote-control session, an SSH shell, a file transfer over SSH, then the
+`remoteTools` vocabulary verbatim. `claude-code` (agent 0.17.0) is not a connection to the
+machine but a process running on it — the `claude remote-control` CLI, driven from a phone —
+which holds no power request of its own, so a device that reports it SHOULD hold the machine
+awake itself for as long as the process runs (ours stakes a ten-minute `hold_awake` floor and
+renews it). It is sent when, and only when, `activeSession` is `true`; a device MUST
 omit it beside `false` or an absent `activeSession`, and a caller MUST NOT infer a session from
 a kind alone. The vocabulary is closed for the reason every enum in this document is — a
 service renders what it can name — and a device that can see a session it has no name in this
 list for sends `true` with no kind, never a name outside the list.
 
-How a device arrives at the answer is its own business; for the record, our Windows agent asks
-three questions in order and stops at the first yes: the session manager's own Remote Desktop
-state; then whether a tool's per-connection process is running (Chrome Remote Desktop's
-`remoting_desktop.exe`, which exists exactly while a client is connected — its always-on
-service process proves only that the tool is installed); then, only when those found nothing
-and a `remoteTools` entry is installed, the power manager's request ledger (`powercfg
-/requests`), where a `[PROCESS]` entry under SYSTEM or DISPLAY whose executable is a known
-tool's is that tool holding the machine awake — and an entry from anything else, a browser
-playing a video or a game, is not a session and does not count. A ledger the device was refused
-is an absent `activeSession`, not a `false` one. The Claude Code question is asked on every
-platform the agent ships for, from the process table's command lines: a `claude` (or `node`
-running Claude Code's `cli.js`) process whose arguments carry the remote-control subcommand or
-its aliases (`rc`, `remote`, `sync`, `bridge`) or the `--remote-control`/`--rc` flag; a miss
-counts only after thirty seconds without a sighting, because the CLI's own updater on Windows
-replaces the process rather than re-executing it. On macOS and Linux this is the only question
-our agent can answer, so `false` there means "no Claude Code session" and nothing about
-Screen Sharing, VNC or xrdp. Additive under §10: `v` stays 2, and a
-service that predates the kind keeps reading the boolean it always had. A change in this pair
-between samples is the one event our agent announces on its own, with a `report` (below),
-rather than leaving it to the next sample.
+The two SSH kinds (agent 0.19.0) are sessions the operating system holds nothing for, on any
+platform: **`ssh`** is an interactive shell over SSH — a channel for which a pty was allocated
+— and **`ssh-transfer`** is any SSH channel with no terminal: sftp, scp, rsync, git over SSH,
+sshfs, a port forward, an `exec` request. Because neither is a connection the OS counts as
+"in use", both are governed by an ACTIVITY rule rather than an existence rule, and the rule
+is part of the contract: a remote SSH session is ACTIVE only when it showed activity inside
+the last ten minutes — keystrokes on its terminal, CPU time in its process tree (a build
+running in a shell nobody is typing into is activity), or bytes moving through a transfer —
+and `activeSession` is `true` for it only while it is ACTIVE. A session that is present but
+has shown nothing for ten minutes is reported as `activeSession: false` (no kind beside it,
+as always), and the device holds nothing for it: an sshfs mount left up overnight, or a shell
+somebody forgot, must not keep a machine out of sleep. While a session IS active the device
+holds the machine awake itself, `claude-code`'s arrangement — ours stakes the same ten-minute
+floor and renews it on every active poll — and when the session ends (or goes idle) the
+session-end grace applies, so the machine sleeps ten minutes after the last thing happened,
+never during it. The device's precedence when more than one session is up is the order the
+vocabulary is listed in: a person's shell outranks a background copy.
+
+**`remoteIdle`** (boolean, agent 0.19.0) is the other half of that rule made visible: `true`
+when a remote SSH session is present but idle under the rule above. It is sent only when true
+— a device MUST omit it otherwise, and a service MUST read absence as "nothing idle", never as
+unknown — and it is independent of `activeSession`: a machine can carry `activeSession: true`
+of one kind (Remote Desktop, say) and `remoteIdle: true` for a forgotten shell beside it. A
+dashboard reads it to explain a sleep that is about to happen ("somebody is connected over
+SSH but idle, so the machine may sleep under them") without calling the machine in use.
+
+How a device arrives at the answer is its own business; for the record, our agent asks its
+questions in order and stops at the first yes. On Windows: the session manager's own Remote
+Desktop state; then whether a tool's per-connection process is running (Chrome Remote
+Desktop's `remoting_desktop.exe`, which exists exactly while a client is connected — its
+always-on service process proves only that the tool is installed); then the Claude Code
+question; then the SSH questions; then, only when those found nothing and a `remoteTools`
+entry is installed, the power manager's request ledger (`powercfg /requests`), where a
+`[PROCESS]` entry under SYSTEM or DISPLAY whose executable is a known tool's is that tool
+holding the machine awake — and an entry from anything else, a browser playing a video or a
+game, is not a session and does not count. A ledger the device was refused is an absent
+`activeSession`, not a `false` one. The Claude Code question is asked on every platform the
+agent ships for, from the process table's command lines: a `claude` (or `node` running Claude
+Code's `cli.js`) process whose arguments carry the remote-control subcommand or its aliases
+(`rc`, `remote`, `sync`, `bridge`) or the `--remote-control`/`--rc` flag; a miss counts only
+after thirty seconds without a sighting, because the CLI's own updater on Windows replaces
+the process rather than re-executing it. The SSH questions are asked on every platform too,
+from the SSH daemon's own record of each connection: on Linux and macOS OpenSSH (7.x through
+9.x; the split session binary of 9.8 writes `sshd-session:` in the same shape) titles the
+per-connection process `sshd: user@pts/N` for a shell and `sshd: user@notty` for a channel
+with no terminal, and the title alone decides the kind — the child beneath a `notty` session
+(`sftp-server`, `rsync --server`, `scp`, `git-upload-pack`) names the program for the log, so
+a transfer program the reader has never heard of still counts; Dropbear sets no title and is
+read from its process tree instead (a `dropbear` under a `dropbear` is a connection, its child
+holding a controlling terminal a shell, any other child a transfer). On Windows OpenSSH sets
+no title either, so the tree decides: the session is the deepest `sshd.exe` of a per-connection
+chain, counted only once somebody has authenticated (it runs under a person's account, or it
+has children), and a console host (`conhost.exe`, `OpenConsole.exe`) as its direct child means
+a pseudo-terminal was allocated and the session is a shell whatever runs inside it; otherwise
+a transfer program (`sftp-server.exe`, `scp.exe`, `rsync.exe`) anywhere beneath it names a
+transfer, a shell image as a direct child with no console host is an exec running a shell and
+read as one, and anything else is a channel with no terminal. Activity is the terminal's
+last read where there is a terminal (the clock `w` reads), CPU time burned by the session's
+process tree between two readings above a small rate (fifty milliseconds per twenty-second
+poll), bytes moved by the transfer program between two readings above a rate where the
+platform counts them (Linux and Windows do; 256 KiB per poll), and the session's own start on
+first sight — connecting is an act; a session whose CPU the platform would not report is
+counted active, because a session the reader cannot judge is no evidence that nobody is using
+the machine. On macOS and Linux the Claude Code and SSH questions are the only ones our agent
+can answer, so `false` there means "no Claude Code session and no active SSH session" and
+nothing about Screen Sharing, VNC or xrdp. Additive under §10: `v` stays 2, and
+a service that predates the kind keeps reading the boolean it always had. A change in the
+`activeSession` pair between samples, and a change in `remoteIdle`, are the events our agent
+announces on its own, with a `report` (below), rather than leaving them to the next sample.
 
 ### `probe_result`
 
@@ -1266,10 +1325,12 @@ stands, absent otherwise. Nothing else: no `req_id` (nothing answers it), no `up
 one whose blocks it has no reason to believe differ from the last it sent or answered with —
 the relay's own `status` sample is the cadence for everything else, and a device that reported
 on a timer would have reinvented the sample with worse manners. What counts as a change is the
-device's business; our agent (since 0.16.3) sends it for exactly one kind today: the
+device's business; our agent (since 0.16.3) sends it for two kinds today: the
 `connect.activeSession` pair — a remote session starting, ending, or changing kind — because
 that is the one fact the dashboard renders the moment it arrives and the one a person notices
-being minutes stale. A session ending also puts ten minutes of keep-awake grace on the meter
+being minutes stale; and (since 0.19.0) remote presence changing — `connect.remoteIdle`
+appearing or going, an SSH session going idle or waking up with no transition of
+`activeSession` beside it — for the same reason. A session ending also puts ten minutes of keep-awake grace on the meter
 (never shortening a longer hold that already stands), and the report carries the resulting
 `awake_until`, so the deadline the relay tracks is right on the same frame that clears the
 chip. The transition semantics our agent applies, for the next implementer: the first reading
@@ -2314,6 +2375,7 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 
 | Version | Date | Change |
 |---|---|---|
+| 2 | 2026-09-05 | **SSH sessions are "in use", and file transfers hold the machine while bytes move.** No new frame and no new capability: `activeSessionKind` gains two words, `ssh` (an interactive shell over SSH — a pty was allocated) and `ssh-transfer` (any SSH channel with no terminal: sftp, scp, rsync, git, sshfs, a tunnel, an exec request), sent beside `activeSession: true` on every platform. Both are sessions the operating system holds nothing for, so for the first time the boolean is governed by an ACTIVITY rule stated in the contract rather than an existence rule: an SSH session is active only when it showed activity inside the last ten minutes — keystrokes, CPU time in its process tree, or bytes moving — and a present-but-idle one is `activeSession: false`, with a new additive member, `remoteIdle` (boolean, sent only when true), saying that somebody is still connected but idle, so a dashboard can explain the sleep about to happen without calling the machine in use. While a session is active the device holds the machine awake itself (`claude-code`'s arrangement: the ten-minute floor, renewed) and the session-end grace covers the ten minutes after the last thing happened. Two more additive members carry the SSH daemon's posture beside Remote Desktop's, `sshListening` and `sshPort`, read on Windows, macOS and Linux and omitted together where there is no `sshd_config`. The `report` frame gains a second trigger, remote presence changing (`remoteIdle` moving with no transition of `activeSession`). Additive under §10: `v` stays 2, a service that predates the words drops them and keeps the boolean, and one that never expected `remoteIdle` reads its absence exactly as it always did. Rationale: the one thing every SSH user builds by hand — a machine that does not sleep under a shell or a backup, and does sleep after — is something the device already knew how to promise for a Claude Code session, and an overnight sshfs mount must not be the reason a machine never sleeps. |
 | 2 | 2026-09-05 | **The wake fix on every platform.** No new frame and no new capability: `ready` and `wake_prepare` keep their shape, and what changes is who advertises them and what the two steps fill with. Until now the settings behind `wake_prepare` existed on Windows alone in our agent, and a Linux or macOS machine whose adapter was not set to wake was a fault the dashboard could neither see nor fix — a real Ubuntu box ignored every packet until `ethtool -s enp2s0 wol g` and a NetworkManager property were set by hand. §5 `wake_prepare` gains the per-platform table: Linux fills `adapter` with the interface's wake-on-LAN magic flag, the bus device's wakeup switch and the NetworkManager profile where one manages the interface, and re-applies the flag and the switch at every start and resume once a `wake_prepare` has succeeded on it (the flag is the driver's and comes up in the chip's default state after a reboot); macOS fills it with Wake for network access, Ethernet only, a Wi-Fi wake target being a `failed` step with its sentence; both answer `fast_startup` with `already`, having no such setting. The wake-readiness facts paragraph now says `fastStartup` is sent by Windows devices alone, and `wakeReady` is both halves of whichever two halves the platform has. `note` is per platform too: the adapter-restart truth on Windows, the NetworkManager sentence on Linux when the profile would not take the write, nothing on macOS. Additive under §10: `v` stays 2, a service that never expected `ready` from a Linux or macOS device simply gains a button, and a service that reads `fastStartup` as required will find it absent from two platforms and must not read absence as a fault. Rationale: the agent is sold as the thing that finds what stops a wake landing and puts it right, and a fix that existed on one platform of three was a claim the other two could not honour. |
 | 2 | 2026-09-04 | **A Claude Code session counts as "in use".** No new frame and no new capability: `activeSessionKind` gains one word, `claude-code` — a `claude remote-control` process running on the machine — sent beside `activeSession: true` on every platform. Unlike the other kinds it holds no power request itself, so the device that reports it holds the machine awake (ours renews a ten-minute `hold_awake` floor while it runs) and the session-end grace applies when it stops. Additive under §10: `v` stays 2, and a service that predates the word drops it and keeps the boolean. Rationale: the remote-control feature's one field complaint is a machine that sleeps under the session, and "in use" is where the roster already says why a machine is up. |
 | 2 | 2026-09-04 | **Putting the machine back when the meter runs out.** One new optional relay→device advisory frame, `meter_end` (`action`: `sleep`, `shutdown` or `leave`), the same value as an optional field on `hello_ack` and on `hold_awake`, for devices advertising `awake` — the `features` arrangement: no reply, no `req_id`, replace semantics, sent at connect, with every hold, and on change. Everything the `awake` row above promises ends at the deadline: the hold lapses and the operating system's own idle policy resumes, which on a great many machines is "never", so a machine woken for ten minutes' work is still up the next morning. The verdict is the SERVICE's because the answer depends on what it alone knows — where the machine can be found again: a wired machine goes back to `sleep`; a Wi-Fi-only machine fed by a smart plug the service knows about gets a clean `shutdown` with the plug left on; a Wi-Fi-only machine with nothing feeding it is `leave`, as is any machine whose owner would rather Windows decided. Idle is the DEVICE's finding and every leg is required — no remote session, no remote AI session, no input since the hold began or in the last ten minutes, nothing else holding a power request — and a leg it cannot read is a leg that failed. The action is the device's own power path with the `bye` first and is never reported as a command's outcome; the plug is never touched, and a standing hold is never overridden. Additive: `v` stays 2, and a device that ignores the field does at expiry exactly what it always did. |
