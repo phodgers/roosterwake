@@ -404,12 +404,15 @@ agent, and a platform that advertised it without the machinery would be promisin
 coding session with nothing behind the promise.
 
 `ready` says the device can PREPARE its host machine to be woken — switch off the settings
-that quietly defeat a magic packet (on Windows: Fast Startup, and the adapter's magic-packet
-switch and wake arming) — and gates the one command that does it, `wake_prepare`. It is gated
-like `rdp` and for `rdp`'s reason: same order of privilege as `power`, different availability —
-the settings it writes exist on Windows alone in our agent — and §4's rule keeps the frame off
-every socket whose device could only refuse it. The wake-readiness FACTS a device reports
-beside its connect facts need no capability: facts are answers, not commands, and they ride
+that quietly defeat a magic packet, in the host's own spelling (`wake_prepare`, §5, names them
+per platform: on Windows Fast Startup and the adapter's magic-packet switch and wake arming;
+on Linux the adapter's wake-on-LAN flag, the device's wakeup switch and the NetworkManager
+profile; on macOS Wake for network access) — and gates the one command that does it. It is
+gated like `power`: same order of privilege, and the machinery has to exist in the build — our
+agent carries it on Windows, Linux and macOS from 0.18.0 and on nothing else — and §4's rule
+keeps the frame off every socket whose device could only refuse it. The wake-readiness FACTS
+a device reports beside its connect facts need no capability: facts are answers, not commands,
+and they ride
 `status_result` under §10's additive rule whether or not the fix verb is available.
 
 `plug` says the device can drive smart plugs on its own segment over local HTTP — discover
@@ -669,12 +672,16 @@ diagnose AND whether the other half landed — a machine with Fast Startup now o
 that will not arm is half-repaired, and flattening that into "it failed" hides a repair that
 happened. An unrecognised step value MUST be treated as `failed`, never as a success.
 
-`note` carries the one truth a success must not bury. A changed driver property is read at
-driver start, so it takes effect only after the adapter restarts or the machine next boots — and
-a device MUST NOT restart the adapter itself, because its own relay connection runs over that
-adapter and the restart would cut the socket mid-reply, turning a repair into an outage. The
-note says so in a person's words. On failure it carries the failing step's own sentence instead.
-Untrusted like every string in §4; bounded well inside §1's ceiling.
+`note` carries the one truth a success must not bury. On Windows, a changed driver property is
+read at driver start, so it takes effect only after the adapter restarts or the machine next
+boots — and a device MUST NOT restart the adapter itself, because its own relay connection runs
+over that adapter and the restart would cut the socket mid-reply, turning a repair into an
+outage. The note says so in a person's words. On Linux, the settings take effect at once and the
+note is sent only when NetworkManager's profile could not be updated — the device itself
+re-applies the setting at every start and resume then, and the note says so. On macOS the
+setting takes effect at once and a success carries no note. On failure it carries the failing
+step's own sentence instead. Untrusted like every string in §4; bounded well inside §1's
+ceiling.
 
 A second `wake_prepare` while one runs is answered `busy` rather than queued (`rdp_enable`'s
 grounds), and a frame with no `req_id` is answered nothing at all — the same silence as every
@@ -1587,37 +1594,46 @@ Asks the device to prepare its host machine to be WOKEN — to switch off the se
 quietly defeat the magic packet this whole protocol exists to deliver. Only sent to devices
 advertising the `ready` capability, and answered `wake_prepare_result` (§4) **after** the work.
 
-The command exists because the two usual culprits are locally fixable in milliseconds and
-remotely undiagnosable forever. On Windows they are, and the two `steps` of the reply name them:
+The command exists because the usual culprits are locally fixable in milliseconds and remotely
+undiagnosable forever. The two `steps` of the reply name them, and each platform fills the two
+steps with its own settings:
 
-- **`fast_startup`** — `HiberbootEnabled`, the setting that turns "shut down" into a hybrid
-  hibernate most adapters will not wake from. The device sets it to 0.
-- **`adapter`** — the wake-target adapter's `*WakeOnMagicPacket` driver property, and the power
-  manager's arming of the device (`powercfg /deviceenablewake`). The device switches the
-  property on and arms the adapter.
+| Platform | `fast_startup` | `adapter` |
+|---|---|---|
+| Windows | `HiberbootEnabled`, the setting that turns "shut down" into a hybrid hibernate most adapters will not wake from. The device sets it to 0. | The wake-target adapter's `*WakeOnMagicPacket` driver property, and the power manager's arming of the device (`powercfg /deviceenablewake`). The device switches the property on and arms the adapter. |
+| Linux | Always `already`: there is no such setting. | The interface's wake-on-LAN magic-packet flag (the ethtool `wol g` setting, written through the kernel's own interface), the bus device's wakeup switch (`/sys/class/net/<if>/device/power/wakeup`), and — where NetworkManager manages the interface — the profile's `802-3-ethernet.wake-on-lan` set to `magic`, so NetworkManager's own re-activation agrees. The device re-applies the flag and the switch at every start and every resume once a `wake_prepare` has succeeded on it, because the flag is the driver's and comes up in the chip's default state after a reboot; a profile that will not take the write is reported in the `note`, never as a failed step. |
+| macOS | Always `already`: there is no such setting. | Wake for network access (`pmset`'s `womp`), switched on for every power source, effective at once. Ethernet only: a Mac wakes on a magic packet over Ethernet alone, so a device whose wake target is a Wi-Fi radio answers a `failed` adapter step with its own sentence and writes nothing. |
 
-The adapter the device prepares is the one carrying the MAC it reports **first** in
-`hello.macs` — the address a service registers as the machine's wake target — so the fix lands
-on the interface a wake would actually arrive on, not merely some interface.
+The adapter the device prepares is the machine's wake target — the first WIRED interface among
+those whose MACs it reports in `hello.macs`, the addresses a service registers as the machine's
+wake target, else the first of them — so the fix lands on the interface a wake would actually
+arrive on, not merely some interface.
 
 **It takes no parameters, `rdp_enable`'s reasoning**: there is no field with which a relay
-could aim the writes at a different adapter or a different setting, and the two rules are the
-device's own. A driver whose property does not exist is a `failed` adapter step with its own
-sentence, never a guess — writing a property the driver never exposed configures nothing.
+could aim the writes at a different adapter or a different setting, and the rules are the
+device's own. A driver whose switch does not exist — a Windows driver with no
+`*WakeOnMagicPacket`, a Linux driver with no wake-on-LAN at all — is a `failed` adapter step
+with its own sentence, never a guess: writing a property the driver never exposed configures
+nothing. The sentence is the one the device's `wakeDetail` carries, so the diagnosis and the
+refusal agree.
 
 Like `rdp_enable`, this verb changes the machine rather than merely reading it, so the same
-posture applies: a device MUST NOT restart the adapter to make the driver property bite (the
+posture applies: a device MUST NOT restart the adapter to make a driver setting bite (the
 reply's `note` tells the truth about when it takes effect instead), MUST answer a concurrent
 `wake_prepare` with `busy`, and SHOULD re-read the facts it just changed so its next
 `status_result` describes the machine as it now is rather than as it was cached.
 
 A device that advertises `ready` also reports the **wake-readiness facts** beside the connect
 facts it already carries in `status_result` — additive members under §2/§10's unknown-field
-rule: `fastStartup` (boolean), `wakeReady` (boolean: the wake-target adapter is armed AND its
-driver's magic-packet switch is on), and `wakeDetail` (one bounded sentence naming the failing
-half, present only beside a false `wakeReady`; reference bound 120 characters). Absent members
-mean "could not read", never a guess — the block's standing rule. The facts are what give this
-command a button to sit behind; the command is what makes the facts actionable.
+rule: `fastStartup` (boolean, sent by Windows devices alone: Linux and macOS have no such
+setting, and a service judges each half on its own), `wakeReady` (boolean: the wake-target
+adapter is set to wake the machine on a magic packet, both halves of whatever the platform's
+two halves are — armed AND the driver's switch on; the wake-on-LAN flag AND the device's
+wakeup switch; Wake for network access AND a wired target), and `wakeDetail` (one bounded
+sentence naming the failing half, present only beside a false `wakeReady`; reference bound
+120 characters). Absent members mean "could not read", never a guess — the block's standing
+rule. The facts are what give this command a button to sit behind; the command is what makes
+the facts actionable.
 
 Two more members ride the connect block since agent 0.16.1, additive under the same rule:
 **`wakeFromOff`** and **`wakeNote`** — the `machine` block's `wake_from_off` and `wake_note`
@@ -2295,6 +2311,7 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 
 | Version | Date | Change |
 |---|---|---|
+| 2 | 2026-09-05 | **The wake fix on every platform.** No new frame and no new capability: `ready` and `wake_prepare` keep their shape, and what changes is who advertises them and what the two steps fill with. Until now the settings behind `wake_prepare` existed on Windows alone in our agent, and a Linux or macOS machine whose adapter was not set to wake was a fault the dashboard could neither see nor fix — a real Ubuntu box ignored every packet until `ethtool -s enp2s0 wol g` and a NetworkManager property were set by hand. §5 `wake_prepare` gains the per-platform table: Linux fills `adapter` with the interface's wake-on-LAN magic flag, the bus device's wakeup switch and the NetworkManager profile where one manages the interface, and re-applies the flag and the switch at every start and resume once a `wake_prepare` has succeeded on it (the flag is the driver's and comes up in the chip's default state after a reboot); macOS fills it with Wake for network access, Ethernet only, a Wi-Fi wake target being a `failed` step with its sentence; both answer `fast_startup` with `already`, having no such setting. The wake-readiness facts paragraph now says `fastStartup` is sent by Windows devices alone, and `wakeReady` is both halves of whichever two halves the platform has. `note` is per platform too: the adapter-restart truth on Windows, the NetworkManager sentence on Linux when the profile would not take the write, nothing on macOS. Additive under §10: `v` stays 2, a service that never expected `ready` from a Linux or macOS device simply gains a button, and a service that reads `fastStartup` as required will find it absent from two platforms and must not read absence as a fault. Rationale: the agent is sold as the thing that finds what stops a wake landing and puts it right, and a fix that existed on one platform of three was a claim the other two could not honour. |
 | 2 | 2026-09-04 | **A Claude Code session counts as "in use".** No new frame and no new capability: `activeSessionKind` gains one word, `claude-code` — a `claude remote-control` process running on the machine — sent beside `activeSession: true` on every platform. Unlike the other kinds it holds no power request itself, so the device that reports it holds the machine awake (ours renews a ten-minute `hold_awake` floor while it runs) and the session-end grace applies when it stops. Additive under §10: `v` stays 2, and a service that predates the word drops it and keeps the boolean. Rationale: the remote-control feature's one field complaint is a machine that sleeps under the session, and "in use" is where the roster already says why a machine is up. |
 | 2 | 2026-09-04 | **Putting the machine back when the meter runs out.** One new optional relay→device advisory frame, `meter_end` (`action`: `sleep`, `shutdown` or `leave`), the same value as an optional field on `hello_ack` and on `hold_awake`, for devices advertising `awake` — the `features` arrangement: no reply, no `req_id`, replace semantics, sent at connect, with every hold, and on change. Everything the `awake` row above promises ends at the deadline: the hold lapses and the operating system's own idle policy resumes, which on a great many machines is "never", so a machine woken for ten minutes' work is still up the next morning. The verdict is the SERVICE's because the answer depends on what it alone knows — where the machine can be found again: a wired machine goes back to `sleep`; a Wi-Fi-only machine fed by a smart plug the service knows about gets a clean `shutdown` with the plug left on; a Wi-Fi-only machine with nothing feeding it is `leave`, as is any machine whose owner would rather Windows decided. Idle is the DEVICE's finding and every leg is required — no remote session, no remote AI session, no input since the hold began or in the last ten minutes, nothing else holding a power request — and a leg it cannot read is a leg that failed. The action is the device's own power path with the `bye` first and is never reported as a command's outcome; the plug is never touched, and a standing hold is never overridden. Additive: `v` stays 2, and a device that ignores the field does at expiry exactly what it always did. |
 | 2 | 2026-09-04 | **A status the device sends because something changed.** One new optional device→relay frame, `report`: the `machine` and `connect` blocks a `status_result` would carry at that moment, and `awake_until` on the same terms, sent unprompted and at most on a change — never periodically, never with a `req_id`, never awaited, and under no capability, `bye`'s arrangement exactly. It exists because the previous row's "in use" chip is read from a sample the relay takes at connect and every few minutes, and the fact behind it changes in a second: the machine this was built on showed "in use — Chrome Remote Desktop" for minutes after its owner had closed the window, and a refresh could not help because the relay had nothing newer to show. The frame is specified as a status sample that arrived early, and a device MUST build its blocks by the same means it builds `status_result`'s, so the next sample can only agree with it. Our agent sends it for one kind of change today — a remote session starting, ending or changing kind, watched on a twenty-second poll of the cheap legs with the power manager's ledger held to once a minute — with the transition rules stated under the frame: the first reading seeds without a report, an unreadable one is never a transition, and a change seen with no connection up is dropped for the next sample to carry. The same change puts ten minutes of keep-awake grace on the meter when a session ENDS — the resume grace's number, for the same person by a different door — never shortening a longer hold, and the report carries the resulting deadline so the relay's self-healing `awake_until` is right at once. Additive: `v` stays 2, and a relay that ignores the frame keeps the sample cadence it always had. |
