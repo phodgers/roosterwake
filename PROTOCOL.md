@@ -374,6 +374,7 @@ Defined capabilities, each naming the relay→device command it gates:
 | `awake` | `hold_awake`, `release_awake` |
 | `session` | `session_start`, `session_stop`, and the advisory `workspaces` push |
 | `ready` | `wake_prepare` |
+| `sshready` | `ssh_setup`, `ssh_toggle` |
 | `status` | `status` |
 | `probe` | `probe` |
 | `scan` | `scan` |
@@ -433,6 +434,23 @@ keeps the frame off every socket whose device could only refuse it. The wake-rea
 a device reports beside its connect facts need no capability: facts are answers, not commands,
 and they ride
 `status_result` under §10's additive rule whether or not the fix verb is available.
+
+`sshready` says the device can SET SSH UP on its host machine — install the daemon where the
+platform has one to install, start it and make it start at boot, admit it through the firewall
+where the platform has one to admit it through, authorise a public key the caller supplies, and
+switch password sign-in off behind that key — and can switch the daemon on and off afterwards.
+It gates both commands as one capability on `power`'s reasoning: a device that can set SSH up can
+switch it off again, and a subset would be something for a relay to reason about.
+
+It is separate from `ready` rather than folded into it, though the two are gated identically and
+carry the same order of privilege, because they answer different questions about different
+machinery and a relay choosing what to offer needs to know BEFORE sending: `ready` says a magic
+packet will land, `sshready` says an SSH client will. It is gated like `power` for `power`'s
+reason — the machinery has to exist in the build; our agent carries it on Windows, Linux and
+macOS from 0.23.0 and on nothing else — and §4's rule keeps both frames off every socket whose
+device could only refuse them. The SSH FACTS a device reports beside its connect facts need no
+capability: facts are answers, not commands, and `sshListening` and `sshPort` have ridden
+`status_result` since agent 0.19.0 whether or not the fix verb is available.
 
 `plug` says the device can drive smart plugs on its own segment over local HTTP — discover
 them, switch them, read them. It is one capability rather than three for `power`'s reason: a
@@ -705,6 +723,73 @@ ceiling.
 A second `wake_prepare` while one runs is answered `busy` rather than queued (`rdp_enable`'s
 grounds), and a frame with no `req_id` is answered nothing at all — the same silence as every
 acting command here.
+
+### `ssh_setup_result`
+
+```json
+{ "t": "ssh_setup_result", "req_id": "…", "ok": true, "listening": true, "port": 22,
+  "steps": [
+    { "step": "install",  "outcome": "already", "detail": "an SSH server is already installed" },
+    { "step": "service",  "outcome": "done",    "detail": "ssh.service is running and starts at boot" },
+    { "step": "key",      "outcome": "done",    "detail": "the key is authorised for the console user" },
+    { "step": "auth",     "outcome": "done",    "detail": "password sign-in is off and key sign-in is on" }
+  ] }
+```
+
+Answers `ssh_setup` (§5), **after** the work — `rdp_enable_result`'s rule exactly: nothing about
+installing a daemon and appending a key destroys the process that replies, so `ok: true` means
+SSH IS set up on this machine, never that a request was accepted.
+
+`steps` is the per-step ledger, an ARRAY in the fixed order `install`, `service`, `firewall`,
+`key`, `auth`, each entry carrying `step`, `outcome` and an optional `detail` in the command's
+own words. The three outcomes are `wake_prepare_result`'s: `done` (the device changed
+something), `already` (it was already right; nothing was written), `failed` (it could not be put
+right). An unrecognised outcome MUST be treated as `failed`.
+
+Unlike `wake_prepare_result`'s ledger this one is **not always complete, and its incompleteness
+is the report**: a sequence STOPS at the first failed step, and the steps that never ran are
+ABSENT rather than present with some third value, because reporting a step nobody attempted
+would be a claim about a machine nobody looked at. A step a platform has nothing to do for is
+also absent — Linux and macOS carry no `firewall` step at all (§5 says why) — so a reader
+MUST key on `step` and MUST NOT read the array positionally. An EMPTY array means nothing was
+attempted, which is what a refused `public_key` looks like.
+
+`already` counts toward success, `wake_prepare_result`'s rule and for its reason. **`ok` is
+`false` exactly when a step is `failed` or the key was refused before the machine was touched.**
+
+`listening` and `port` are the `connect` block's own `sshListening` and `sshPort`, RE-READ after
+the sequence rather than served from a cache, so this one frame says whether the daemon is
+actually answering. `listening` is a boolean or absent, absence meaning the device could not
+tell — never rendered as `false`, which is a different answer and the one that sends somebody
+looking. They ride a failure as well as a success, because "we could not set it up AND nothing is
+listening" is a different sentence from "we could not set it up".
+
+`err` accompanies `ok: false` and is one of: a wall word from the `sshSetupWall` vocabulary
+(§5) where one applies; `bad_key` where the `public_key` was not exactly one OpenSSH public-key
+line, decided BEFORE anything on the machine was touched; `busy` (§6) where another SSH command
+is in flight; and otherwise the failing step's own `detail`. Untrusted like every string in §4,
+and bounded well inside §1's ceiling — a device MUST trim its own reply rather than send an
+over-limit frame, and SHOULD trim the details of steps that did not fail before it trims the one
+that did.
+
+A second `ssh_setup` while one runs is answered `busy` rather than queued, and so is an
+`ssh_toggle`: the two commands move the same service, so they share one lock. A frame with no
+`req_id` is answered nothing at all — the same silence as every acting command here.
+
+### `ssh_toggle_result`
+
+```json
+{ "t": "ssh_toggle_result", "req_id": "…", "ok": true, "listening": false, "port": 22 }
+```
+
+Answers `ssh_toggle` (§5), after the work, on `ssh_setup_result`'s reasoning. There is
+deliberately NO per-step ledger: a toggle is one state change with one answer, where a set-up is
+a sequence whose halves can land separately. `listening` and `port` are re-read the same way, so
+a caller that asked for "off" can see that nothing answers any more.
+
+`err` accompanies `ok: false`: a wall word where one applies, `bad_frame` (§6) where the frame
+carried no `on` member — a machine switched off because a field was missing is the accident that
+refusal exists to prevent — `busy`, or the failing command's own sentence.
 
 ### `awake_result`
 
@@ -1817,6 +1902,142 @@ There is deliberately no `wake_unprepare`. Preparing a machine to be woken is wh
 owner asks for because a wake failed; the reverse is a hand-on-the-machine preference, and a
 remote verb for it would be a way to strand somebody's machine from the internet.
 
+### `ssh_setup`
+
+```json
+{ "t": "ssh_setup", "req_id": "…", "public_key": "ssh-ed25519 AAAAC3Nz… you@example.com" }
+```
+
+Asks the device to SET SSH UP on its host machine, and answers `ssh_setup_result` (§4) **after**
+the work. Only sent to devices advertising the `sshready` capability.
+
+It exists for the same reason `rdp_enable` does, aimed at the protocol the other two platforms
+actually use. A device already reports, before anybody opens a client, that no SSH daemon is
+listening on the machine its owner just woke (`sshListening`, `sshPort`); until this command
+that sentence had no button beside it, and the alternative was talking somebody through an
+elevated package install, a service enable, a firewall rule and an authorized-keys file on a
+machine they cannot see.
+
+**`public_key` is exactly one OpenSSH PUBLIC key line** — an algorithm from the closed set
+`ssh-ed25519`, `ssh-rsa`, `ecdsa-sha2-nistp256`, `ecdsa-sha2-nistp384`, `ecdsa-sha2-nistp521`,
+`sk-ssh-ed25519@openssh.com`, `sk-ecdsa-sha2-nistp256@openssh.com`; a base64 body that decodes
+and whose own first wire field names that same algorithm; and an optional comment. `ssh-dss` is
+deliberately outside the set: OpenSSH has refused DSA by default since 7.0 and dropped it
+entirely in 10.0, so authorising one would write a line the daemon on the other side of the same
+fix will not read. Surrounding whitespace — the CRLF a Windows clipboard adds — is trimmed and
+the line accepted; an INTERIOR newline is refused, because it means two keys or a private key's
+block. **A device MUST validate before it touches the machine and answer `bad_key` otherwise**:
+a machine that ended up with a package installed and a service running because somebody pasted
+the wrong half of a key pair is exactly what that ordering prevents. A device MUST NOT generate
+a key, and MUST NOT accept, store or transport a private one.
+
+The five steps, in the order a device MUST run them, with what each fills per platform:
+
+| Step | Windows | Linux | macOS |
+|---|---|---|---|
+| `install` | The `OpenSSH.Server~~~~0.0.1.0` optional feature. May need Windows Update; a refusal is `capability_refused`. | `openssh-server` (or `openssh`) through whichever package manager is on PATH — apt-get, dnf, yum, zypper, pacman, apk. None of them, and no daemon already installed, is `no_package_manager`. | Always `already`: every macOS ships sshd. |
+| `service` | `sshd` set to start automatically and started, through the Service Control Manager. | `systemctl enable --now` on whichever of `ssh.service` and `sshd.service` systemd has loaded. | Remote Login, through `systemsetup`. A Mac that has not granted the device Full Disk Access refuses this, which is `needs_full_disk_access`. |
+| `firewall` | The inbound rule `OpenSSH-Server-In-TCP`, present and enabled for EVERY network profile. | ABSENT — see below. | ABSENT — see below. |
+| `key` | Appended to `%ProgramData%\ssh\administrators_authorized_keys`, whose ACL is reset to the built-in Administrators group and LocalSystem and nothing else. | Appended to `~/.ssh/authorized_keys` of the signed-in console user, directory `0700`, file `0600`, both owned by that account. | The same as Linux. |
+| `auth` | `PasswordAuthentication no` and `PubkeyAuthentication yes` in `%ProgramData%\ssh\sshd_config`, then the daemon restarted. | The same, in `/etc/ssh/sshd_config`. | The same, in `/etc/ssh/sshd_config`, then the daemon restarted through launchd. |
+
+**The order is a safety property, not a preference.** A key authorised for a daemon that is not
+installed authorises nothing, and a firewall rule for a service that will not start is a hole
+with nothing behind it — so the machine is made able to answer, then told to answer, then
+allowed to be reached. And `auth` is LAST because it is the step that could lock a person out of
+their own machine: **a device MUST NOT switch password sign-in off unless the key step reported
+`done` or `already`**, so there is provably a key on the machine that will let them back in. A
+sequence whose key step failed stops before `auth` and leaves password sign-in as it was found.
+
+`already` is a first-class outcome throughout, and a device SHOULD reach it by LOOKING rather
+than by writing and calling the write idempotent: a service that was already running must not be
+restarted, an authorized-keys line already present must not be appended a second time, and an
+sshd_config that already holds both directives must not provoke a daemon restart. Pressing the
+button twice on a machine that is already set up is a thing people do, and the second press must
+cost nothing.
+
+**Windows opens the firewall on every profile, and Linux and macOS open no firewall at all.**
+Both are decisions. Every profile — rather than the private-and-domain pair `rdp_enable` admits —
+because a real machine had the OpenSSH rule scoped to Private alone and answered nothing on a
+network Windows had classified Public, which from a client is indistinguishable from a machine
+that is switched off; SSH's own key-only authentication is what makes the wider scope
+defensible where Remote Desktop's is not, and the `auth` step is what guarantees it on the same
+pass. Nothing at all on Linux and macOS because those platforms' defaults already admit the port
+(ufw is inactive on a stock Debian or Ubuntu, firewalld's default zone permits the ssh service,
+macOS's application firewall admits a signed system service), and where an administrator has
+closed it they closed it on purpose: a rule the device did not close is not a repair.
+
+**Nothing here reaches the internet.** The device opens a port on the LOCAL network its machine
+is sitting on and on nothing else; no router is touched, no UPnP mapping is made and no port is
+forwarded. Reaching the machine from anywhere else stays its owner's own decision, made with
+their own mesh or relay tool, exactly as `rdp_enable` has it.
+
+**The `auth` step edits the root sshd_config and follows no `Include`.** Debian and Ubuntu ship
+`Include /etc/ssh/sshd_config.d/*.conf` at the TOP of that file, and sshd takes the first value
+of a directive — so a drop-in under that directory naming either directive still wins. A device
+SHOULD say what it wrote and MUST NOT create files in a distribution's own drop-in directory,
+which is a claim on somebody else's namespace.
+
+After the sequence a device MUST re-read `sshListening` and `sshPort` and carry them on the
+reply, and SHOULD send an unsolicited `report` (§4) with the fresh `connect` block, so a
+dashboard's SSH button goes live on the same second rather than at the next status sample.
+
+A device that advertises `sshready` also reports **three SSH set-up facts** beside the connect
+facts it already carries in `status_result` — additive members under §2/§10's unknown-field
+rule, and positive-or-absent like every other member of that block:
+
+- **`sshSetup`** — `ready` (the device can set SSH up on this machine) or `unsupported` (it
+  cannot). Sent only where there is something to set up: a device whose `sshListening` is `true`
+  sends NEITHER this nor the wall, because the question does not arise on a machine that is
+  already answering SSH. An UNREADABLE listener is not the same thing — a machine with no
+  sshd_config is a machine with no sshd — so a device SHOULD still send the fact there.
+- **`sshSetupWall`** — why not, from the closed set `needs_full_disk_access`,
+  `no_package_manager`, `capability_refused`, `no_privilege`. It rides beside `unsupported` and
+  NOWHERE ELSE: a wall against a `ready` machine would name an obstacle the same frame says is
+  not there. A device may legitimately send `unsupported` with no wall, where nothing in the
+  vocabulary describes what it found.
+- **`sshConfigured`** (boolean) — the daemon is INSTALLED on this machine and an authorised key
+  already sits where this device's own fix writes one. It exists to tell "set up, and switched
+  off" from "never set up": two machines that look identical through `sshListening: false` and
+  need opposite buttons, one offering the toggle and one offering the whole set-up. Sent only
+  when true.
+
+The two walls a device can only learn by TRYING — Windows Update refusing the capability, and
+macOS refusing the Remote Login switch without Full Disk Access — are recorded by the device
+after an attempt and reported until an attempt clears them. The other two are read afresh every
+time, and a device MUST NOT remember them: a machine that has since gained a package manager, or
+whose service has been reinstalled with the rights it needs, would otherwise report `unsupported`
+for a wall its owner had already cleared.
+
+### `ssh_toggle`
+
+```json
+{ "t": "ssh_toggle", "req_id": "…", "on": false }
+```
+
+Asks the device to switch its host machine's SSH daemon on or off, and answers
+`ssh_toggle_result` (§4) after the work. Only sent to devices advertising `sshready`.
+
+`on` is REQUIRED. A device MUST refuse a frame without it with `bad_frame` rather than assume a
+direction: a machine switched off because a field was missing is not an outcome any default may
+produce.
+
+`on: true` sets the service to start automatically and starts it, and enables the firewall rule
+where the platform has one. `on: false` stops it, sets it not to start at boot, and disables —
+never DELETES — that rule, so switching back on can re-enable Windows' own rule rather than
+re-invent it. On Linux a device MUST take the socket-activation unit down with the service where
+one is loaded, or a machine told to stop answering SSH answers the next connection anyway. On
+macOS both directions are the Remote Login switch.
+
+**A toggle installs nothing, removes nothing, and neither reads nor writes the authorized-keys
+file.** Switching SSH off is a person saying "not now", never "forget my key" — a toggle that
+erased the key would make switching it back on a second set-up — and switching it on is not a
+licence to install a package nobody asked for. A machine toggled off and on again is the machine
+it was, which is what makes the switch safe to press twice.
+
+Like `ssh_setup` it re-reads the posture onto its reply and SHOULD send a `report`, and it shares
+that command's lock: one SSH command at a time, the second answered `busy`.
+
 ### `hold_awake`
 
 ```json
@@ -2478,6 +2699,7 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 
 | Version | Date | Change |
 |---|---|---|
+| 2 | 2026-09-06 | **The device sets SSH up on its own machine, and switches it.** One new capability, `sshready`, and the two frame pairs it gates: `ssh_setup` -> `ssh_setup_result` and `ssh_toggle` -> `ssh_toggle_result`, plus three additive `connect` members — `sshSetup` (`ready`/`unsupported`), `sshSetupWall` (`needs_full_disk_access`, `no_package_manager`, `capability_refused`, `no_privilege`) and `sshConfigured`. Since agent 0.19.0 a device has been able to say that nothing is listening on its machine's SSH port; this row is the button beside that sentence, because the alternative was talking somebody through an elevated package install, a service enable, a firewall rule and an authorized-keys file on a machine they cannot see. `ssh_setup` takes one OpenSSH PUBLIC key line — validated, and a bad one refused as `bad_key` BEFORE the machine is touched, so a mis-paste can never leave a daemon installed behind it — and runs five steps in a fixed order, `install`, `service`, `firewall`, `key`, `auth`, each `done`/`already`/`failed` with the command's own words. The ledger STOPS at the first failure and omits the steps that never ran, and omits `firewall` entirely on Linux and macOS, so a reader keys on `step` rather than on position. `auth` (key-only sign-in: `PasswordAuthentication no`, `PubkeyAuthentication yes`, then a restart) is last and runs only after the key step reported `done` or `already` — it is the step that could lock somebody out, and it may not run before the key that lets them back in is provably on the machine. Windows opens the firewall rule on EVERY profile, a real machine having answered nothing on a network Windows classified Public while its OpenSSH rule sat on Private alone; Linux and macOS open no firewall at all, their defaults already admitting the port. `ssh_toggle` is the switch afterwards and touches neither the package nor the key file, so a machine toggled off and on again is the machine it was. Both replies carry `listening` and `port` RE-READ after the work, and a device SHOULD follow either with an unsolicited `report`, so a dashboard's button goes live on the same second. Additive under §10: `v` stays 2, and a service that never expected `sshready` simply gains a button. |
 | 2 | 2026-09-06 | **A file transfer over SSH says which program is moving the bytes.** No new frame and no new capability: one additive member joins the `connect` block, `activeSessionProgram`, sent beside `activeSessionKind: "ssh-transfer"` and nothing else, from a closed vocabulary of four — `sftp` (the sftp subsystem, and so an sshfs mount too), `scp`, `rsync` and `git` (any of the three git servers a fetch or a push runs). Positive-or-absent, as every name here is: a port forward, an `exec` request running something else and a transfer whose program the device cannot see send no member, and a service reads that absence as "a file transfer, program unnamed"; where several transfers are active the member names the one whose activity is most recent. Additive under §10: `v` stays 2, and a service that predates the word drops it and keeps the kind it already renders. Rationale: `ssh-transfer` is the only kind whose one word leaves a person guessing — "file transfer over SSH" could be a nightly backup or a colleague pulling a repository, and the device already knew which, because the program it found under the session is what decided the bytes were moving at all. |
 | 2 | 2026-09-06 | **The machine says what kind of machine it is.** No new frame and no new capability: four additive members join the `connect` block, reported by any software device that can read them — `chassis` (`laptop` or `desktop`, from the firmware's own SMBIOS System Enclosure declaration), `battery` (boolean), `standby` (`modern` for the S0 low-power idle model — Windows Modern Standby, Linux `s2idle` — `s3` for the classic suspend-to-RAM, or `none`) and `wowlan` (boolean: the machine's first WIRELESS adapter, in the `hello.macs` wake order, is set to wake it on a magic packet). Every one is a POSITIVE finding or absent, and the absence is the half that matters: a chassis code outside the two words, a battery flag the platform called "unknown status", a sleep listing the device could not parse and a machine with no radio all send nothing, and a service MUST NOT render any of them as `desktop`, `false` or `none`. Born from every stranger who has installed our agent so far: each put it on a Wi-Fi laptop or a Mac, the dashboard told them a packet could not wake it — because the only signal it had was "no wired adapter in `adapters`" — and then offered three routes that would not work on their hardware. That inference is wrong in both directions: a Modern Standby laptop whose radio is armed genuinely does wake on a magic packet, and a desktop on Wi-Fi is not a machine whose lid anybody can open. With these four a service can be deterministic where it was guessing — offer the packet to a `standby: modern` machine with `wowlan: true`, and otherwise name the wall in one true sentence from `chassis` — which is the difference between an offer and an apology. Two are absent on macOS by decision, stated in §5 rather than left as a gap: Apple's sleep is neither `modern` nor `s3`, and a Mac's Wi-Fi wake is a sleep-proxy arrangement rather than a packet the adapter answers. Additive under §10: `v` stays 2, and a service that predates the members reads their absence exactly as it always did. |
 | 2 | 2026-09-06 | **A machine going down says so, and a process stopping says only that.** No new frame, no new field and no new capability: `bye`'s existing reasons `shutdown` and `stop` gain the rule that keeps them apart, stated as a MUST. `shutdown` is the machine leaving the network — a shutdown or a restart, one event from a relay's side — and `stop` is the emitter process ending on a machine that is still up and answering; a device whose operating system will say which is happening MUST send the one that is true, and a device that cannot tell MUST send `stop`, the reason that claims nothing. Born from a real customer laptop: it was shut for the night, its agent said `stop` because that was the only word the implementation had for "the process was told to end", and the service — which correctly reads `stop` as a claim about the process and not the machine — collapsed the machine to no-agent-detected and put "Install the agent" on the roster of a machine whose agent was installed and fine. The rule is not new behaviour a relay must implement, it is the meaning a relay was already entitled to assume, now binding on the sender; §4's ban on attaching consequences beyond expectation-setting is untouched, and the previous row's `uninstall` rationale is restated accordingly — a service restart says `stop` and a reboot says `shutdown`, so neither may retire a device. Our Windows agent implements it by asking the OS twice at the moment it writes the goodbye, the session's own shutting-down metric and the console control event that stopped the process, either answer being enough; Linux and macOS keep `stop` until each has an oracle of its own. Additive under §10: `v` stays 2, the frame is byte-for-byte what it was, and a relay that files both reasons the same way is unaffected. |
