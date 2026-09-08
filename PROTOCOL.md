@@ -825,7 +825,7 @@ refusal exists to prevent — `busy`, or the failing command's own sentence.
 { "t": "ssh_key_mint_result", "req_id": "…", "ok": true,
   "public_key": "ssh-ed25519 AAAAC3Nz… roosterwake PHIL",
   "fingerprint": "SHA256:4kA6…", "path": "C:\\Users\\phil\\.ssh\\id_ed25519_roosterwake",
-  "account": "PHIL\\phil", "outcome": "created",
+  "account": "PHIL\\phil", "outcome": "existing", "repaired": ["key_mode", "owner"],
   "ssh_url_handler": "Termius", "ssh_client": true }
 ```
 
@@ -836,6 +836,17 @@ EXISTS at `path`, never that a request was accepted.
 `outcome` is `created` or `existing`, and `existing` is a first-class success rather than a
 flavour of failure: "changed nothing" is the evidence an earlier press landed, and pressing the
 button twice is a thing people do.
+
+`repaired` rides an `existing` outcome and names what the pass had to PUT BACK about the files the
+device itself created, from the closed vocabulary `dir_mode`, `key_mode`, `public_mode`, `owner`
+and `acl`. It is a POSITIVE FINDING: a device that repaired nothing MUST omit it rather than send
+an empty list, so its presence always means somebody's file was changed. Each word appears at most
+once however many of the three paths it was put right on — an owner wrong on the key, on its
+public half and on the directory around them is one drift and one repair, and naming it three
+times would report the mechanism rather than the state. It rides a REFUSAL too, where it says how
+far the repair got before the machine stopped it: a repair made on the way to a failure was still
+made. A caller SHOULD show it, and a service SHOULD keep it: a permission change made on somebody's
+computer with no trace anywhere is one nobody can audit afterwards.
 
 `public_key` is the WHOLE `authorized_keys` line, comment included, which is the form the target
 machine has to be given it in — a caller passes it to `ssh_setup` unchanged. `fingerprint` is
@@ -859,14 +870,18 @@ design — and MUST NOT render a missing `ssh_client` as `false`.
 `err` accompanies `ok: false`: `no_user_session` where no session on the machine has a user in it,
 `foreign_key_at_path` (with `path`) where a file the device did not write is in the way, `busy`
 where a mint is already running, `unsupported` from a device with no mint, and otherwise the
-failing operation's own sentence, one line and bounded well inside §1's ceiling.
+failing operation's own sentence, one line and bounded well inside §1's ceiling — an access the
+device could not put back is one of those sentences, and a key whose access is wrong MUST NOT be
+answered `ok: true` with a public half, because a caller would show a connection line for a
+sign-in that cannot work.
 
 **The reply is bounded, and a device that must trim gives up the least useful field first.** Every
 field here is short on an ordinary machine — an ed25519 line and its fingerprint are fixed width —
 but a home directory on a network path is not, and a frame over §1's 2048 bytes costs a `1009`
 close and takes the device off the network to report a result nobody receives. The handler goes
-first (the connection line works without it), then the account, then the path and the error word;
-the key and its fingerprint are never given up, because a frame that arrives without them was not
+first (the connection line works without it), then the account, then the repair ledger — which
+the device's own log keeps whatever the frame carries — and then the path and the error word; the
+key and its fingerprint are never given up, because a frame that arrives without them was not
 worth sending.
 
 ### `ssh_keys_list_result`
@@ -2280,11 +2295,26 @@ What a device does, and what it must refuse:
   device itself wrote. A file created and secured afterwards is readable by whatever its parent
   directory admits for as long as the two operations take, which is why the order is create,
   secure, then fill.
-- **It is IDEMPOTENT and never destructive.** A key the device recognises already at that path is
-  answered `outcome: existing` with its own public half, and NOTHING is written — the public half
-  derived from the private file rather than read from the `.pub` beside it, so what the caller is
-  asked to authorise is derived from the bytes the machine will actually sign in with. There is no
-  overwrite branch.
+- **It is IDEMPOTENT, and the key's BYTES are never written twice.** A key the device recognises
+  already at that path is answered `outcome: existing` with its own public half, and that key is
+  never regenerated, never overwritten and never moved — the public half derived from the private
+  file rather than read from the `.pub` beside it, so what the caller is asked to authorise is
+  derived from the bytes the machine will actually sign in with. There is no overwrite branch.
+- **The ACCESS is re-asserted on every pass, and what was put back is REPORTED.** "Never overwrite
+  the key" and "never look at the file's permissions again" are two different promises, and only
+  the first one is made here. A mode, an owner or an ACL drifts long after a key is written — a
+  restored backup, a migrated profile, a policy re-applying inheritance, a script that chmods a
+  home directory — and OpenSSH then refuses the key by name ("Permissions 0644 for … are too open.
+  This private key will be ignored") while a caller that never re-checked still shows a connection
+  line. Worse, a passphrase-less private key another local account can read is that account's
+  route to every machine the key authorises, and the access is the only thing in front of it. So
+  on an `existing` pass a device MUST re-assert the mode, the owner and, on Windows, the ACL, and
+  MUST name what it actually changed in `repaired` (§4). It repairs ONLY what it set itself: not
+  the location, not the contents, nothing the person chose. A repair restores the state the device
+  created, so it can only tighten and it is idempotent — a pass over a key that is already right
+  writes nothing and reports nothing, and the pass after a repair reports nothing further. An
+  access that could NOT be put back is a refusal carrying the machine's own sentence, not a
+  success carrying a key.
 - **A file at that path the device does not recognise is `foreign_key_at_path`, and nothing is
   touched.** The reply MUST carry `path`, because the remedy is the person's and it is "move or
   rename this file": a refusal somebody cannot act on is a feature they can never use. An
@@ -3137,6 +3167,7 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 
 | Version | Date | Change |
 |---|---|---|
+| 2 | 2026-09-09 | **A key already there has its access put back, and the reply says what was put back.** No new capability and no new frame: one additive member, `repaired`, joins `ssh_key_mint_result`, and the `existing` outcome gains a rule. The row two below made a device's key untouchable once written, and collapsed two promises into one while doing it: "never overwrite the key" is a promise about the CONTENTS, and it was read as "never look at the file's permissions again". A mode, an owner or an ACL drifts long after a key is written — a restored backup, a migrated profile, a policy re-applying inheritance, a script that chmods a home directory — and OpenSSH then refuses the key by name ("Permissions 0644 for … are too open. This private key will be ignored") while the caller, whose last answer was `outcome: existing`, still shows a working connection line; worse, a passphrase-less private key another local account can read is that account's route to every machine the key authorises, and the access is the only thing standing in front of it. `ssh_setup`'s own key step has always re-asserted the access of an authorized-keys file on every pass, and the two behaviours may not disagree. So an `existing` pass now re-asserts the mode, the owner and, on Windows, the three-principal ACL with inheritance broken, and NAMES what it actually changed: `repaired` carries `dir_mode`, `key_mode`, `public_mode`, `owner` or `acl`, each at most once however many paths it was put right on, and is a positive finding — omitted entirely where nothing had drifted, so its presence always means somebody's file was changed. It rides a refusal too, saying how far the repair got before the machine stopped it. What may be repaired is closed to what the device itself set: never the location, never the contents, nothing the person chose — and a `.pub` somebody deleted is NOT written back, because the public half in the reply comes from the private key's own bytes and putting the file back would be repairing a content. A repair restores what the device created, so it can only tighten, and it is idempotent: a pass over a key that is already right writes nothing and reports nothing. An access that could not be put back is a refusal carrying the machine's own sentence rather than a success carrying a key, because a caller answered `ok: true` would show a connection line for a sign-in that cannot work. Additive under §10: `v` stays 2, and a service that never expected the member reads a mint exactly as it did before. |
 | 2 | 2026-09-08 | **A machine says what it authorises, takes one key back out, and learns to be reached by name.** No new capability: three frame pairs join `sshmint`, which now gates four commands — `ssh_keys_list` -> `ssh_keys_list_result`, `ssh_key_revoke` -> `ssh_key_revoke_result` and `ssh_alias` -> `ssh_alias_result`. The row above gives a person a key commented with the machine it belongs to so they can delete ONE line to revoke ONE machine; these are what let them do it from anywhere but a shell on the machine itself, which is exactly what somebody locked out does not have. `ssh_keys_list` reads the file OpenSSH authorises from — the signed-in account's own on macOS and Linux, the machine-wide administrators file on Windows, and the reply NAMES it — and reports a fingerprint, an algorithm and a comment per line and never a key body, which identifies nothing more and costs several hundred bytes inside a 2048-byte frame. It lists lines the device did not write, because it is a view of the machine's real state and not of a service's bookkeeping. Its trim is mandatory and CONFESSED: at about ninety bytes an entry a shared machine's file overruns the ceiling, so comments go first, then the path, then whole entries counted into `dropped` — a key list that silently hides a key would hide the one key nobody can revoke. `ssh_key_revoke` names ONE fingerprint, matched exactly and never as a substring or as "the last one added", removes every line carrying it (a file holding a key twice grants it twice), rewrites ATOMICALLY with the access set before the new file replaces the old, and leaves every other line BYTE FOR BYTE — options, spacing and lines the device cannot parse included. A fingerprint that is not one is `bad_fingerprint` rather than `not_found`, which would be a claim about the machine. `ssh_alias` writes the `~/.ssh/config` block on the machine somebody TYPES at, and it is in this row rather than a later one because without it the short connection line could not work at all: OpenSSH's default identity list holds none of the minted filename, and password sign-in is off by the time anybody reads the line. It is APPEND ONLY, refuses rather than writing beneath a block that `ssh_config`'s first-value-wins rule would let win, never suffixes a name a person did not choose, and resolves the `IdentityFile` on the machine rather than accepting one on the wire. Additive under §10: `v` stays 2, and a service that never expected these simply gains a way to show and undo what it granted. |
 | 2 | 2026-09-08 | **The device makes the key, so the private half never travels.** One new capability, `sshmint`, and the one frame pair it gates: `ssh_key_mint` -> `ssh_key_mint_result`. `ssh_setup` (the row below) installs a public key somebody supplied, and a supplied key is a key whoever supplied it holds — so a service session that has been taken over buys a shell by supplying the attacker's own key. This row inverts that: the device makes an ed25519 key in the profile of whoever is signed in at ITS OWN machine, at `~/.ssh/id_ed25519_roosterwake`, commented `roosterwake <machine name>` so a person reading `authorized_keys` on the far side can delete ONE line to revoke ONE machine, and returns the public half, the fingerprint, the path and the ACCOUNT it was minted for. The private half never leaves the machine and no relay ever holds one; the paste route stays for the client a device cannot reach, and carries the same gates. The command takes NO fields beyond the envelope, deliberately: a field naming a path, an account or an algorithm would be a way to aim a private key somewhere nobody checked. It is idempotent and has no overwrite branch — a key the device recognises is `outcome: existing` with nothing written, and a file it does not recognise is `foreign_key_at_path` carrying the `path` a person has to move, because a refusal nobody can act on is a feature they can never use. The user is resolved from LIVE sessions ONLY and a machine with nobody at it answers `no_user_session`: substituting whoever signed in LAST would write a passphrase-less private key into an absent person's profile and report success. Enumerating sessions rather than reading the console is required, because a machine reached over Remote Desktop has a console session that is connected and EMPTY. The access is set BEFORE the key material is written, and on Windows grants the user, LocalSystem and Administrators — not "the user alone", which locks a system service out of the file it just wrote and makes every later press report a foreign key at its own path. The reply also carries TWO-WAY DISCOVERY, `ssh_url_handler` and `ssh_client`: what the machine somebody will TYPE at has, so a caller can choose between a clickable `ssh://` link and a typed command instead of guessing. Both are positive-or-absent; the handler is read from the USER's registrations before the machine's on Windows, from the xdg tables on Linux, and is DECLARED ABSENT on macOS, where it lives in a binary plist inside a sandboxed container. Additive under §10: `v` stays 2, and a service that never expected `sshmint` simply gains a second way to arrange a connection. |
 | 2 | 2026-09-06 | **The device sets SSH up on its own machine, and switches it.** One new capability, `sshready`, and the two frame pairs it gates: `ssh_setup` -> `ssh_setup_result` and `ssh_toggle` -> `ssh_toggle_result`, plus three additive `connect` members — `sshSetup` (`ready`/`unsupported`), `sshSetupWall` (`needs_full_disk_access`, `no_package_manager`, `no_package_source`, `capability_refused`, `no_privilege`) and `sshConfigured`. Since agent 0.19.0 a device has been able to say that nothing is listening on its machine's SSH port; this row is the button beside that sentence, because the alternative was talking somebody through an elevated package install, a service enable, a firewall rule and an authorized-keys file on a machine they cannot see. `ssh_setup` takes one OpenSSH PUBLIC key line — validated, and a bad one refused as `bad_key` BEFORE the machine is touched, so a mis-paste can never leave a daemon installed behind it — and runs five steps in a fixed order, `install`, `service`, `firewall`, `key`, `auth`, each `done`/`already`/`failed` with the command's own words. The ledger STOPS at the first failure and omits the steps that never ran, and omits `firewall` entirely on Linux and macOS, so a reader keys on `step` rather than on position. `auth` (key-only sign-in: `PasswordAuthentication no`, `PubkeyAuthentication yes`, then a restart) is last and runs only after the key step reported `done` or `already` — it is the step that could lock somebody out, and it may not run before the key that lets them back in is provably on the machine. Windows opens the firewall rule on EVERY profile, a real machine having answered nothing on a network Windows classified Public while its OpenSSH rule sat on Private alone; Linux and macOS open no firewall at all, their defaults already admitting the port. `ssh_toggle` is the switch afterwards and touches neither the package nor the key file, so a machine toggled off and on again is the machine it was. Both replies carry `listening` and `port` RE-READ after the work, and a device SHOULD follow either with an unsolicited `report`, so a dashboard's button goes live on the same second. Additive under §10: `v` stays 2, and a service that never expected `sshready` simply gains a button. |
