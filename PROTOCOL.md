@@ -375,6 +375,7 @@ Defined capabilities, each naming the relay→device command it gates:
 | `session` | `session_start`, `session_stop`, and the advisory `workspaces` push |
 | `ready` | `wake_prepare` |
 | `sshready` | `ssh_setup`, `ssh_toggle` |
+| `sshmint` | `ssh_key_mint` |
 | `status` | `status` |
 | `probe` | `probe` |
 | `scan` | `scan` |
@@ -451,6 +452,24 @@ macOS from 0.23.0 and on nothing else — and §4's rule keeps both frames off e
 device could only refuse them. The SSH FACTS a device reports beside its connect facts need no
 capability: facts are answers, not commands, and `sshListening` and `sshPort` have ridden
 `status_result` since agent 0.19.0 whether or not the fix verb is available.
+
+`sshmint` says the device can MAKE an SSH key in the profile of whoever is signed in at its host
+machine, and report the public half. It gates one command, `ssh_key_mint`.
+
+It is the other side of the same connection `sshready` serves, which is why it is a capability of
+its own rather than a widening of that one: `sshready` prepares a TARGET to be reached, and
+`sshmint` equips the machine somebody will type AT. A service arranging a connection between two
+machines an account already holds picks a different device for each in the same flow, and
+"advertises `sshready`" stopped being evidence of either the moment a fleet held devices that
+advertise it and would answer a mint with silence — §2's silent-ignore rule, which is what makes
+feature detection a capability question rather than a version question.
+
+It is gated like `sshready` for `sshready`'s reason: the machinery has to exist in the build.
+Resolving the person at a keyboard and setting the access their private key needs are written per
+platform — our agent carries both on Windows, Linux and macOS from 0.28.0 and on nothing else —
+and §4's rule keeps the frame off every socket whose device could only refuse it. The TWO-WAY
+DISCOVERY facts the reply carries need no capability of their own: they describe the machine that
+just minted, and they ride that machine's own answer rather than a second round trip.
 
 `plug` says the device can drive smart plugs on its own segment over local HTTP — discover
 them, switch them, read them. It is one capability rather than three for `power`'s reason: a
@@ -790,6 +809,56 @@ a caller that asked for "off" can see that nothing answers any more.
 `err` accompanies `ok: false`: a wall word where one applies, `bad_frame` (§6) where the frame
 carried no `on` member — a machine switched off because a field was missing is the accident that
 refusal exists to prevent — `busy`, or the failing command's own sentence.
+
+### `ssh_key_mint_result`
+
+```json
+{ "t": "ssh_key_mint_result", "req_id": "…", "ok": true,
+  "public_key": "ssh-ed25519 AAAAC3Nz… roosterwake PHIL",
+  "fingerprint": "SHA256:4kA6…", "path": "C:\\Users\\phil\\.ssh\\id_ed25519_roosterwake",
+  "account": "PHIL\\phil", "outcome": "created",
+  "ssh_url_handler": "Termius", "ssh_client": true }
+```
+
+Answers `ssh_key_mint` (§5), **after** the work — `ssh_setup_result`'s rule exactly: writing two
+files in somebody's profile does not destroy the process that replies, so `ok: true` means a key
+EXISTS at `path`, never that a request was accepted.
+
+`outcome` is `created` or `existing`, and `existing` is a first-class success rather than a
+flavour of failure: "changed nothing" is the evidence an earlier press landed, and pressing the
+button twice is a thing people do.
+
+`public_key` is the WHOLE `authorized_keys` line, comment included, which is the form the target
+machine has to be given it in — a caller passes it to `ssh_setup` unchanged. `fingerprint` is
+OpenSSH's own `SHA256:…` spelling, unpadded, so a person can compare it against what their own
+machine prints without translating anything. A device MUST derive both from the private file
+rather than from any `.pub` beside it: those two can disagree, and only one of them is what the
+machine will sign in with.
+
+`account` names who the key was minted for — `DOMAIN\user` on Windows, the bare account name
+elsewhere. A caller SHOULD show it: a person can see for themselves that a key exists, and cannot
+see that it went to the wrong account.
+
+`path` rides a success as information and the `foreign_key_at_path` refusal as the REMEDY. In that
+refusal it is the only actionable thing in the frame, and a device MUST send it.
+
+`ssh_url_handler` and `ssh_client` are the two-way discovery facts §5 describes, and describe the
+machine that ran the command rather than any target. Both are positive findings or absent: a
+reader MUST NOT render a missing `ssh_url_handler` as "no handler" — macOS declares it absent by
+design — and MUST NOT render a missing `ssh_client` as `false`.
+
+`err` accompanies `ok: false`: `no_user_session` where no session on the machine has a user in it,
+`foreign_key_at_path` (with `path`) where a file the device did not write is in the way, `busy`
+where a mint is already running, `unsupported` from a device with no mint, and otherwise the
+failing operation's own sentence, one line and bounded well inside §1's ceiling.
+
+**The reply is bounded, and a device that must trim gives up the least useful field first.** Every
+field here is short on an ordinary machine — an ed25519 line and its fingerprint are fixed width —
+but a home directory on a network path is not, and a frame over §1's 2048 bytes costs a `1009`
+close and takes the device off the network to report a result nobody receives. The handler goes
+first (the connection line works without it), then the account, then the path and the error word;
+the key and its fingerprint are never given up, because a frame that arrives without them was not
+worth sending.
 
 ### `awake_result`
 
@@ -2052,6 +2121,106 @@ it was, which is what makes the switch safe to press twice.
 Like `ssh_setup` it re-reads the posture onto its reply and SHOULD send a `report`, and it shares
 that command's lock: one SSH command at a time, the second answered `busy`.
 
+### `ssh_key_mint`
+
+```json
+{ "t": "ssh_key_mint", "req_id": "…" }
+```
+
+Asks the device to MAKE an SSH key in the profile of whoever is signed in at its host machine,
+and answers `ssh_key_mint_result` (§4) **after** the work. Only sent to devices advertising the
+`sshmint` capability. It takes no fields beyond the envelope: everything about the key is decided
+by the machine it is made on, and a field naming a path, an account or an algorithm would be a way
+to aim a private key somewhere nobody checked.
+
+**It exists because `ssh_setup` installs a key somebody supplied, and a supplied key is a key
+whoever supplied it holds.** A service session that has been taken over can supply an attacker's
+own public key and buy a shell on somebody's computer. A minted key inverts that: the private half
+comes into existence on the machine its owner is typing at, never travels, and is never held by
+the service — so the account grants access BETWEEN machines it already controls rather than
+granting shell access to whoever holds a cookie. The paste route stays for the client a device
+cannot reach — a tablet, a work laptop, a jump host — and carries the same gates.
+
+**A device MUST NOT transmit the private half, and MUST NOT accept one.** The only thing that
+leaves the machine is the public line and its fingerprint.
+
+What a device does, and what it must refuse:
+
+- **The key is ed25519**, at `~/.ssh/id_ed25519_roosterwake` (`%USERPROFILE%\.ssh\` on Windows),
+  written in `openssh-key-v1` with cipher `none` and kdf `none`. The filename is deliberately NOT
+  one of OpenSSH's default identity names: a machine's own `id_ed25519` must not be displaced, and
+  the caller names this file explicitly in whatever connection line it shows.
+- **The comment is `roosterwake <machine name>`.** It is not decoration. A person reading
+  `authorized_keys` on the far side has to be able to see which machine a line lets in and delete
+  ONE line to revoke ONE machine, and the comment is the only field that can tell them.
+- **The access is what OpenSSH demands, set BEFORE the key material is written.** Directory
+  `0700`, private `0600`, public `0644`, owned by that account on Linux and macOS. On Windows the
+  private key's ACL grants THREE principals — the user, LocalSystem and the built-in
+  Administrators group, by SID rather than by name — and nothing else. Not "the user alone": a
+  device running as a system service must be able to re-read the file for its own idempotency
+  check, and an ACL that locks it out makes every later press report a foreign key at a path the
+  device itself wrote. A file created and secured afterwards is readable by whatever its parent
+  directory admits for as long as the two operations take, which is why the order is create,
+  secure, then fill.
+- **It is IDEMPOTENT and never destructive.** A key the device recognises already at that path is
+  answered `outcome: existing` with its own public half, and NOTHING is written — the public half
+  derived from the private file rather than read from the `.pub` beside it, so what the caller is
+  asked to authorise is derived from the bytes the machine will actually sign in with. There is no
+  overwrite branch.
+- **A file at that path the device does not recognise is `foreign_key_at_path`, and nothing is
+  touched.** The reply MUST carry `path`, because the remedy is the person's and it is "move or
+  rename this file": a refusal somebody cannot act on is a feature they can never use. An
+  encrypted key, a key of another algorithm and a file that is not a key at all are all this one
+  refusal — the taxonomy leads nowhere, the path does.
+- **The user is resolved from LIVE sessions ONLY, and a machine with nobody signed in is
+  `no_user_session`.** A device MUST NOT fall back to a record of who signed in LAST. Writing a
+  passphrase-less private key into an absent person's profile and reporting success is the exact
+  shape of a fact wearing a value it did not earn, and on Windows it is the likeliest way this
+  command goes wrong: an unattended machine at its sign-in screen can always name somebody.
+  Enumerating sessions is required rather than reading the console alone — a machine reached over
+  Remote Desktop has a console session that is connected and EMPTY, and the session that is its
+  owner is `rdp-tcp#0`. Where several sessions hold users, the console one wins if somebody is at
+  it, then the first active session, then the most recently connected disconnected one; a person
+  who closed a Remote Desktop client without signing out is still signed in.
+- **The reply names the account.** `account` is the one thing a person cannot discover for
+  themselves — that the key went to an account other than the one they meant — and a caller SHOULD
+  show it.
+
+**No passphrase, stated rather than glossed.** A device cannot collect one and must not store one,
+so anything that can read files as that user can use the key to reach the machines it authorises.
+What stands against that is the access above, the per-machine comment that makes one-line
+revocation possible, and whatever notice the service sends when a key is authorised. Encrypting
+the key under something the service holds would move that window rather than close it, and would
+mean the service could decrypt a customer's private key.
+
+**Two-way discovery rides the same reply.** Setting a target up teaches a service only about the
+target; the machine somebody will TYPE at is a second machine, running the same device software,
+and what it has decides whether a clickable link or a typed command is the right thing to show. So
+the reply carries two facts about ITSELF, and both are POSITIVE FINDINGS OR ABSENT:
+
+- **`ssh_url_handler`** — the application registered for the `ssh://` scheme, named the way a
+  person would name it. On Windows a device MUST read the resolved user's OWN registrations before
+  the machine-wide ones (`HKEY_USERS\<SID>_Classes\ssh\shell\open\command` and the
+  `Software\Classes` link to it, then `HKLM\SOFTWARE\Classes\…`): these associations are almost
+  always per-user, and an HKLM-only read reports "no handler" on exactly the machines the fact
+  exists to serve. On Linux it is `x-scheme-handler/ssh` in the xdg mime tables, read from that
+  user's own home; an association naming a desktop entry that is not installed is NOT a finding,
+  because a link that opens nothing reads as the service's bug. On macOS the fact is DECLARED
+  ABSENT: the association lives in a binary plist inside a sandboxed container, and a device with
+  no way to read it must send nothing rather than guess.
+- **`ssh_client`** (boolean) — an `ssh` binary is present. A device MUST NOT execute one to find
+  out.
+
+**A device MUST NOT run this command twice at once**, and MUST answer the second `busy` (§6)
+rather than queueing it: two passes would both find no key, both make one, and one of them would
+report a public half whose private half the other had already replaced — a key that can never
+authenticate. It is a separate lock from `ssh_setup`'s: that command moves the machine's SSH
+service, and this one touches neither the service nor any authorized-keys file.
+
+**Nothing here consumes anything or wakes anything.** A mint writes two files in a profile, and a
+service MUST NOT put it behind whatever gate it puts power commands behind: the machine somebody
+is typing at is the one machine that is provably already awake.
+
 ### `hold_awake`
 
 ```json
@@ -2458,6 +2627,19 @@ remedy, and none names a path:
 | `unreadable` | The file is there and the device could not read it as JSON — a write in progress, a permission, a shape the device does not understand. The person looks at the file; nothing about it travels |
 
 A relay that predates these folds all three into `internal`, which the rule above makes safe.
+
+Minted-key codes, on `ssh_key_mint_result` only, from devices advertising `sshmint`.
+`no_user_session` is the same code the remote-session table above defines and means the same thing
+here — nobody is signed in, so there is no profile a private key could honestly belong to:
+
+| Code | Meaning — and whose move it is |
+|---|---|
+| `no_user_session` | No session on the machine has a user in it. Somebody signs in at the machine. A device MUST NOT substitute whoever signed in LAST — a passphrase-less private key in an absent person's profile, reported as a success, is the fault this code exists to prevent |
+| `foreign_key_at_path` | A file the device did not write already sits where the key goes, and nothing was touched. The reply carries `path`, and the move is the person's: rename it or move it aside |
+
+A relay that predates `foreign_key_at_path` folds it into `internal`, which the rule above makes
+safe — but the path is then the only thing a person has, so a relay SHOULD render it whatever it
+made of the code.
 A refusal changes nothing on the device, so none of them poisons a retry.
 
 Adoption-specific codes, on `adopt_ack` only, and only from a relay that implements the §4
@@ -2713,6 +2895,7 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 
 | Version | Date | Change |
 |---|---|---|
+| 2 | 2026-09-08 | **The device makes the key, so the private half never travels.** One new capability, `sshmint`, and the one frame pair it gates: `ssh_key_mint` -> `ssh_key_mint_result`. `ssh_setup` (the row below) installs a public key somebody supplied, and a supplied key is a key whoever supplied it holds — so a service session that has been taken over buys a shell by supplying the attacker's own key. This row inverts that: the device makes an ed25519 key in the profile of whoever is signed in at ITS OWN machine, at `~/.ssh/id_ed25519_roosterwake`, commented `roosterwake <machine name>` so a person reading `authorized_keys` on the far side can delete ONE line to revoke ONE machine, and returns the public half, the fingerprint, the path and the ACCOUNT it was minted for. The private half never leaves the machine and no relay ever holds one; the paste route stays for the client a device cannot reach, and carries the same gates. The command takes NO fields beyond the envelope, deliberately: a field naming a path, an account or an algorithm would be a way to aim a private key somewhere nobody checked. It is idempotent and has no overwrite branch — a key the device recognises is `outcome: existing` with nothing written, and a file it does not recognise is `foreign_key_at_path` carrying the `path` a person has to move, because a refusal nobody can act on is a feature they can never use. The user is resolved from LIVE sessions ONLY and a machine with nobody at it answers `no_user_session`: substituting whoever signed in LAST would write a passphrase-less private key into an absent person's profile and report success. Enumerating sessions rather than reading the console is required, because a machine reached over Remote Desktop has a console session that is connected and EMPTY. The access is set BEFORE the key material is written, and on Windows grants the user, LocalSystem and Administrators — not "the user alone", which locks a system service out of the file it just wrote and makes every later press report a foreign key at its own path. The reply also carries TWO-WAY DISCOVERY, `ssh_url_handler` and `ssh_client`: what the machine somebody will TYPE at has, so a caller can choose between a clickable `ssh://` link and a typed command instead of guessing. Both are positive-or-absent; the handler is read from the USER's registrations before the machine's on Windows, from the xdg tables on Linux, and is DECLARED ABSENT on macOS, where it lives in a binary plist inside a sandboxed container. Additive under §10: `v` stays 2, and a service that never expected `sshmint` simply gains a second way to arrange a connection. |
 | 2 | 2026-09-06 | **The device sets SSH up on its own machine, and switches it.** One new capability, `sshready`, and the two frame pairs it gates: `ssh_setup` -> `ssh_setup_result` and `ssh_toggle` -> `ssh_toggle_result`, plus three additive `connect` members — `sshSetup` (`ready`/`unsupported`), `sshSetupWall` (`needs_full_disk_access`, `no_package_manager`, `no_package_source`, `capability_refused`, `no_privilege`) and `sshConfigured`. Since agent 0.19.0 a device has been able to say that nothing is listening on its machine's SSH port; this row is the button beside that sentence, because the alternative was talking somebody through an elevated package install, a service enable, a firewall rule and an authorized-keys file on a machine they cannot see. `ssh_setup` takes one OpenSSH PUBLIC key line — validated, and a bad one refused as `bad_key` BEFORE the machine is touched, so a mis-paste can never leave a daemon installed behind it — and runs five steps in a fixed order, `install`, `service`, `firewall`, `key`, `auth`, each `done`/`already`/`failed` with the command's own words. The ledger STOPS at the first failure and omits the steps that never ran, and omits `firewall` entirely on Linux and macOS, so a reader keys on `step` rather than on position. `auth` (key-only sign-in: `PasswordAuthentication no`, `PubkeyAuthentication yes`, then a restart) is last and runs only after the key step reported `done` or `already` — it is the step that could lock somebody out, and it may not run before the key that lets them back in is provably on the machine. Windows opens the firewall rule on EVERY profile, a real machine having answered nothing on a network Windows classified Public while its OpenSSH rule sat on Private alone; Linux and macOS open no firewall at all, their defaults already admitting the port. `ssh_toggle` is the switch afterwards and touches neither the package nor the key file, so a machine toggled off and on again is the machine it was. Both replies carry `listening` and `port` RE-READ after the work, and a device SHOULD follow either with an unsolicited `report`, so a dashboard's button goes live on the same second. Additive under §10: `v` stays 2, and a service that never expected `sshready` simply gains a button. |
 | 2 | 2026-09-06 | **A file transfer over SSH says which program is moving the bytes.** No new frame and no new capability: one additive member joins the `connect` block, `activeSessionProgram`, sent beside `activeSessionKind: "ssh-transfer"` and nothing else, from a closed vocabulary of four — `sftp` (the sftp subsystem, and so an sshfs mount too), `scp`, `rsync` and `git` (any of the three git servers a fetch or a push runs). Positive-or-absent, as every name here is: a port forward, an `exec` request running something else and a transfer whose program the device cannot see send no member, and a service reads that absence as "a file transfer, program unnamed"; where several transfers are active the member names the one whose activity is most recent. Additive under §10: `v` stays 2, and a service that predates the word drops it and keeps the kind it already renders. Rationale: `ssh-transfer` is the only kind whose one word leaves a person guessing — "file transfer over SSH" could be a nightly backup or a colleague pulling a repository, and the device already knew which, because the program it found under the session is what decided the bytes were moving at all. |
 | 2 | 2026-09-06 | **The machine says what kind of machine it is.** No new frame and no new capability: four additive members join the `connect` block, reported by any software device that can read them — `chassis` (`laptop` or `desktop`, from the firmware's own SMBIOS System Enclosure declaration), `battery` (boolean), `standby` (`modern` for the S0 low-power idle model — Windows Modern Standby, Linux `s2idle` — `s3` for the classic suspend-to-RAM, or `none`) and `wowlan` (boolean: the machine's first WIRELESS adapter, in the `hello.macs` wake order, is set to wake it on a magic packet). Every one is a POSITIVE finding or absent, and the absence is the half that matters: a chassis code outside the two words, a battery flag the platform called "unknown status", a sleep listing the device could not parse and a machine with no radio all send nothing, and a service MUST NOT render any of them as `desktop`, `false` or `none`. Born from every stranger who has installed our agent so far: each put it on a Wi-Fi laptop or a Mac, the dashboard told them a packet could not wake it — because the only signal it had was "no wired adapter in `adapters`" — and then offered three routes that would not work on their hardware. That inference is wrong in both directions: a Modern Standby laptop whose radio is armed genuinely does wake on a magic packet, and a desktop on Wi-Fi is not a machine whose lid anybody can open. With these four a service can be deterministic where it was guessing — offer the packet to a `standby: modern` machine with `wowlan: true`, and otherwise name the wall in one true sentence from `chassis` — which is the difference between an offer and an apology. Two are absent on macOS by decision, stated in §5 rather than left as a gap: Apple's sleep is neither `modern` nor `s3`, and a Mac's Wi-Fi wake is a sleep-proxy arrangement rather than a packet the adapter answers. Additive under §10: `v` stays 2, and a service that predates the members reads their absence exactly as it always did. |
