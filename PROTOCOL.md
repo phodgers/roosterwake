@@ -375,7 +375,7 @@ Defined capabilities, each naming the relay→device command it gates:
 | `session` | `session_start`, `session_stop`, and the advisory `workspaces` push |
 | `ready` | `wake_prepare` |
 | `sshready` | `ssh_setup`, `ssh_toggle` |
-| `sshmint` | `ssh_key_mint` |
+| `sshmint` | `ssh_key_mint`, `ssh_keys_list`, `ssh_key_revoke`, `ssh_alias` |
 | `status` | `status` |
 | `probe` | `probe` |
 | `scan` | `scan` |
@@ -454,7 +454,16 @@ capability: facts are answers, not commands, and `sshListening` and `sshPort` ha
 `status_result` since agent 0.19.0 whether or not the fix verb is available.
 
 `sshmint` says the device can MAKE an SSH key in the profile of whoever is signed in at its host
-machine, and report the public half. It gates one command, `ssh_key_mint`.
+machine, report the public half, say what its own machine already authorises, take one of those
+keys back out, and write the `~/.ssh/config` block that turns a connection line into a name.
+
+It gates four commands as one capability on `power`'s reasoning: a device that can mint a key can
+list, revoke and name one, and a subset would be something for a relay to reason about. One
+capability is also what a relay can act on here, because all four arrived in the same release and
+no build advertises it that would answer any of them with silence. The list and the revoke read
+and rewrite the very file `ssh_setup` appends to, and are gated by THIS capability rather than by
+`sshready` for the reason capability gates exist at all: a device from the release that introduced
+`sshready` advertises it and would answer them with §2's silent ignore.
 
 It is the other side of the same connection `sshready` serves, which is why it is a capability of
 its own rather than a widening of that one: `sshready` prepares a TARGET to be reached, and
@@ -859,6 +868,109 @@ close and takes the device off the network to report a result nobody receives. T
 first (the connection line works without it), then the account, then the path and the error word;
 the key and its fingerprint are never given up, because a frame that arrives without them was not
 worth sending.
+
+### `ssh_keys_list_result`
+
+```json
+{ "t": "ssh_keys_list_result", "req_id": "…", "ok": true,
+  "path": "/home/phil/.ssh/authorized_keys",
+  "keys": [
+    { "fingerprint": "SHA256:4kA6…", "type": "ssh-ed25519", "comment": "roosterwake PHIL" },
+    { "fingerprint": "SHA256:9tR2…", "type": "ssh-rsa" }
+  ],
+  "dropped": 0 }
+```
+
+Answers `ssh_keys_list` (§5): what the device's host machine currently authorises, one entry per
+key line of the file OpenSSH reads.
+
+**This is what makes a revocation possible at all.** The minted key's per-machine comment exists
+so a person can delete one line to revoke one machine — and without this frame the only way to
+delete that line is to sign in over SSH and edit the file, which is exactly what somebody locked
+out cannot do.
+
+**No key bodies, ever.** A fingerprint identifies a key exactly, is what `ssh_key_revoke` names,
+and is what `ssh-keygen -l` prints on the person's own machine. A body is several hundred bytes
+inside a frame with a 2048-byte ceiling and identifies nothing more. `fingerprint` is OpenSSH's
+own unpadded `SHA256:…` spelling and a device MUST NOT invent another.
+
+`type` is the algorithm as the line names it. `comment` is whatever the line carried, and it is
+untrusted display text under §4's rule: it is what makes "one line per machine" legible, it is
+never an identifier and a device MUST NOT match on it.
+
+**Lines the device did not write are listed like any other.** This is a view of the machine's real
+state, not of any service's bookkeeping — a key somebody added by hand is exactly the key a person
+opening this list needs to see. A caller that knows nothing about a fingerprint states its origin
+as unknown rather than omitting the row.
+
+`path` names the file that was read, and a caller SHOULD show it. On Windows it is the machine-wide
+administrators file, and a person who cannot find a key from their own `~/.ssh` in the list
+deserves to know which file the answer is about rather than conclude the key is gone.
+
+`keys` is `[]`, never null, on a machine that authorises nothing — including one whose file does
+not exist, which is a SUCCESS and not a refusal: a machine that has never been set up authorises
+nothing, and that is an answer. A file that exists and cannot be READ is the refusal, because the
+two send a person to different places.
+
+**`dropped` is how many entries were left out to fit §1's ceiling, and a caller MUST say so.** At
+roughly ninety bytes an entry about twenty fit, and a real `authorized_keys` on a shared machine
+overruns — which is exactly the machine somebody opens this list to audit. A device gives up what
+a reader needs least first: the COMMENTS, longest first and dropped whole rather than shortened,
+because a comment is display text whose absence reads as "unknown" while half of one is a claim
+about which machine a key belongs to; then the path; and only then whole entries, from the tail,
+each counted into `dropped`. **A key list that silently hides a key is the failure this frame
+exists to prevent** — the hidden key is one nobody can revoke, and the list would be evidence that
+it is not there.
+
+`err` accompanies `ok: false`: `no_user_session` where there is no account whose file could be
+read, `unsupported` from a device with no such file to read, and otherwise the failing read's own
+sentence.
+
+### `ssh_key_revoke_result`
+
+```json
+{ "t": "ssh_key_revoke_result", "req_id": "…", "ok": true,
+  "fingerprint": "SHA256:4kA6…", "path": "/home/phil/.ssh/authorized_keys",
+  "outcome": "removed" }
+```
+
+Answers `ssh_key_revoke` (§5), **after** the work — `ssh_setup_result`'s rule: rewriting a file
+does not destroy the process that replies, so `ok: true` means the file on disk no longer
+authorises that key.
+
+`outcome` is `removed` or `not_found`, and **`not_found` is a SUCCESS**. The caller asked for a
+machine that does not authorise that fingerprint and has one; making it a refusal would send
+somebody looking for a fault where there is none.
+
+`fingerprint` is echoed so a caller with several in flight can tell which was answered, and `path`
+names the file, on the list's reasoning.
+
+`err` accompanies `ok: false`: `bad_fingerprint` where the frame named something a key could never
+be identified by, `no_user_session`, `busy` while another SSH command is in flight, `unsupported`,
+and otherwise the failing operation's own sentence.
+
+### `ssh_alias_result`
+
+```json
+{ "t": "ssh_alias_result", "req_id": "…", "ok": true,
+  "alias": "office-pc", "path": "C:\\Users\\phil\\.ssh\\config",
+  "outcome": "written", "account": "PHIL\\phil" }
+```
+
+Answers `ssh_alias` (§5), after the work. `outcome` is `written` or `already`, and `already` is a
+first-class success on `ssh_key_mint_result`'s reasoning: a block that is already there and says
+what the device would have written is the evidence an earlier press landed.
+
+`alias` is the name a person types after `ssh`. `path` is the config file, and it rides every
+refusal as the REMEDY — `alias_taken` and `alias_shadowed` both mean "open this file and look at
+it". `account` is whose config file was written, on `ssh_key_mint_result`'s reasoning.
+
+`err` accompanies `ok: false`: `bad_alias` for values the device will not write into a config
+file, `alias_taken` where a `Host` block of that name names something else, `alias_shadowed` where
+an earlier block would supply one of the block's own keywords first, `no_minted_key` where there
+is no key at the path the block would name, `no_user_session`, `busy`, `unsupported`, or the
+failing operation's own sentence. **Every one of them costs the alias and nothing else**: the
+`-i` form of the connection line needs no alias and always works, and a caller falls back to it.
 
 ### `awake_result`
 
@@ -2221,6 +2333,123 @@ service, and this one touches neither the service nor any authorized-keys file.
 service MUST NOT put it behind whatever gate it puts power commands behind: the machine somebody
 is typing at is the one machine that is provably already awake.
 
+### `ssh_keys_list`
+
+```json
+{ "t": "ssh_keys_list", "req_id": "…" }
+```
+
+Asks the device what its host machine currently authorises, and answers `ssh_keys_list_result`
+(§4). Only sent to devices advertising the `sshmint` capability. It takes no fields beyond the
+envelope: which file grants access to a machine is the machine's own question, and a field naming
+one would be a way to read a file nobody chose.
+
+**It is a READ and changes nothing.** A device MUST NOT hold it behind whatever lock guards the
+commands that write that file: a list refused `busy` for the minutes a package install runs is a
+key list withheld from somebody at exactly the moment they went looking for it, and a read that
+raced a write reports the file as it was at one instant or as it is at another — both true.
+
+The file is the one OpenSSH itself reads for sign-ins to that machine, which is the file
+`ssh_setup` appends to: the signed-in account's own `~/.ssh/authorized_keys` on macOS and Linux,
+and the machine-wide administrators file on Windows, where no per-user file is consulted for an
+account in the Administrators group. The reply names it.
+
+### `ssh_key_revoke`
+
+```json
+{ "t": "ssh_key_revoke", "req_id": "…", "fingerprint": "SHA256:4kA6…" }
+```
+
+Asks the device to remove one key from that same file, and answers `ssh_key_revoke_result` (§4)
+**after** the work. Only sent to devices advertising `sshmint`.
+
+**The fingerprint is the whole command, and a device MUST match it exactly.** Never a substring
+of a key body, never a comment, and never "the last one added": a revoke is somebody taking access
+away, and a match that could hit the wrong line takes away access nobody meant to. A frame with no
+`fingerprint` member is `bad_frame` (§6) and nothing is touched — a revoke with a default would be
+a guess at whose access to remove.
+
+A value that is not a fingerprint is `bad_fingerprint`, which is deliberately NOT `not_found`:
+`not_found` is a claim about the MACHINE — that it does not authorise that key — and making it on
+the strength of something nobody could have compared would be a claim nobody checked.
+
+What a device does:
+
+- **Every line authorising that fingerprint goes**, not the first. A file holding one key twice
+  grants it twice, and a revoke that left the second copy would report access removed while it
+  still stood.
+- **Every other line survives BYTE FOR BYTE.** An authorized-keys file is somebody's access to
+  their own machine: it holds keys this product never wrote, options it does not understand and
+  spacing it has no opinion about. The lines that stay are carried across as the bytes they were,
+  never re-rendered from a parse, and a line the device cannot parse at all survives a revoke of
+  the line beside it.
+- **The rewrite is ATOMIC**, and the access is set on the new file BEFORE it replaces the old one.
+  A truncated authorized-keys file locks everybody out of the machine, which is the accident this
+  command exists to undo rather than to cause; and a file that arrives by rename carries the
+  access it was staged with, which on Windows means the ACL sshd demands or a file the daemon
+  ignores in silence.
+- **It runs one at a time with `ssh_setup` and `ssh_toggle`**, and a second is `busy` (§6). All
+  three move the same file or the service that reads it.
+
+**Revoking the last key on a machine whose password sign-in is off locks its owner out**, and a
+caller MUST say so in those words before it sends this, and name the way back. The device cannot
+know which key the person is sitting behind; the service can.
+
+### `ssh_alias`
+
+```json
+{ "t": "ssh_alias", "req_id": "…", "alias": "office-pc",
+  "host_name": "192.0.2.10", "user": "phil", "port": 2222 }
+```
+
+Asks the device to write a `~/.ssh/config` block on ITS OWN machine — the one somebody will type
+at — so that reaching the target is `ssh office-pc`. It answers `ssh_alias_result` (§4) after the
+work, and is only sent to devices advertising `sshmint`.
+
+**It exists because the bare connection line could not otherwise work.** OpenSSH's default
+identity list is `id_rsa`, `id_ecdsa`, `id_ecdsa_sk`, `id_ed25519`, `id_ed25519_sk` and `id_dsa`,
+and the minted key's filename is deliberately none of them — so `ssh phil@192.0.2.10` offers no
+key at all, and by the time anybody reads a connection line password sign-in has been switched off
+on the far side. The block is what makes the short line true; without it the line has to carry
+`-i`, which is what a caller shows when this command is refused.
+
+The block is `Host` / `HostName` / `User` / `Port` / `IdentityFile` / `IdentitiesOnly yes`.
+`IdentityFile` is what makes the short line work at all, and `IdentitiesOnly yes` stops a loaded
+ssh-agent offering several keys and spending the server's `MaxAuthTries` before ours is reached —
+a refusal that looks exactly like a key that was never installed.
+
+**The `IdentityFile` is NOT a field of this frame.** The device resolves it on its own machine,
+from the account it resolved for itself, for `ssh_key_mint`'s reason: a path arriving over the
+wire would be a way to point a config file at a file nobody checked. Where no key is there,
+the answer is `no_minted_key` — a block naming nothing fails with "no such identity", which reads
+as the service's bug rather than as a step nobody took.
+
+`port` is optional and is omitted from the block when it is absent: OpenSSH's own default is 22,
+and a caller that does not know the port must not have one invented for it.
+
+What a device refuses, and why each refusal is worth more than a write:
+
+- **`bad_alias` — the values are a closed grammar.** Everything here becomes a directive in a file
+  OpenSSH obeys, so a newline would write directives nobody asked for, a `#` would comment out the
+  rest of a line and a quote would change where a value ends. The alias itself admits no glob
+  character either: a `Host` line whose pattern matches more than its own name would take over
+  connections to hosts this product never touched. The refusal is TOTAL rather than a repair.
+- **APPEND ONLY, and `alias_taken` rather than an edit.** Every existing byte survives. A `Host`
+  block of that name that names something else is never edited, moved or replaced, and never
+  silently suffixed until a free name is found: a connection line naming a host the person did not
+  choose is worse than no connection line. A block that says what the device would have written is
+  `already`.
+- **`alias_shadowed` rather than a block that will not behave.** `ssh_config` is
+  first-obtained-value-wins per keyword, so an earlier block that matches this alias — `Host *`
+  above all — supplies `User` before ours does, and the block is silently half-ignored. A device
+  MUST refuse rather than write there. A `Match` block counts whatever its criteria say, because
+  they are evaluated at connection time against things the device cannot know, and "we cannot tell
+  whether it applies" must not be read as "it does not".
+- **A file the device creates is `0600`; a file it finds keeps the mode its owner gave it.**
+
+**A device MUST NOT run this while a mint is running on the same machine**, and answers the second
+`busy` (§6): both write into the same `~/.ssh`, and the block names the very key a mint creates.
+
 ### `hold_awake`
 
 ```json
@@ -2628,19 +2857,26 @@ remedy, and none names a path:
 
 A relay that predates these folds all three into `internal`, which the rule above makes safe.
 
-Minted-key codes, on `ssh_key_mint_result` only, from devices advertising `sshmint`.
+Minted-key codes, from devices advertising `sshmint`, each on one result frame only.
 `no_user_session` is the same code the remote-session table above defines and means the same thing
-here — nobody is signed in, so there is no profile a private key could honestly belong to:
+here — nobody is signed in, so there is no profile a private key or a person's own config file
+could honestly belong to:
 
-| Code | Meaning — and whose move it is |
-|---|---|
-| `no_user_session` | No session on the machine has a user in it. Somebody signs in at the machine. A device MUST NOT substitute whoever signed in LAST — a passphrase-less private key in an absent person's profile, reported as a success, is the fault this code exists to prevent |
-| `foreign_key_at_path` | A file the device did not write already sits where the key goes, and nothing was touched. The reply carries `path`, and the move is the person's: rename it or move it aside |
+| Code | On | Meaning — and whose move it is |
+|---|---|---|
+| `no_user_session` | mint, list, revoke, alias | No session on the machine has a user in it. Somebody signs in at the machine. A device MUST NOT substitute whoever signed in LAST — a passphrase-less private key in an absent person's profile, reported as a success, is the fault this code exists to prevent |
+| `foreign_key_at_path` | `ssh_key_mint_result` | A file the device did not write already sits where the key goes, and nothing was touched. The reply carries `path`, and the move is the person's: rename it or move it aside |
+| `bad_fingerprint` | `ssh_key_revoke_result` | The frame named something no key could be identified by. It is NOT `not_found`, which is a claim about the machine: saying "that key is not here" on the strength of a value nobody could have compared would be a claim nobody checked |
+| `bad_alias` | `ssh_alias_result` | Values the device will not write into a config file. Everything in the block becomes a directive OpenSSH obeys, so the grammar is closed and the refusal is total rather than a repair |
+| `alias_taken` | `ssh_alias_result` | A `Host` block of that name already names something else. Nothing was edited and nothing was suffixed; the reply carries `path`, and the move is the person's |
+| `alias_shadowed` | `ssh_alias_result` | An earlier block in the file would supply one of the block's own keywords first, so a block written there would be silently half-ignored. The reply carries `path` |
+| `no_minted_key` | `ssh_alias_result` | There is no key at the path the block would name. Mint one first: an alias naming nothing fails with "no such identity", which reads as the service's bug |
 
-A relay that predates `foreign_key_at_path` folds it into `internal`, which the rule above makes
-safe — but the path is then the only thing a person has, so a relay SHOULD render it whatever it
-made of the code.
-A refusal changes nothing on the device, so none of them poisons a retry.
+A relay that predates any of these folds it into `internal`, which the rule above makes safe — but
+for `foreign_key_at_path`, `alias_taken` and `alias_shadowed` the `path` is then the only thing a
+person has, so a relay SHOULD render it whatever it made of the code.
+A refusal changes nothing on the device, so none of them poisons a retry. Every alias refusal costs
+the alias and nothing else: the `-i` form of a connection line needs none.
 
 Adoption-specific codes, on `adopt_ack` only, and only from a relay that implements the §4
 token path:
@@ -2895,6 +3131,7 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 
 | Version | Date | Change |
 |---|---|---|
+| 2 | 2026-09-08 | **A machine says what it authorises, takes one key back out, and learns to be reached by name.** No new capability: three frame pairs join `sshmint`, which now gates four commands — `ssh_keys_list` -> `ssh_keys_list_result`, `ssh_key_revoke` -> `ssh_key_revoke_result` and `ssh_alias` -> `ssh_alias_result`. The row above gives a person a key commented with the machine it belongs to so they can delete ONE line to revoke ONE machine; these are what let them do it from anywhere but a shell on the machine itself, which is exactly what somebody locked out does not have. `ssh_keys_list` reads the file OpenSSH authorises from — the signed-in account's own on macOS and Linux, the machine-wide administrators file on Windows, and the reply NAMES it — and reports a fingerprint, an algorithm and a comment per line and never a key body, which identifies nothing more and costs several hundred bytes inside a 2048-byte frame. It lists lines the device did not write, because it is a view of the machine's real state and not of a service's bookkeeping. Its trim is mandatory and CONFESSED: at about ninety bytes an entry a shared machine's file overruns the ceiling, so comments go first, then the path, then whole entries counted into `dropped` — a key list that silently hides a key would hide the one key nobody can revoke. `ssh_key_revoke` names ONE fingerprint, matched exactly and never as a substring or as "the last one added", removes every line carrying it (a file holding a key twice grants it twice), rewrites ATOMICALLY with the access set before the new file replaces the old, and leaves every other line BYTE FOR BYTE — options, spacing and lines the device cannot parse included. A fingerprint that is not one is `bad_fingerprint` rather than `not_found`, which would be a claim about the machine. `ssh_alias` writes the `~/.ssh/config` block on the machine somebody TYPES at, and it is in this row rather than a later one because without it the short connection line could not work at all: OpenSSH's default identity list holds none of the minted filename, and password sign-in is off by the time anybody reads the line. It is APPEND ONLY, refuses rather than writing beneath a block that `ssh_config`'s first-value-wins rule would let win, never suffixes a name a person did not choose, and resolves the `IdentityFile` on the machine rather than accepting one on the wire. Additive under §10: `v` stays 2, and a service that never expected these simply gains a way to show and undo what it granted. |
 | 2 | 2026-09-08 | **The device makes the key, so the private half never travels.** One new capability, `sshmint`, and the one frame pair it gates: `ssh_key_mint` -> `ssh_key_mint_result`. `ssh_setup` (the row below) installs a public key somebody supplied, and a supplied key is a key whoever supplied it holds — so a service session that has been taken over buys a shell by supplying the attacker's own key. This row inverts that: the device makes an ed25519 key in the profile of whoever is signed in at ITS OWN machine, at `~/.ssh/id_ed25519_roosterwake`, commented `roosterwake <machine name>` so a person reading `authorized_keys` on the far side can delete ONE line to revoke ONE machine, and returns the public half, the fingerprint, the path and the ACCOUNT it was minted for. The private half never leaves the machine and no relay ever holds one; the paste route stays for the client a device cannot reach, and carries the same gates. The command takes NO fields beyond the envelope, deliberately: a field naming a path, an account or an algorithm would be a way to aim a private key somewhere nobody checked. It is idempotent and has no overwrite branch — a key the device recognises is `outcome: existing` with nothing written, and a file it does not recognise is `foreign_key_at_path` carrying the `path` a person has to move, because a refusal nobody can act on is a feature they can never use. The user is resolved from LIVE sessions ONLY and a machine with nobody at it answers `no_user_session`: substituting whoever signed in LAST would write a passphrase-less private key into an absent person's profile and report success. Enumerating sessions rather than reading the console is required, because a machine reached over Remote Desktop has a console session that is connected and EMPTY. The access is set BEFORE the key material is written, and on Windows grants the user, LocalSystem and Administrators — not "the user alone", which locks a system service out of the file it just wrote and makes every later press report a foreign key at its own path. The reply also carries TWO-WAY DISCOVERY, `ssh_url_handler` and `ssh_client`: what the machine somebody will TYPE at has, so a caller can choose between a clickable `ssh://` link and a typed command instead of guessing. Both are positive-or-absent; the handler is read from the USER's registrations before the machine's on Windows, from the xdg tables on Linux, and is DECLARED ABSENT on macOS, where it lives in a binary plist inside a sandboxed container. Additive under §10: `v` stays 2, and a service that never expected `sshmint` simply gains a second way to arrange a connection. |
 | 2 | 2026-09-06 | **The device sets SSH up on its own machine, and switches it.** One new capability, `sshready`, and the two frame pairs it gates: `ssh_setup` -> `ssh_setup_result` and `ssh_toggle` -> `ssh_toggle_result`, plus three additive `connect` members — `sshSetup` (`ready`/`unsupported`), `sshSetupWall` (`needs_full_disk_access`, `no_package_manager`, `no_package_source`, `capability_refused`, `no_privilege`) and `sshConfigured`. Since agent 0.19.0 a device has been able to say that nothing is listening on its machine's SSH port; this row is the button beside that sentence, because the alternative was talking somebody through an elevated package install, a service enable, a firewall rule and an authorized-keys file on a machine they cannot see. `ssh_setup` takes one OpenSSH PUBLIC key line — validated, and a bad one refused as `bad_key` BEFORE the machine is touched, so a mis-paste can never leave a daemon installed behind it — and runs five steps in a fixed order, `install`, `service`, `firewall`, `key`, `auth`, each `done`/`already`/`failed` with the command's own words. The ledger STOPS at the first failure and omits the steps that never ran, and omits `firewall` entirely on Linux and macOS, so a reader keys on `step` rather than on position. `auth` (key-only sign-in: `PasswordAuthentication no`, `PubkeyAuthentication yes`, then a restart) is last and runs only after the key step reported `done` or `already` — it is the step that could lock somebody out, and it may not run before the key that lets them back in is provably on the machine. Windows opens the firewall rule on EVERY profile, a real machine having answered nothing on a network Windows classified Public while its OpenSSH rule sat on Private alone; Linux and macOS open no firewall at all, their defaults already admitting the port. `ssh_toggle` is the switch afterwards and touches neither the package nor the key file, so a machine toggled off and on again is the machine it was. Both replies carry `listening` and `port` RE-READ after the work, and a device SHOULD follow either with an unsolicited `report`, so a dashboard's button goes live on the same second. Additive under §10: `v` stays 2, and a service that never expected `sshready` simply gains a button. |
 | 2 | 2026-09-06 | **A file transfer over SSH says which program is moving the bytes.** No new frame and no new capability: one additive member joins the `connect` block, `activeSessionProgram`, sent beside `activeSessionKind: "ssh-transfer"` and nothing else, from a closed vocabulary of four — `sftp` (the sftp subsystem, and so an sshfs mount too), `scp`, `rsync` and `git` (any of the three git servers a fetch or a push runs). Positive-or-absent, as every name here is: a port forward, an `exec` request running something else and a transfer whose program the device cannot see send no member, and a service reads that absence as "a file transfer, program unnamed"; where several transfers are active the member names the one whose activity is most recent. Additive under §10: `v` stays 2, and a service that predates the word drops it and keeps the kind it already renders. Rationale: `ssh-transfer` is the only kind whose one word leaves a person guessing — "file transfer over SSH" could be a nightly backup or a colleague pulling a repository, and the device already knew which, because the program it found under the session is what decided the bytes were moving at all. |
