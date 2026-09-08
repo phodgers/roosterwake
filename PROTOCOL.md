@@ -903,6 +903,12 @@ state, not of any service's bookkeeping — a key somebody added by hand is exac
 opening this list needs to see. A caller that knows nothing about a fingerprint states its origin
 as unknown rather than omitting the row.
 
+**There is no per-line time, and a device MUST NOT invent one.** An `authorized_keys` file records
+none: the only timestamp the machine holds is the file's own, which is the same for every line in
+it and would be a value each row had not earned. A caller that wants to say when a key appeared
+takes it from its OWN record of installing that fingerprint, and says nothing for a key it has no
+record of — which is the only answer available for one somebody added by hand.
+
 `path` names the file that was read, and a caller SHOULD show it. On Windows it is the machine-wide
 administrators file, and a person who cannot find a key from their own `~/.ssh` in the list
 deserves to know which file the answer is about rather than conclude the key is gone.
@@ -2860,7 +2866,7 @@ A relay that predates these folds all three into `internal`, which the rule abov
 Minted-key codes, from devices advertising `sshmint`, each on one result frame only.
 `no_user_session` is the same code the remote-session table above defines and means the same thing
 here — nobody is signed in, so there is no profile a private key or a person's own config file
-could honestly belong to:
+could belong to:
 
 | Code | On | Meaning — and whose move it is |
 |---|---|---|
