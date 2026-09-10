@@ -3129,6 +3129,130 @@ LAN with broadcast traffic.
 **Reporting.** Security issues in this protocol or its implementations:
 [`SECURITY.md`](SECURITY.md). Please do not open a public issue.
 
+### 11.1 The dashboard link: which computer is this browser on
+
+A dashboard showing an account's machines has one fact it cannot get from its own session: which
+of those machines the browser is being read on. Asking the network for it means the page fetching
+the agent's loopback beacon on every load, and on the browsers most people run that fetch sits
+behind a local-network permission prompt somebody has to answer before the roster knows anything.
+The agent is the stable source of that identity, and it already prints — or opens — the way to the
+dashboard, so it carries the answer with it: a link to the dashboard's own address bearing a
+**claim** the agent signed under its device token. The page keeps the verdict in the browser's own
+storage and never probes the local network again.
+
+**Nothing on the wire changes for this.** There is no new capability string, no `hello` field and
+no frame: the claim is minted from what both sides already hold — §3.2's proof construction over
+§11's raw token store — and travels over HTTP. A relay that never implements it is still
+conformant (§12), and a device that never mints one is unaffected.
+
+**The claim** is three dot-separated parts:
+
+```
+<device_id>.<issued_at>.<proof>
+
+a1b2c3d4e5f60718.1788998400.4b6f2ac10de95837bb0142e6c7d38a9f
+```
+
+- `device_id` — §2's form: 16 lower-case hex characters.
+- `issued_at` — unix seconds in decimal, and nothing else: no sign, no leading zero, no fraction.
+  The proof covers the spelling, so a second spelling of one instant would be a second claim; a
+  verifier MUST reject the alternative spellings at the parse rather than normalise them.
+- `proof` — the **first 16 bytes** of HMAC-SHA256, lower-case hex (32 characters), keyed with the
+  **raw 32 token bytes** (not the hex string), over the ASCII concatenation of a domain-separation
+  tag, the `device_id`, and the issue time exactly as the claim spells it:
+
+```
+proof = HMAC-SHA256(token_bytes, "rw1:here" + device_id + issued_at)
+```
+
+That is §3.2's own function with the issue time in the `nonce_c` position and the `nonce_s`
+position empty, under a third tag. `rw1:here` is what stops a claim being replayed as a handshake
+proof, and a handshake proof being presented as a claim — the job `rw1:c` and `rw1:s` already do
+for each other. A whole claim is at most 62 characters, and a verifier MAY bound the string before
+it parses.
+
+**Lifetime.** A claim stands for **7 days** from its issue time, and may be up to **5 minutes**
+ahead of the verifier's clock — the skew a machine can carry and still complete TLS (§1.1). A relay
+reports its own wall clock on every handshake (§5 `now`), so a device drifting further than that
+has the means to see it. A week is long enough that a link printed this morning still works on
+Friday, short enough that a terminal scrollback is not a standing fact about where a browser is.
+
+**The link** is the dashboard's address carrying the claim in one query parameter,
+percent-encoded:
+
+```
+https://app.roosterwake.com/here?c=<claim>
+```
+
+**Verification, and the order it happens in.** The relay is the party that holds the token, so the
+relay is the party that says whether the agent minted the claim:
+
+1. **Shape first.** A string that is not three parts of the right form is `bad_frame`, decided
+   before any lookup.
+2. **The proof, before the device's existence is admitted.** The verifier loads the token,
+   computes the expected proof and compares in constant time (§3.2). A `device_id` it has never
+   seen is verified against a throwaway key and refused `auth` exactly as a bad proof is, with the
+   comparison running unconditionally and the "is this device known" test folded in afterwards —
+   §3.3's arrangement, for §3.3's reason: a short-circuit here reopens the oracle for which device
+   ids exist.
+3. **Only then the clock.** A claim outside the skew ahead, or past its lifetime, is `expired` — a
+   verdict only a holder of the token can obtain. To everybody else an expired claim is a bad
+   proof, and the two are indistinguishable.
+4. **A revoked device is `auth`**, not a fourth code. A device that no longer exists on any account
+   is one nothing may be "on", and a separate answer would name it.
+
+**What the claim buys, and what it does not.** It sets a **UI default in the owner's own signed-in
+browser** and nothing else: which roster row wears the same-machine framing, which computer the SSH
+card names as the one that makes the key. It is not authorisation and MUST NOT be treated as any.
+Every server-side act that names a connecting machine stays bound to the session and to the
+machines that session's owner holds, whatever a browser remembers, so a claim that reached the
+wrong browser can at most pre-fill a choice the person can see and change. Presenting one needs a
+session that **owns** the device: a claim that verifies for a device on another account is refused
+with no word about whose it is. A leaked link is correspondingly harmless — it carries the device
+id, the public half of the identity that rides in every `hello`, and sixteen bytes of MAC that
+reveal nothing about the token; forging one for somebody else's machine needs that machine's token,
+which never leaves it (§3).
+
+**Where the agent presents it.** One place on demand, one once, and a set of hosts that get
+neither:
+
+- **`roosterwake-agent status` prints it as its last line**, on any host, every time it is run —
+  worded so the address can be selected on its own.
+- **Once per identity**, opened in the signed-in person's own browser at the first accepted `hello`
+  of a fresh identity, and never again.
+- **Never on an emitter-only install** — a machine that wakes others has no row of its own for a
+  browser to be on — **never in a container**, where no person's session exists, and not on a
+  headless host: a Linux machine with no graphical session, or one nobody is signed in to. The
+  status line is the way to the link on all three.
+- The one chance is recorded as `dashboard_opened_at` in the agent's identity file — unix seconds,
+  absent until spent — and it is **spent whether or not a browser opened**. An install nobody was
+  signed in to at that moment is not owed a window at some later reconnect, when the person at the
+  keyboard may be somebody else doing something else. The record is written before the open, and
+  claimed inside that write, because two processes can carry one identity through its first hello —
+  an `enrol` run at a terminal and the service it installed — and the file is the one thing both
+  can see.
+
+**The route.** A dashboard does not hold device tokens, so it asks the relay:
+
+| Method | Path | Body | Answers |
+|---|---|---|---|
+| `POST` | `/internal/here` | `{ "claim": "…" }` | `200 {"ok":true,"device_id":"…"}` · `400 {"ok":false,"err":"bad_frame"}` · `403 {"ok":false,"err":"auth"}` · `410 {"ok":false,"err":"expired"}` |
+
+`err` uses §6's vocabulary, with §6's meanings. The route is internal: it is protected by the
+relay's own internal key, as every `/internal/…` path on it is, it is not part of the public REST
+API ([`docs/HOSTED-API.md`](docs/HOSTED-API.md)), and §12 asks no relay for it. It decides exactly
+one thing — whether the token that signed the claim is the token the relay holds for that device.
+It says nothing about ownership, because a relay does not know who owns what; the dashboard
+resolves the device against its own session's account afterwards, and that is where a device on
+another account is refused.
+
+**Why an HMAC and not a minted secret.** The alternative weighed was a random single-use token,
+minted by the relay, kept in a store for a week and handed to the agent in the `hello_ack`: a
+second credential to persist beside the first, a store to keep, a new field on the wire, and a link
+that goes stale whenever that store does — `status` would print nothing while the relay was away.
+Signing with the token both sides already hold needs none of it: no new secret anywhere, no frame
+change, and a link can be minted offline.
+
 ---
 
 ## 12. Minimal conformance
@@ -3167,6 +3291,7 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 
 | Version | Date | Change |
 |---|---|---|
+| 2 | 2026-09-10 | **The agent tells the browser which computer it is on, and nothing on the wire changed.** No capability, no `hello` field, no frame, no error code: the new §11.1 documents a claim minted from what both sides already hold and carried over HTTP, so a relay that never implements it stays conformant and a device that never mints one is untouched. A dashboard cannot learn from its own session which of an account's machines the browser is being read on, and the way it used to ask — fetching the agent's loopback beacon on every load — puts a local-network permission prompt in front of the first visit on the browsers most people run. The agent already prints, or opens, the way to the dashboard, so it carries the answer with it: `https://app.roosterwake.com/here?c=<claim>`, where the claim is `<device_id>.<issued_at>.<proof>` and the proof is §3.2's own construction under a third domain-separation tag — the first 16 bytes of `HMAC-SHA256(token_bytes, "rw1:here" + device_id + issued_at)`, as 32 lower-case hex characters, with the issue time in the `nonce_c` position and `nonce_s` empty. The tag is what stops a claim being replayed as a handshake proof and a handshake proof being presented as a claim. The alternative was a random single-use token the relay minted, kept in a store for a week and handed back in the `hello_ack`: a second credential on the agent's disk, a store to keep, a new field on the wire, and a link that goes stale whenever the store does — `status` would print nothing while the relay was away. Signing with the token both sides already hold needs none of it, and the link can be minted offline. A claim stands seven days from issue and may be up to five minutes ahead of the verifier's clock — the error a machine can carry and still complete TLS (§1.1). Verification keeps §3.3's order: shape is `bad_frame`; the proof is checked in constant time against a throwaway key for a `device_id` the relay has never seen, so an unknown device answers `auth` exactly as a bad proof does and the oracle stays shut; only a claim whose proof verified is told `expired`; a revoked device is `auth`, because a device that no longer exists on any account is one nothing may be "on". What it buys is a UI default in the owner's own signed-in browser and nothing else — which roster row wears the same-machine framing, which computer the SSH card names as the one that makes the key. It is not authorisation: every server-side act that names a connecting machine stays bound to the session and to the machines that session's owner holds, so a claim that reached the wrong browser can at most pre-fill a choice the person can see. A leaked link carries the device id, which rides in every `hello` anyway, and sixteen bytes of MAC that reveal nothing about the token. Our relay verifies it at `POST /internal/here`, an internal-key route §12 asks of nobody, which decides only whether the signing token is the one it holds; the dashboard resolves ownership against its own session afterwards. Our agent (0.31.0) prints the link as the last line of `roosterwake-agent status`, and opens it once in the signed-in person's browser at the first accepted hello of a fresh identity — never on an emitter-only install, never in a container, not on a headless host — recording that one chance as `dashboard_opened_at` in its identity file, spent whether or not a browser opened. Additive under §10: `v` stays 2. |
 | 2 | 2026-09-09 | **A key already there has its access put back, and the reply says what was put back.** No new capability and no new frame: one additive member, `repaired`, joins `ssh_key_mint_result`, and the `existing` outcome gains a rule. The row two below made a device's key untouchable once written, and collapsed two promises into one while doing it: "never overwrite the key" is a promise about the CONTENTS, and it was read as "never look at the file's permissions again". A mode, an owner or an ACL drifts long after a key is written — a restored backup, a migrated profile, a policy re-applying inheritance, a script that chmods a home directory — and OpenSSH then refuses the key by name ("Permissions 0644 for … are too open. This private key will be ignored") while the caller, whose last answer was `outcome: existing`, still shows a working connection line; worse, a passphrase-less private key another local account can read is that account's route to every machine the key authorises, and the access is the only thing standing in front of it. `ssh_setup`'s own key step has always re-asserted the access of an authorized-keys file on every pass, and the two behaviours may not disagree. So an `existing` pass now re-asserts the mode, the owner and, on Windows, the three-principal ACL with inheritance broken, and NAMES what it actually changed: `repaired` carries `dir_mode`, `key_mode`, `public_mode`, `owner` or `acl`, each at most once however many paths it was put right on, and is a positive finding — omitted entirely where nothing had drifted, so its presence always means somebody's file was changed. It rides a refusal too, saying how far the repair got before the machine stopped it. What may be repaired is closed to what the device itself set: never the location, never the contents, nothing the person chose — and a `.pub` somebody deleted is NOT written back, because the public half in the reply comes from the private key's own bytes and putting the file back would be repairing a content. A repair restores what the device created, so it can only tighten, and it is idempotent: a pass over a key that is already right writes nothing and reports nothing. An access that could not be put back is a refusal carrying the machine's own sentence rather than a success carrying a key, because a caller answered `ok: true` would show a connection line for a sign-in that cannot work. Additive under §10: `v` stays 2, and a service that never expected the member reads a mint exactly as it did before. |
 | 2 | 2026-09-08 | **A machine says what it authorises, takes one key back out, and learns to be reached by name.** No new capability: three frame pairs join `sshmint`, which now gates four commands — `ssh_keys_list` -> `ssh_keys_list_result`, `ssh_key_revoke` -> `ssh_key_revoke_result` and `ssh_alias` -> `ssh_alias_result`. The row above gives a person a key commented with the machine it belongs to so they can delete ONE line to revoke ONE machine; these are what let them do it from anywhere but a shell on the machine itself, which is exactly what somebody locked out does not have. `ssh_keys_list` reads the file OpenSSH authorises from — the signed-in account's own on macOS and Linux, the machine-wide administrators file on Windows, and the reply NAMES it — and reports a fingerprint, an algorithm and a comment per line and never a key body, which identifies nothing more and costs several hundred bytes inside a 2048-byte frame. It lists lines the device did not write, because it is a view of the machine's real state and not of a service's bookkeeping. Its trim is mandatory and CONFESSED: at about ninety bytes an entry a shared machine's file overruns the ceiling, so comments go first, then the path, then whole entries counted into `dropped` — a key list that silently hides a key would hide the one key nobody can revoke. `ssh_key_revoke` names ONE fingerprint, matched exactly and never as a substring or as "the last one added", removes every line carrying it (a file holding a key twice grants it twice), rewrites ATOMICALLY with the access set before the new file replaces the old, and leaves every other line BYTE FOR BYTE — options, spacing and lines the device cannot parse included. A fingerprint that is not one is `bad_fingerprint` rather than `not_found`, which would be a claim about the machine. `ssh_alias` writes the `~/.ssh/config` block on the machine somebody TYPES at, and it is in this row rather than a later one because without it the short connection line could not work at all: OpenSSH's default identity list holds none of the minted filename, and password sign-in is off by the time anybody reads the line. It is APPEND ONLY, refuses rather than writing beneath a block that `ssh_config`'s first-value-wins rule would let win, never suffixes a name a person did not choose, and resolves the `IdentityFile` on the machine rather than accepting one on the wire. Additive under §10: `v` stays 2, and a service that never expected these simply gains a way to show and undo what it granted. |
 | 2 | 2026-09-08 | **The device makes the key, so the private half never travels.** One new capability, `sshmint`, and the one frame pair it gates: `ssh_key_mint` -> `ssh_key_mint_result`. `ssh_setup` (the row below) installs a public key somebody supplied, and a supplied key is a key whoever supplied it holds — so a service session that has been taken over buys a shell by supplying the attacker's own key. This row inverts that: the device makes an ed25519 key in the profile of whoever is signed in at ITS OWN machine, at `~/.ssh/id_ed25519_roosterwake`, commented `roosterwake <machine name>` so a person reading `authorized_keys` on the far side can delete ONE line to revoke ONE machine, and returns the public half, the fingerprint, the path and the ACCOUNT it was minted for. The private half never leaves the machine and no relay ever holds one; the paste route stays for the client a device cannot reach, and carries the same gates. The command takes NO fields beyond the envelope, deliberately: a field naming a path, an account or an algorithm would be a way to aim a private key somewhere nobody checked. It is idempotent and has no overwrite branch — a key the device recognises is `outcome: existing` with nothing written, and a file it does not recognise is `foreign_key_at_path` carrying the `path` a person has to move, because a refusal nobody can act on is a feature they can never use. The user is resolved from LIVE sessions ONLY and a machine with nobody at it answers `no_user_session`: substituting whoever signed in LAST would write a passphrase-less private key into an absent person's profile and report success. Enumerating sessions rather than reading the console is required, because a machine reached over Remote Desktop has a console session that is connected and EMPTY. The access is set BEFORE the key material is written, and on Windows grants the user, LocalSystem and Administrators — not "the user alone", which locks a system service out of the file it just wrote and makes every later press report a foreign key at its own path. The reply also carries TWO-WAY DISCOVERY, `ssh_url_handler` and `ssh_client`: what the machine somebody will TYPE at has, so a caller can choose between a clickable `ssh://` link and a typed command instead of guessing. Both are positive-or-absent; the handler is read from the USER's registrations before the machine's on Windows, from the xdg tables on Linux, and is DECLARED ABSENT on macOS, where it lives in a binary plist inside a sandboxed container. Additive under §10: `v` stays 2, and a service that never expected `sshmint` simply gains a second way to arrange a connection. |
