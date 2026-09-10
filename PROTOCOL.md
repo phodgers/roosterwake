@@ -1288,6 +1288,82 @@ a service that predates the kind keeps reading the boolean it always had. A chan
 `activeSession` pair between samples, and a change in `remoteIdle`, are the events our agent
 announces on its own, with a `report` (below), rather than leaving them to the next sample.
 
+**`wakeSource`** (object, agent 0.12.0) is the operating system's own answer to the question a
+half-worked wake leaves behind: what actually brought this machine up? It is the only fact in
+this document that can show a magic packet landed, and it is an INSTRUMENT — a service SHOWS it
+(ours on the machine's row, on hover) and nothing in this protocol acts on it. No capability
+gates it; any software device that can read its platform's ledger reports it.
+
+```json
+"wakeSource": { "kind": "adapter", "name": "Intel(R) Ethernet Connection (2) I219-V",
+                "at": 1757404800 }
+```
+
+**`kind`** is a closed vocabulary of five, and the word the fact exists for is `adapter`: the
+source the ledger named is one of this machine's own network adapters, which is the wake path
+proven end to end — the packet arrived, the driver acted, and any earlier failure lies
+elsewhere. The other four say what "not that" actually was, each with its own word rather than a
+shrug: `device` for a wake by something real that is not a network adapter (a keyboard, a
+mouse); `button` for the press a hand proves — the power button, and the ACPI fixed-feature wake
+a lid is filed under — which on a machine somebody had just sent packets to is the opposite
+finding, the broadcasts ignored and a hand doing the waking; `timer` for a wake the machine
+scheduled for itself (a Windows wake timer, an RTC alarm): nothing physical woke it and no
+packet did either; and `unknown` for a ledger that positively said something this vocabulary
+cannot name, an empty wake history included. `unknown` is the ledger's word for that and MUST
+NOT be read as absence, which is a different answer entirely.
+
+**`name`** is the operating system's OWN words for the source, verbatim, because it is the
+string somebody will recognise from the tool their machine shows it in — at most 128 UTF-16 code
+units, and a device trims to the bound rather than sending more (a `timer` carries the reason
+the ledger attributes the wake to, which is a sentence long enough to reach it). It is omitted
+where it would only repeat the kind, which is `button` and `unknown`. A name a service will not
+take is dropped ALONE, never with the source: a wake with an unreadable name is still a wake.
+
+**`at`** is unix seconds OF THE WAKE, and it is what the fact is joined by. It is the operating
+system's own timestamp where the platform's ledger dates its entries — macOS' power log does,
+and its stamp outranks anything a reader could put on it; otherwise it is the moment the resume
+callback fired, which is the wake to within that callback's latency; otherwise, for the wake
+that was a boot, the moment the OS's own uptime counter puts the boot at. A wake nothing could
+date carries no `at` — and a source with no `at` is not a source: it is refused rather than
+stamped with a plausible clock, and a service MUST ignore a `wakeSource` whose `at` is not a
+positive integer, because a source with no clock joins nothing and ages into nonsense.
+
+The fact is read once per WAKE, never per frame — the ledger changes only when the machine wakes
+— and the finding is then reported on every `status_result` and `report` until the next one. A
+device reads it on every RESUME, and once at START for the wake that raised no resume at all: a
+machine coming back from hibernation, from a full power-off, or through the switch that feeds it
+boots rather than resumes, and those are exactly the machines a proof of the wake path is worth
+most for. The start read counts only inside a boot window — ours is five minutes of the OS's own
+uptime, past which an agent restarted by an update on a long-running machine did not start at a
+wake — and it NEVER overwrites a resume's finding: the resume dated itself, and that outranks
+anything a start-up read could say. A resume whose read fails CLEARS the previous finding rather
+than leaving it standing under a newer wake, honestly absent beating confidently stale.
+
+Absence means the device could not say, the block's standing rule, and here it is never a
+default: a platform with no ledger, a ledger that would not read, a machine that has not slept
+since it booted and a process that has not yet seen a wake all send nothing. How a device
+arrives at the answer is its own business; for the record, ours reads Windows' `powercfg
+/lastwake`, which names a source and dates nothing; on Linux the kernel's record of the
+interrupt that ended the last suspend (`/sys/power/pm_wakeup_irq`, named through
+`/proc/interrupts`), which dates nothing either and holds nothing at all on a machine that has
+not suspended since boot; and on macOS the last `Wake from … due to …` line of `pmset -g log`,
+which carries the log's own timestamp. On each, `adapter` is claimed only where the named source
+IS one of this machine's own adapters — the driver descriptions on Windows, the interface names
+on the other two — and an inventory that would not read degrades the answer to `device`, never
+up to `adapter`. Windows has answered since agent 0.12.0; Linux, macOS, the boot reading and the
+`timer` word arrived in the build after 0.31.0.
+
+What a service may do with it is a join, and our relay's is the reference: a `kind: "adapter"`
+source whose `at` is NEWER than the last one stored for that machine — the same wake is
+re-reported on every frame for as long as the machine stays up, so the stored clock is what
+tells a fresh wake from an echo of the last one — is paired with the newest successful wake the
+service sent to one of that machine's own addresses within the 900 seconds BEFORE it, and that
+pairing is the proof the press worked. Fifteen minutes is what the slowest leg needs: one press
+sends the packet several times over a dozen seconds, and a machine coming out of hibernation or
+off a plug's power-on takes its whole boot to reach the point where its OS records the source.
+Every other kind stamps nothing and is still stored and shown, because "a hand woke it" is the
+finding a person most needs after a wake they believed they had sent.
+
 ### `probe_result`
 
 Sent in response to `probe`, and repeated as the probe progresses. `state` is one of
@@ -3291,6 +3367,7 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 
 | Version | Date | Change |
 |---|---|---|
+| 2 | 2026-09-10 | **What woke the machine, written down.** No new frame, no new capability and nothing new on the wire: `wakeSource` has ridden the `connect` block since agent 0.12.0 and is documented in §4 for the first time — an object of `kind`, `name` and `at` carrying the operating system's own answer to the question a half-worked wake leaves behind. It is the only fact in this document that can show a magic packet landed: `kind: "adapter"` says the source the ledger named is one of the machine's own network adapters, so the packet arrived and the driver acted, while `button` is the opposite finding on a machine somebody had just sent packets to — the broadcasts were ignored and a hand did the waking, which is exactly the fault an armed adapter was supposed to have ruled out. `device` (something real that is not a network adapter), `timer` (a wake the machine scheduled for itself: a Windows wake timer, an RTC alarm) and `unknown` are the rest, and `unknown` is the ledger's own "it said something this vocabulary cannot name", never the absence. `name` is the OS's words verbatim, at most 128 UTF-16 code units, omitted where it would only repeat the kind, and dropped alone when a service will not take it. `at` is unix seconds of the wake — the OS's own stamp where its ledger dates entries (macOS' power log), else the moment the resume callback fired, else the boot the uptime counter puts the machine at — and a wake nothing could date carries no `at`, so it is not sent at all: the fact is worth having only where it can be joined. It is read once per wake rather than per frame: on every resume, and once at start for the boot that raises no resume — a hibernating machine, a full power-off, a switch feeding the machine — inside a boot window, and that start read never overwrites a resume's own finding. Positive-or-absent throughout: no ledger, a ledger that would not read, and a machine that has not slept since it booted all send nothing, and absence is not `unknown`. What a service does with it is a join and nothing else: our relay pairs an `adapter` source whose clock is newer than the last one stored against the newest successful wake it sent to that machine within the previous 900 seconds, and stamps that press proven; every other kind is stored and shown and stamps nothing. It is an instrument a service shows — ours on the machine's row, on hover — never a control. Windows has answered since 0.12.0; Linux, macOS, the boot reading and the `timer` word arrived in the agent build after 0.31.0. Additive under §10: `v` stays 2, and a service that never expected the member reads its absence exactly as it always did. |
 | 2 | 2026-09-10 | **The agent tells the browser which computer it is on, and nothing on the wire changed.** No capability, no `hello` field, no frame, no error code: the new §11.1 documents a claim minted from what both sides already hold and carried over HTTP, so a relay that never implements it stays conformant and a device that never mints one is untouched. A dashboard cannot learn from its own session which of an account's machines the browser is being read on, and the way it used to ask — fetching the agent's loopback beacon on every load — puts a local-network permission prompt in front of the first visit on the browsers most people run. The agent already prints, or opens, the way to the dashboard, so it carries the answer with it: `https://app.roosterwake.com/here?c=<claim>`, where the claim is `<device_id>.<issued_at>.<proof>` and the proof is §3.2's own construction under a third domain-separation tag — the first 16 bytes of `HMAC-SHA256(token_bytes, "rw1:here" + device_id + issued_at)`, as 32 lower-case hex characters, with the issue time in the `nonce_c` position and `nonce_s` empty. The tag is what stops a claim being replayed as a handshake proof and a handshake proof being presented as a claim. The alternative was a random single-use token the relay minted, kept in a store for a week and handed back in the `hello_ack`: a second credential on the agent's disk, a store to keep, a new field on the wire, and a link that goes stale whenever the store does — `status` would print nothing while the relay was away. Signing with the token both sides already hold needs none of it, and the link can be minted offline. A claim stands seven days from issue and may be up to five minutes ahead of the verifier's clock — the error a machine can carry and still complete TLS (§1.1). Verification keeps §3.3's order: shape is `bad_frame`; the proof is checked in constant time against a throwaway key for a `device_id` the relay has never seen, so an unknown device answers `auth` exactly as a bad proof does and the oracle stays shut; only a claim whose proof verified is told `expired`; a revoked device is `auth`, because a device that no longer exists on any account is one nothing may be "on". What it buys is a UI default in the owner's own signed-in browser and nothing else — which roster row wears the same-machine framing, which computer the SSH card names as the one that makes the key. It is not authorisation: every server-side act that names a connecting machine stays bound to the session and to the machines that session's owner holds, so a claim that reached the wrong browser can at most pre-fill a choice the person can see. A leaked link carries the device id, which rides in every `hello` anyway, and sixteen bytes of MAC that reveal nothing about the token. Our relay verifies it at `POST /internal/here`, an internal-key route §12 asks of nobody, which decides only whether the signing token is the one it holds; the dashboard resolves ownership against its own session afterwards. Our agent (0.31.0) prints the link as the last line of `roosterwake-agent status`, and opens it once in the signed-in person's browser at the first accepted hello of a fresh identity — never on an emitter-only install, never in a container, not on a headless host — recording that one chance as `dashboard_opened_at` in its identity file, spent whether or not a browser opened. Additive under §10: `v` stays 2. |
 | 2 | 2026-09-09 | **A key already there has its access put back, and the reply says what was put back.** No new capability and no new frame: one additive member, `repaired`, joins `ssh_key_mint_result`, and the `existing` outcome gains a rule. The row two below made a device's key untouchable once written, and collapsed two promises into one while doing it: "never overwrite the key" is a promise about the CONTENTS, and it was read as "never look at the file's permissions again". A mode, an owner or an ACL drifts long after a key is written — a restored backup, a migrated profile, a policy re-applying inheritance, a script that chmods a home directory — and OpenSSH then refuses the key by name ("Permissions 0644 for … are too open. This private key will be ignored") while the caller, whose last answer was `outcome: existing`, still shows a working connection line; worse, a passphrase-less private key another local account can read is that account's route to every machine the key authorises, and the access is the only thing standing in front of it. `ssh_setup`'s own key step has always re-asserted the access of an authorized-keys file on every pass, and the two behaviours may not disagree. So an `existing` pass now re-asserts the mode, the owner and, on Windows, the three-principal ACL with inheritance broken, and NAMES what it actually changed: `repaired` carries `dir_mode`, `key_mode`, `public_mode`, `owner` or `acl`, each at most once however many paths it was put right on, and is a positive finding — omitted entirely where nothing had drifted, so its presence always means somebody's file was changed. It rides a refusal too, saying how far the repair got before the machine stopped it. What may be repaired is closed to what the device itself set: never the location, never the contents, nothing the person chose — and a `.pub` somebody deleted is NOT written back, because the public half in the reply comes from the private key's own bytes and putting the file back would be repairing a content. A repair restores what the device created, so it can only tighten, and it is idempotent: a pass over a key that is already right writes nothing and reports nothing. An access that could not be put back is a refusal carrying the machine's own sentence rather than a success carrying a key, because a caller answered `ok: true` would show a connection line for a sign-in that cannot work. Additive under §10: `v` stays 2, and a service that never expected the member reads a mint exactly as it did before. |
 | 2 | 2026-09-08 | **A machine says what it authorises, takes one key back out, and learns to be reached by name.** No new capability: three frame pairs join `sshmint`, which now gates four commands — `ssh_keys_list` -> `ssh_keys_list_result`, `ssh_key_revoke` -> `ssh_key_revoke_result` and `ssh_alias` -> `ssh_alias_result`. The row above gives a person a key commented with the machine it belongs to so they can delete ONE line to revoke ONE machine; these are what let them do it from anywhere but a shell on the machine itself, which is exactly what somebody locked out does not have. `ssh_keys_list` reads the file OpenSSH authorises from — the signed-in account's own on macOS and Linux, the machine-wide administrators file on Windows, and the reply NAMES it — and reports a fingerprint, an algorithm and a comment per line and never a key body, which identifies nothing more and costs several hundred bytes inside a 2048-byte frame. It lists lines the device did not write, because it is a view of the machine's real state and not of a service's bookkeeping. Its trim is mandatory and CONFESSED: at about ninety bytes an entry a shared machine's file overruns the ceiling, so comments go first, then the path, then whole entries counted into `dropped` — a key list that silently hides a key would hide the one key nobody can revoke. `ssh_key_revoke` names ONE fingerprint, matched exactly and never as a substring or as "the last one added", removes every line carrying it (a file holding a key twice grants it twice), rewrites ATOMICALLY with the access set before the new file replaces the old, and leaves every other line BYTE FOR BYTE — options, spacing and lines the device cannot parse included. A fingerprint that is not one is `bad_fingerprint` rather than `not_found`, which would be a claim about the machine. `ssh_alias` writes the `~/.ssh/config` block on the machine somebody TYPES at, and it is in this row rather than a later one because without it the short connection line could not work at all: OpenSSH's default identity list holds none of the minted filename, and password sign-in is off by the time anybody reads the line. It is APPEND ONLY, refuses rather than writing beneath a block that `ssh_config`'s first-value-wins rule would let win, never suffixes a name a person did not choose, and resolves the `IdentityFile` on the machine rather than accepting one on the wire. Additive under §10: `v` stays 2, and a service that never expected these simply gains a way to show and undo what it granted. |
