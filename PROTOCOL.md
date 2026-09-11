@@ -1146,7 +1146,8 @@ A software device — one that runs ON a machine rather than beside it — also 
 `user`, the addresses worth typing, whether Remote Desktop is on and listening, whether an SSH
 daemon is listening and on which port, the remote-desktop tools installed under `remoteTools`
 — a closed vocabulary: `chrome-remote-desktop`, `anydesk`, `parsec`, `rustdesk`, `teamviewer`
-— and the wake-readiness members §5 `wake_prepare` describes). Its members are camelCase, and
+— whether the Chrome Remote Desktop host is running and signed in under `crdHost`, and the
+wake-readiness members §5 `wake_prepare` describes). Its members are camelCase, and
 every one is optional under `machine`'s rule: an absent member means the device could not
 read the fact, never a guess.
 
@@ -1363,6 +1364,72 @@ sends the packet several times over a dozen seconds, and a machine coming out of
 off a plug's power-on takes its whole boot to reach the point where its OS records the source.
 Every other kind stamps nothing and is still stored and shown, because "a hand woke it" is the
 finding a person most needs after a wake they believed they had sent.
+
+**`crdHost`** (object, the agent build after 0.31.0) answers the one question a service has to
+ask before it hands somebody over to Chrome Remote Desktop's web client: is that tool's host
+running on this machine, and has it signed in to Google?
+
+```json
+"crdHost": { "service": "running", "signedIn": true, "since": 1757600000 }
+```
+
+It exists because the two facts a service already had are both true SECONDS BEFORE the hand-off
+will work. The device is connected and `remoteTools` names `chrome-remote-desktop` — and the host
+signs in to Google on its own schedule after the machine comes up, some seconds behind the agent.
+A hand-off inside that window opens the web client, lists the machine as offline, and stays wrong
+until the person reloads the page: a press that works, looking broken. A service SHOULD wait for
+the positive fact rather than for a timer, because a timer is a guess about somebody else's
+network.
+
+**`service`** is a closed vocabulary of three. `running`: the host service is up, so there is a
+process for the second question to be about. `stopped`: the host is installed on this machine and
+is not running. `absent`: there is no host installed — a FINDING, and the one a dashboard writes
+"this machine has no Chrome Remote Desktop" from. A word outside the three is never sent.
+
+**`signedIn`** is whether that host has signed in. It is sent whenever `service` is, `false`
+included: a running host that has not signed in yet is exactly the state the wait is for, and it
+must be readable as an answer rather than inferred from a missing key. The two members travel
+together or not at all — a device that could not establish the sign-in sends no `crdHost`.
+
+**`since`** is unix seconds of the reading that first saw `signedIn` turn true after a false or
+an unknown one, and it stands unchanged for as long as the host stays signed in. It is omitted
+beside `signedIn: false`, where there is no moment to name. It is what tells one sign-in from the
+next; it is not a duration and not a deadline.
+
+Absence means the device could not read the fact, the block's standing rule, and here it is
+never `absent`: a platform with no reader, a socket table that would not read and a process this
+device could not look inside all send nothing. A service MUST NOT read a missing `crdHost` as
+"no host" — that is the difference between "there is nothing to hand over to" and "we do not know
+yet", and only the first of the two is a reason to stop waiting.
+
+How a device arrives at the answer is its own business; for the record, ours reads the host's own
+process and the connection it holds. `service` is `running` where that process exists — Windows
+asks the Service Control Manager for the `chromoting` service's state and, in the same call, the
+process it runs as; macOS and Linux look for the host process itself, because the host is
+registered per user there and no system-wide job state would answer for it — and `stopped` where
+the platform's install marker is present without it. `signedIn` is the signalling channel the
+host keeps open to Google for as long as it is signed in: a connection from the host's own
+process to a remote peer on port 443, over TCP (established) or UDP (a connected socket, which is
+what that channel is on a network that allows HTTP/3 — read on a real machine where the host held
+no TCP connection at all). Nothing else in that process talks 443, and no file, registry value or
+log line anywhere says "signed in", so the socket is not a proxy for the fact: it is the only
+local evidence of it there is.
+
+The cadence is the other half, and it is part of what makes the fact worth waiting on. A device
+SHOULD read it once before its first frame, so the first `status_result` of a machine's life
+carries it; then every five seconds while `service` is `running` and `signedIn` is false, for at
+most ten minutes measured from the start and from every resume; then once a minute for as long as
+the device runs, so a host somebody signed out of or stopped is noticed inside a minute. A
+machine whose reading is `absent` leaves the fast cadence at once — there is nothing there to wait
+for. A device MUST send a `report` (below) on every change of `service` or `signedIn`, which is
+what lets a service WAIT on the fact instead of polling for it; a change of `since` alone is not a
+change, because `since` moves only when `signedIn` turns true. And a RESUME starts the window
+again and clears the held reading with it: the channel does not survive a sleep, the host signs
+in again afterwards, and a `since` from before the sleep would date a sign-in that has since
+happened twice.
+
+Additive under §10: `v` stays 2, and a service that never expected the member reads its absence
+exactly as it always did.
 
 ### `probe_result`
 
@@ -1747,12 +1814,15 @@ stands, absent otherwise. Nothing else: no `req_id` (nothing answers it), no `up
 one whose blocks it has no reason to believe differ from the last it sent or answered with —
 the relay's own `status` sample is the cadence for everything else, and a device that reported
 on a timer would have reinvented the sample with worse manners. What counts as a change is the
-device's business; our agent (since 0.16.3) sends it for two kinds today: the
+device's business; our agent (since 0.16.3) sends it for three kinds today: the
 `connect.activeSession` pair — a remote session starting, ending, or changing kind — because
 that is the one fact the dashboard renders the moment it arrives and the one a person notices
-being minutes stale; and (since 0.19.0) remote presence changing — `connect.remoteIdle`
+being minutes stale; (since 0.19.0) remote presence changing — `connect.remoteIdle`
 appearing or going, an SSH session going idle or waking up with no transition of
-`activeSession` beside it — for the same reason. A session ending also puts ten minutes of keep-awake grace on the meter
+`activeSession` beside it — for the same reason; and (in the build after 0.31.0)
+`connect.crdHost` changing, which is the fact a hand-off to Chrome Remote Desktop's web
+client waits on and the one case where a service is waiting for a report rather than
+rendering one. A session ending also puts ten minutes of keep-awake grace on the meter
 (never shortening a longer hold that already stands), and the report carries the resulting
 `awake_until`, so the deadline the relay tracks is right on the same frame that clears the
 chip. The transition semantics our agent applies, for the next implementer: the first reading
@@ -3367,6 +3437,7 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 
 | Version | Date | Change |
 |---|---|---|
+| 2 | 2026-09-11 | **A machine says whether its Chrome Remote Desktop host has signed in, so a hand-off can wait for the moment it will work.** No new frame and no new capability: one additive `connect` member, `crdHost`, an object of `service`, `signedIn` and `since`. The two facts a service already had — the device is connected, and `remoteTools` names `chrome-remote-desktop` — are both true SECONDS BEFORE a hand-off to that tool's web client will work: the host signs in to Google on its own schedule after the machine comes up, some seconds behind the agent, and a press inside that window opens the page, lists the machine as offline, and stays wrong until somebody reloads. `service` is a closed three — `running`, `stopped`, `absent` — where `absent` is the positive finding that no host is installed and never the silence; `signedIn` rides beside it always, `false` included, because a running host that has not signed in yet is exactly the state the wait is for; `since` dates the reading that first saw the sign-in and stands for as long as it lasts, omitted beside `false` where there is no moment to name. The evidence is the signalling channel the host holds open to Google — a connection from the host's own process to a remote peer on port 443, over TCP or over a connected UDP socket where the network allows HTTP/3, which is what a real machine turned out to hold and nothing else in that process does — because no file, registry value or log line anywhere says "signed in". Positive-or-absent throughout: a platform with no reader and a socket table that would not read send nothing, and a service MUST NOT read that absence as "no host". The cadence is part of the contract: once before the first frame, every five seconds while a running host has yet to sign in for at most ten minutes from the start and from every resume, then once a minute for as long as the device runs — and a `report` on every change of `service` or `signedIn`, which is what lets a service wait on the fact rather than poll for it. A resume clears the held reading and opens the window again, because the channel does not survive a sleep. Windows, macOS and Linux all answer, from the agent build after 0.31.0. Additive under §10: `v` stays 2, and a service that never expected the member reads its absence exactly as it always did. |
 | 2 | 2026-09-10 | **What woke the machine, written down.** No new frame, no new capability and nothing new on the wire: `wakeSource` has ridden the `connect` block since agent 0.12.0 and is documented in §4 for the first time — an object of `kind`, `name` and `at` carrying the operating system's own answer to the question a half-worked wake leaves behind. It is the only fact in this document that can show a magic packet landed: `kind: "adapter"` says the source the ledger named is one of the machine's own network adapters, so the packet arrived and the driver acted, while `button` is the opposite finding on a machine somebody had just sent packets to — the broadcasts were ignored and a hand did the waking, which is exactly the fault an armed adapter was supposed to have ruled out. `device` (something real that is not a network adapter), `timer` (a wake the machine scheduled for itself: a Windows wake timer, an RTC alarm) and `unknown` are the rest, and `unknown` is the ledger's own "it said something this vocabulary cannot name", never the absence. `name` is the OS's words verbatim, at most 128 UTF-16 code units, omitted where it would only repeat the kind, and dropped alone when a service will not take it. `at` is unix seconds of the wake — the OS's own stamp where its ledger dates entries (macOS' power log), else the moment the resume callback fired, else the boot the uptime counter puts the machine at — and a wake nothing could date carries no `at`, so it is not sent at all: the fact is worth having only where it can be joined. It is read once per wake rather than per frame: on every resume, and once at start for the boot that raises no resume — a hibernating machine, a full power-off, a switch feeding the machine — inside a boot window, and that start read never overwrites a resume's own finding. Positive-or-absent throughout: no ledger, a ledger that would not read, and a machine that has not slept since it booted all send nothing, and absence is not `unknown`. What a service does with it is a join and nothing else: our relay pairs an `adapter` source whose clock is newer than the last one stored against the newest successful wake it sent to that machine within the previous 900 seconds, and stamps that press proven; every other kind is stored and shown and stamps nothing. It is an instrument a service shows — ours on the machine's row, on hover — never a control. Windows has answered since 0.12.0; Linux, macOS, the boot reading and the `timer` word arrived in the agent build after 0.31.0. Additive under §10: `v` stays 2, and a service that never expected the member reads its absence exactly as it always did. |
 | 2 | 2026-09-10 | **The agent tells the browser which computer it is on, and nothing on the wire changed.** No capability, no `hello` field, no frame, no error code: the new §11.1 documents a claim minted from what both sides already hold and carried over HTTP, so a relay that never implements it stays conformant and a device that never mints one is untouched. A dashboard cannot learn from its own session which of an account's machines the browser is being read on, and the way it used to ask — fetching the agent's loopback beacon on every load — puts a local-network permission prompt in front of the first visit on the browsers most people run. The agent already prints, or opens, the way to the dashboard, so it carries the answer with it: `https://app.roosterwake.com/here?c=<claim>`, where the claim is `<device_id>.<issued_at>.<proof>` and the proof is §3.2's own construction under a third domain-separation tag — the first 16 bytes of `HMAC-SHA256(token_bytes, "rw1:here" + device_id + issued_at)`, as 32 lower-case hex characters, with the issue time in the `nonce_c` position and `nonce_s` empty. The tag is what stops a claim being replayed as a handshake proof and a handshake proof being presented as a claim. The alternative was a random single-use token the relay minted, kept in a store for a week and handed back in the `hello_ack`: a second credential on the agent's disk, a store to keep, a new field on the wire, and a link that goes stale whenever the store does — `status` would print nothing while the relay was away. Signing with the token both sides already hold needs none of it, and the link can be minted offline. A claim stands seven days from issue and may be up to five minutes ahead of the verifier's clock — the error a machine can carry and still complete TLS (§1.1). Verification keeps §3.3's order: shape is `bad_frame`; the proof is checked in constant time against a throwaway key for a `device_id` the relay has never seen, so an unknown device answers `auth` exactly as a bad proof does and the oracle stays shut; only a claim whose proof verified is told `expired`; a revoked device is `auth`, because a device that no longer exists on any account is one nothing may be "on". What it buys is a UI default in the owner's own signed-in browser and nothing else — which roster row wears the same-machine framing, which computer the SSH card names as the one that makes the key. It is not authorisation: every server-side act that names a connecting machine stays bound to the session and to the machines that session's owner holds, so a claim that reached the wrong browser can at most pre-fill a choice the person can see. A leaked link carries the device id, which rides in every `hello` anyway, and sixteen bytes of MAC that reveal nothing about the token. Our relay verifies it at `POST /internal/here`, an internal-key route §12 asks of nobody, which decides only whether the signing token is the one it holds; the dashboard resolves ownership against its own session afterwards. Our agent (0.31.0) prints the link as the last line of `roosterwake-agent status`, and opens it once in the signed-in person's browser at the first accepted hello of a fresh identity — never on an emitter-only install, never in a container, not on a headless host — recording that one chance as `dashboard_opened_at` in its identity file, spent whether or not a browser opened. Additive under §10: `v` stays 2. |
 | 2 | 2026-09-09 | **A key already there has its access put back, and the reply says what was put back.** No new capability and no new frame: one additive member, `repaired`, joins `ssh_key_mint_result`, and the `existing` outcome gains a rule. The row two below made a device's key untouchable once written, and collapsed two promises into one while doing it: "never overwrite the key" is a promise about the CONTENTS, and it was read as "never look at the file's permissions again". A mode, an owner or an ACL drifts long after a key is written — a restored backup, a migrated profile, a policy re-applying inheritance, a script that chmods a home directory — and OpenSSH then refuses the key by name ("Permissions 0644 for … are too open. This private key will be ignored") while the caller, whose last answer was `outcome: existing`, still shows a working connection line; worse, a passphrase-less private key another local account can read is that account's route to every machine the key authorises, and the access is the only thing standing in front of it. `ssh_setup`'s own key step has always re-asserted the access of an authorized-keys file on every pass, and the two behaviours may not disagree. So an `existing` pass now re-asserts the mode, the owner and, on Windows, the three-principal ACL with inheritance broken, and NAMES what it actually changed: `repaired` carries `dir_mode`, `key_mode`, `public_mode`, `owner` or `acl`, each at most once however many paths it was put right on, and is a positive finding — omitted entirely where nothing had drifted, so its presence always means somebody's file was changed. It rides a refusal too, saying how far the repair got before the machine stopped it. What may be repaired is closed to what the device itself set: never the location, never the contents, nothing the person chose — and a `.pub` somebody deleted is NOT written back, because the public half in the reply comes from the private key's own bytes and putting the file back would be repairing a content. A repair restores what the device created, so it can only tighten, and it is idempotent: a pass over a key that is already right writes nothing and reports nothing. An access that could not be put back is a refusal carrying the machine's own sentence rather than a success carrying a key, because a caller answered `ok: true` would show a connection line for a sign-in that cannot work. Additive under §10: `v` stays 2, and a service that never expected the member reads a mint exactly as it did before. |
