@@ -375,7 +375,9 @@ Defined capabilities, each naming the relay→device command it gates:
 | `session` | `session_start`, `session_stop`, and the advisory `workspaces` push |
 | `ready` | `wake_prepare` |
 | `sshready` | `ssh_setup`, `ssh_toggle` |
+| `sshpassword` | `ssh_password_signin` |
 | `sshmint` | `ssh_key_mint`, `ssh_keys_list`, `ssh_key_revoke`, `ssh_alias` |
+| `sshforget` | `ssh_key_forget` |
 | `sshlaunch` | `ssh_launch` |
 | `status` | `status` |
 | `probe` | `probe` |
@@ -454,6 +456,19 @@ device could only refuse them. The SSH FACTS a device reports beside its connect
 capability: facts are answers, not commands, and `sshListening` and `sshPort` have ridden
 `status_result` since agent 0.19.0 whether or not the fix verb is available.
 
+`sshpassword` says the device can report what its machine's SSH daemon accepts and put password
+sign-in back where its own set-up switched it off. It is a capability of its own rather than a
+widening of `sshready`, and the reason is the one this table turns on: a service has to know
+BEFORE it sends. A device from the release that introduced `sshready` advertises that word and
+would answer `ssh_password_signin` with §2's silent ignore, so a card offering the button on the
+strength of `sshready` would leave somebody waiting on a reply that never comes.
+
+One capability for one command. The password FACTS need none of their own — `sshPasswordAuth` and
+`sshPasswordsTurnedOffByUs` ride `status_result` like every other fact, and a reader that meets a
+member it does not know ignores it rather than waiting on a frame. It is gated like `sshready` for
+`sshready`'s reason: the machinery has to exist in the build, because what it does rewrites an
+sshd_config and restarts a daemon; our agent carries it on Windows, Linux and macOS from 0.29.0.
+
 `sshmint` says the device can MAKE an SSH key in the profile of whoever is signed in at its host
 machine, report the public half, say what its own machine already authorises, take one of those
 keys back out, and write the `~/.ssh/config` block that turns a connection line into a name.
@@ -480,6 +495,22 @@ platform — our agent carries both on Windows, Linux and macOS from 0.28.0 and 
 and §4's rule keeps the frame off every socket whose device could only refuse it. The TWO-WAY
 DISCOVERY facts the reply carries need no capability of their own: they describe the machine that
 just minted, and they ride that machine's own answer rather than a second round trip.
+
+`sshforget` says the device can take a minted key's PRIVATE half off the machine that made it.
+It is the mint's inverse, and it lives beside `sshmint` rather than inside it on `sshpassword`'s
+reasoning: every device from the release that introduced `sshmint` advertises that word and would
+answer `ssh_key_forget` with §2's silent ignore, so a service that sent the forget on the strength
+of `sshmint` would report a key forgotten from a machine that still holds it.
+
+It exists because a revoke is only half a revoke. Removing a line from the TARGET's
+authorized_keys stops the key signing in there, and leaves the private half sitting in the profile
+it was minted into, on the machine somebody types at, under an alias that now answers with a
+sign-in nobody on screen can explain. A key that is revoked should be revoked everywhere, and a
+new one is a press away.
+
+One capability for one command, gated exactly as `sshmint` is and for its reason: what it undoes
+is what `sshmint` does — the platform's spelling of an account's home directory and the
+confinement inside it — and our agent carries both on Windows, Linux and macOS from 0.30.0.
 
 `sshlaunch` says the device can OPEN an SSH client on its own machine, in the session of
 whoever is signed in there. It is the first capability in this table about the machine somebody is
@@ -840,6 +871,27 @@ a caller that asked for "off" can see that nothing answers any more.
 carried no `on` member — a machine switched off because a field was missing is the accident that
 refusal exists to prevent — `busy`, or the failing command's own sentence.
 
+### `ssh_password_signin_result`
+
+```json
+{ "t": "ssh_password_signin_result", "req_id": "…", "ok": true, "password_auth": true }
+```
+
+Answers `ssh_password_signin` (§5), **after** the work, on `ssh_setup_result`'s reasoning:
+rewriting a configuration file and restarting a daemon does not destroy the process that replies,
+so `ok: true` means the machine's password posture has already moved.
+
+`password_auth` is what the DAEMON says about password sign-in afterwards — the `connect` block's
+own `sshPasswordAuth`, re-read on this same second rather than inferred from the write, so a
+caller learns from one frame whether the change landed. It is ABSENT where the daemon could not be
+asked, on that member's rule exactly: `ok: true` still means the work was done, and an absent
+`password_auth` means the daemon was not in a position to confirm it. **A reader MUST NOT render
+its absence as `false`.**
+
+`err` accompanies `ok: false` and is one of `not_ours`, `no_key` (§6), `no_privilege`, `busy`,
+`bad_frame` where the frame carried no `on` member, `unsupported`, or the failing operation's own
+sentence in the machine's words.
+
 ### `ssh_key_mint_result`
 
 ```json
@@ -1013,6 +1065,38 @@ an earlier block would supply one of the block's own keywords first, `no_minted_
 is no key at the path the block would name, `no_user_session`, `busy`, `unsupported`, or the
 failing operation's own sentence. **Every one of them costs the alias and nothing else**: the
 `-i` form of the connection line needs no alias and always works, and a caller falls back to it.
+
+### `ssh_key_forget_result`
+
+```json
+{ "t": "ssh_key_forget_result", "req_id": "…", "ok": true,
+  "fingerprint": "SHA256:…", "account": "PHIL\\phil",
+  "path": "C:\\Users\\phil\\.ssh\\id_ed25519_roosterwake",
+  "outcome": "forgotten", "removed": ["key", "public", "alias"] }
+```
+
+Answers `ssh_key_forget` (§5), **after** the work, on `ssh_key_mint_result`'s reasoning: nothing
+about unlinking two files destroys the process that replies, so `ok: true` means the key is NOT on
+this machine.
+
+`outcome` is `forgotten` or `already`, and **`already` is a success**: nothing stood at the path,
+so the key is gone whichever key it was. A second press, or a press on a machine whose owner
+deleted the files by hand, lands there.
+
+`removed` names what this press actually took away, from the closed vocabulary `key` (the private
+half), `public` (the public half) and `alias` (the `~/.ssh/config` block naming it), in the order
+it went. **It is `[]`, never `null`**, and it rides a REFUSAL as well as a success — a forget that
+removed the key and then could not rewrite the config file has still changed the machine, and a
+caller that only read it on success would show nothing about a machine that moved.
+
+`account` is the account as this machine spells it and `path` is where the key was looked for, so
+a caller can say which profile the key came out of.
+
+`err` accompanies `ok: false`: `bad_frame` (§6) for a frame with no `fingerprint`, one that is not
+a `SHA256:…` fingerprint, or no `user`; `no_such_user` where the account does not resolve on this
+machine; `not_that_key` (with `path`) where what stands at the mint's path is not the key named
+and NOTHING was touched; `no_privilege` where the operating system refused the unlink; `busy`
+while a mint or an alias is running; `unsupported`; or the failing operation's own sentence.
 
 ### `ssh_launch_result`
 
@@ -2479,6 +2563,63 @@ it was, which is what makes the switch safe to press twice.
 Like `ssh_setup` it re-reads the posture onto its reply and SHOULD send a `report`, and it shares
 that command's lock: one SSH command at a time, the second answered `busy`.
 
+### `ssh_password_signin`
+
+```json
+{ "t": "ssh_password_signin", "req_id": "…", "on": true }
+```
+
+Asks the device to switch password sign-in to its machine's SSH daemon on or off, and answers
+`ssh_password_signin_result` (§4) after the work. Only sent to devices advertising `sshpassword`.
+
+`on` is REQUIRED and there is no default. A device MUST refuse a frame without it with `bad_frame`
+and touch nothing: a machine whose passwords were taken away because a field was missing is the
+accident that refusal exists to prevent. It is `ssh_toggle`'s rule, one verb over.
+
+- **`on: true` puts back what the device recorded finding, and nothing else.** A directive the
+  file named before is written again with its recorded value; a directive the file never named is
+  REMOVED, so the daemon's own default applies once more rather than the file making a claim its
+  owner never made. **Key sign-in is never touched in either direction**, whichever way this
+  command goes.
+- **`on: false`** switches password sign-in off again, exactly as `ssh_setup`'s own `auth` step
+  does.
+
+**A device restores a setting it changed and never one it merely found.** That rule needs a
+memory of what was changed, and the memory has to outlive the process — the set-up runs today and
+the restore is pressed next week, on a machine that has rebooted twice. So a device that switches
+password sign-in off MUST record what it found first, keep the record with its own state, and
+answer `not_ours` where there is none. It is not a consent record and nothing is ever re-applied
+from it: it answers two questions and no others — may a restore proceed, and is this a machine
+whose passwords we switched off.
+
+The safety property of the other direction is `ssh_setup`'s: **a device MUST refuse to switch
+password sign-in off where its machine authorises no key**, with `no_key`, or the press takes away
+the only way in.
+
+Like `ssh_setup` it shares that command's lock — one SSH command at a time, the second answered
+`busy` — and it SHOULD be followed by an unsolicited `report` (§4), so a dashboard's card moves on
+the same second rather than at the next status sample.
+
+A device that advertises `sshpassword` also reports **two password facts** beside its connect
+facts, additive members under §2/§10 and positive-or-absent like every other member of that block:
+
+- **`sshPasswordAuth`** (boolean) — whether this machine's SSH daemon still accepts a password.
+  **It MUST be read from the daemon's own effective configuration and never from the text of
+  sshd_config**, and the difference is a machine that is wrong in the direction that matters: an
+  `Include` line (Debian and Ubuntu ship one at the TOP of the file), a drop-in under
+  `sshd_config.d/`, and a `Match` block each make a file reader answer a different question from
+  the one the daemon answers. The read takes in BOTH directives that admit a password —
+  `PasswordAuthentication`, and the keyboard-interactive one, which with `UsePAM yes` answers a
+  client by running the machine's PAM stack and asking for the account's password. macOS ships
+  exactly that combination, so a Mac whose sshd_config says `PasswordAuthentication no` still
+  takes one. Passwords are reported ON when either is `yes`. It is ABSENT — never `false` — where
+  the daemon could not be asked at all, and **a reader MUST NOT render an absent member as
+  "passwords are off"**: that is the one reading somebody would act on by not looking further.
+- **`sshPasswordsTurnedOffByUs`** (boolean, sent only when true) — the device holds the record
+  described above, so the restore can do something. A machine whose owner, or whose distribution,
+  switched password sign-in off answers `not_ours` to a restore, and this member is what lets a
+  caller know that before it offers the button.
+
 ### `ssh_key_mint`
 
 ```json
@@ -2710,6 +2851,47 @@ What a device refuses, and why each refusal is worth more than a write:
 
 **A device MUST NOT run this while a mint is running on the same machine**, and answers the second
 `busy` (§6): both write into the same `~/.ssh`, and the block names the very key a mint creates.
+
+### `ssh_key_forget`
+
+```json
+{ "t": "ssh_key_forget", "req_id": "…", "fingerprint": "SHA256:…", "user": "PHIL\\phil" }
+```
+
+Asks the device to take a minted key off its OWN machine — the private half, the public half and
+the `~/.ssh/config` block that names it — and answers `ssh_key_forget_result` (§4) after the work.
+Only sent to devices advertising `sshforget`, and sent to the machine a key was minted ON when a
+service revokes that key from a target.
+
+It is the other half of a revoke. `ssh_key_revoke` removes one line from the TARGET's
+authorized_keys, which is what stops the key signing in there; it leaves the private half in the
+profile the mint wrote it into and leaves the alias that names it, so `ssh office-pc` answers with
+a failure nothing on screen explains. A key that is revoked should be revoked across every
+machine, and a new one is a press away.
+
+`fingerprint` is the one the mint reported, in OpenSSH's `SHA256:…` spelling. `user` is the
+account the mint reported minting for — `PHIL\phil` on Windows, the bare name elsewhere. **There
+is no path on the wire, deliberately**: the device derives it on the machine exactly as the mint
+derived it, and a field naming a file would be a way to aim a privileged unlink inside somebody's
+home directory at something nobody checked.
+
+**The device MUST compare the fingerprint against what actually stands at the mint's path, read
+back off the file, and MUST touch nothing where they differ** — answering `not_that_key` with the
+`path`. This is the whole of the safety property: a privileged service deleting inside a person's
+home directory deletes exactly the file the service named, or nothing. A key of the person's own
+that happens to sit there, and a Rooster Wake key minted later than the one being revoked, are
+both a different fingerprint and both refused.
+
+**The account is resolved from the machine's account database, not from a session.** The mint
+needed the person at the keyboard; the forget acts on their behalf when they may be anywhere, and
+the mint's own record of the account is what says whose home this is. An account the machine does
+not know is `no_such_user`, and nothing is guessed.
+
+**The `Host` block is taken out only where the block is the device's own** — its provenance
+comment AND an `IdentityFile` naming this key, both. Every other line of the file keeps its bytes,
+and the file itself is removed only where nothing of anybody's remains in it. A device MUST NOT
+run this while a mint or an alias is running on the same machine, and answers the second `busy`
+(§6): all three write into the same `~/.ssh`.
 
 ### `ssh_launch`
 
@@ -3179,7 +3361,8 @@ remedy, and none names a path:
 
 A relay that predates these folds all three into `internal`, which the rule above makes safe.
 
-Minted-key codes, from devices advertising `sshmint`, each on one result frame only.
+Minted-key codes, from devices advertising `sshmint` or `sshforget`, each on one result frame
+only.
 `no_user_session` is the same code the remote-session table above defines and means the same thing
 here — nobody is signed in, so there is no profile a private key or a person's own config file
 could belong to:
@@ -3193,12 +3376,26 @@ could belong to:
 | `alias_taken` | `ssh_alias_result` | A `Host` block of that name already names something else. Nothing was edited and nothing was suffixed; the reply carries `path`, and the move is the person's |
 | `alias_shadowed` | `ssh_alias_result` | An earlier block in the file would supply one of the block's own keywords first, so a block written there would be silently half-ignored. The reply carries `path` |
 | `no_minted_key` | `ssh_alias_result` | There is no key at the path the block would name. Mint one first: an alias naming nothing fails with "no such identity", which reads as the service's bug |
+| `no_such_user` | `ssh_key_forget_result` | The account the mint recorded does not resolve on this machine, or resolves to nobody with a home directory here. Nothing on this machine is theirs, so there is nothing here to act on, and the device MUST NOT guess at another account |
+| `not_that_key` | `ssh_key_forget_result` | What stands at the mint's path is not the key the frame named — a different Rooster Wake key, the person's own, or a file that is not a key — and NOTHING was touched. The reply carries `path`, and the move is the person's |
 
 A relay that predates any of these folds it into `internal`, which the rule above makes safe — but
 for `foreign_key_at_path`, `alias_taken` and `alias_shadowed` the `path` is then the only thing a
 person has, so a relay SHOULD render it whatever it made of the code.
 A refusal changes nothing on the device, so none of them poisons a retry. Every alias refusal costs
 the alias and nothing else: the `-i` form of a connection line needs none.
+
+Password sign-in codes, on `ssh_password_signin_result` only, from devices advertising
+`sshpassword`. Each is a refusal rather than a silent success, because each names a different
+thing for a person to do:
+
+| Code | Meaning — and whose move it is |
+|---|---|
+| `not_ours` | There is no record of this device having switched password sign-in off on this machine, so there is nothing of ours to put back. Somebody else made that setting — the machine's owner, or the distribution's own defaults — and undoing it is theirs to do. A device MUST NOT invent a value here: that would be making somebody's security decision for them |
+| `no_key` | The machine authorises no key, so taking password sign-in away would leave nobody able to sign in at all. It is the same property that puts `ssh_setup`'s `auth` step last, asked again because this command can be pressed on its own |
+
+A relay that predates either folds it into `internal`, which the rule above makes safe. Neither
+changes anything on the device, so neither poisons a retry.
 
 Adoption-specific codes, on `adopt_ack` only, and only from a relay that implements the §4
 token path:
@@ -3577,6 +3774,7 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 
 | Version | Date | Change |
 |---|---|---|
+| 2 | 2026-09-11 | **Two capabilities a device already advertises are written down: what its SSH daemon accepts, and taking a minted key back off the machine that made it.** No new behaviour on the wire — `sshpassword` (agent 0.29.0) and `sshforget` (agent 0.30.0) join the capability table with the frames they gate, and both are additive under §10. `sshpassword` gates `ssh_password_signin` -> `ssh_password_signin_result`, the way back from a set-up whose `auth` step switched password sign-in off: `on` is required with no default, `on: true` puts back the value the device RECORDED finding and REMOVES a directive the file never named so the daemon's own default applies again, and key sign-in is never touched in either direction. A device restores a setting it changed and never one it merely found, which is why the record outlives the process and why a machine whose owner switched passwords off answers `not_ours`; switching them off is refused with `no_key` on a machine that authorises none, the property that puts `auth` last. The reply carries `password_auth` RE-READ from the daemon's own effective configuration, and two additive `connect` members carry the same story between presses: `sshPasswordAuth`, read through the daemon rather than from sshd_config's text because an `Include`, a drop-in or a `Match` block makes a file reader answer a different question — and taking in the keyboard-interactive directive as well, which with `UsePAM yes` takes a password on a Mac whose file says it does not — and `sshPasswordsTurnedOffByUs`, which says the record exists. Both are positive-or-absent and an absent `sshPasswordAuth` MUST NOT be rendered as "passwords are off". `sshforget` gates `ssh_key_forget` -> `ssh_key_forget_result`, the mint's inverse: a revoke removes one line from the TARGET's authorized_keys and leaves the private half in the profile it was minted into under an alias that now fails for a reason nothing on screen explains, so the machine that MADE the key takes it back out. The frame carries `fingerprint` and `user` and NO path — the device derives the path as the mint derived it, and a field naming a file would aim a privileged unlink inside somebody's home directory at something nobody checked — and the device compares the fingerprint against what is actually at that path, answering `not_that_key` with the `path` and touching nothing where they differ. The account is resolved from the account database rather than from a session, because the person may be anywhere by then, and an account the machine does not know is `no_such_user`. `outcome` is `forgotten` or `already`, `already` is a success, and `removed` (`key`, `public`, `alias`) is `[]` rather than null and rides a refusal too, because a forget that removed the key and then could not rewrite the config file has still changed the machine. |
 | 2 | 2026-09-11 | **The browser asks the computer it is being read on to open an SSH client.** One new capability, `sshlaunch`, the one frame pair it gates — `ssh_launch` -> `ssh_launch_result` — and one additive `connect` member, `sshClients`. A browser cannot start a program, so a dashboard's "connect with PuTTY" could only ever end by copying a command for somebody to paste into a terminal they had to find themselves. Since §11.1 a service knows WHICH machine a browser is being read on, and a device runs there: the press reaches that device and the window opens where the person is looking. `sshClients` says which of `putty`, `winscp`, `ssh` and `sftp` that machine has and can open, with an empty array as a finding and an absent member as "could not look" — the two lead to different sentences and a service must not collapse them. A client counts as openable only if a window can be put round it, so a Linux with `ssh` and no terminal emulator lists neither command-line client rather than offering a button that could only be refused. `ssh_launch` carries `client`, `user`, `host` and `port`, and every one of them is validated by pattern BEFORE anything is resolved or built, because these fields become the arguments of a program that runs on somebody's desktop: an account of letters, digits and three punctuation marks; an address parsed as an IP literal by the platform's own parser or matching the DNS label rule; a port in range. A field outside its rule refuses the whole frame and launches NOTHING, never trimmed to fit, because a trimmed account is a different account. The argv is an ARRAY and no shell is in the chain, so the validation is the only thing that has to be right. The launch runs in the CONSOLE USER's session and never as the service, and a machine with nobody signed in answers `no_session` rather than drawing on a desktop nobody can see. The reply does not use §6's `err` shape: it answers the question a person actually asked — did a window appear — with four closed reasons, `no_session`, `not_installed`, `refused` and `failed`, and `error` carries the field that failed or the operating system's own sentence. One launch at a time, because a resent frame would leave two terminals in front of one person for one press. The capability is gated on the INSTALL as well as on the build: the same binary is a desktop agent on a PC and a headless emitter in a container, and the container advertises nothing here. Additive under §10: `v` stays 2, and a service that never expected `sshlaunch` keeps copying the command. |
 | 2 | 2026-09-11 | **A machine says whether its Chrome Remote Desktop host has signed in, so a hand-off can wait for the moment it will work.** No new frame and no new capability: one additive `connect` member, `crdHost`, an object of `service`, `signedIn` and `since`. The two facts a service already had — the device is connected, and `remoteTools` names `chrome-remote-desktop` — are both true SECONDS BEFORE a hand-off to that tool's web client will work: the host signs in to Google on its own schedule after the machine comes up, some seconds behind the agent, and a press inside that window opens the page, lists the machine as offline, and stays wrong until somebody reloads. `service` is a closed three — `running`, `stopped`, `absent` — where `absent` is the positive finding that no host is installed and never the silence; `signedIn` rides beside it always, `false` included, because a running host that has not signed in yet is exactly the state the wait is for; `since` dates the reading that first saw the sign-in and stands for as long as it lasts, omitted beside `false` where there is no moment to name. The evidence is the signalling channel the host holds open to Google — a connection from the host's own process to a remote peer on port 443, over TCP or over a connected UDP socket where the network allows HTTP/3, which is what a real machine turned out to hold and nothing else in that process does — because no file, registry value or log line anywhere says "signed in". Positive-or-absent throughout: a platform with no reader and a socket table that would not read send nothing, and a service MUST NOT read that absence as "no host". The cadence is part of the contract: once before the first frame, every five seconds while a running host has yet to sign in for at most ten minutes from the start and from every resume, then once a minute for as long as the device runs — and a `report` on every change of `service` or `signedIn`, which is what lets a service wait on the fact rather than poll for it. A resume clears the held reading and opens the window again, because the channel does not survive a sleep. Windows, macOS and Linux all answer, from the agent build after 0.31.0. Additive under §10: `v` stays 2, and a service that never expected the member reads its absence exactly as it always did. |
 | 2 | 2026-09-10 | **What woke the machine, written down.** No new frame, no new capability and nothing new on the wire: `wakeSource` has ridden the `connect` block since agent 0.12.0 and is documented in §4 for the first time — an object of `kind`, `name` and `at` carrying the operating system's own answer to the question a half-worked wake leaves behind. It is the only fact in this document that can show a magic packet landed: `kind: "adapter"` says the source the ledger named is one of the machine's own network adapters, so the packet arrived and the driver acted, while `button` is the opposite finding on a machine somebody had just sent packets to — the broadcasts were ignored and a hand did the waking, which is exactly the fault an armed adapter was supposed to have ruled out. `device` (something real that is not a network adapter), `timer` (a wake the machine scheduled for itself: a Windows wake timer, an RTC alarm) and `unknown` are the rest, and `unknown` is the ledger's own "it said something this vocabulary cannot name", never the absence. `name` is the OS's words verbatim, at most 128 UTF-16 code units, omitted where it would only repeat the kind, and dropped alone when a service will not take it. `at` is unix seconds of the wake — the OS's own stamp where its ledger dates entries (macOS' power log), else the moment the resume callback fired, else the boot the uptime counter puts the machine at — and a wake nothing could date carries no `at`, so it is not sent at all: the fact is worth having only where it can be joined. It is read once per wake rather than per frame: on every resume, and once at start for the boot that raises no resume — a hibernating machine, a full power-off, a switch feeding the machine — inside a boot window, and that start read never overwrites a resume's own finding. Positive-or-absent throughout: no ledger, a ledger that would not read, and a machine that has not slept since it booted all send nothing, and absence is not `unknown`. What a service does with it is a join and nothing else: our relay pairs an `adapter` source whose clock is newer than the last one stored against the newest successful wake it sent to that machine within the previous 900 seconds, and stamps that press proven; every other kind is stored and shown and stamps nothing. It is an instrument a service shows — ours on the machine's row, on hover — never a control. Windows has answered since 0.12.0; Linux, macOS, the boot reading and the `timer` word arrived in the agent build after 0.31.0. Additive under §10: `v` stays 2, and a service that never expected the member reads its absence exactly as it always did. |
