@@ -376,6 +376,7 @@ Defined capabilities, each naming the relay→device command it gates:
 | `ready` | `wake_prepare` |
 | `sshready` | `ssh_setup`, `ssh_toggle` |
 | `sshmint` | `ssh_key_mint`, `ssh_keys_list`, `ssh_key_revoke`, `ssh_alias` |
+| `sshlaunch` | `ssh_launch` |
 | `status` | `status` |
 | `probe` | `probe` |
 | `scan` | `scan` |
@@ -479,6 +480,26 @@ platform — our agent carries both on Windows, Linux and macOS from 0.28.0 and 
 and §4's rule keeps the frame off every socket whose device could only refuse it. The TWO-WAY
 DISCOVERY facts the reply carries need no capability of their own: they describe the machine that
 just minted, and they ride that machine's own answer rather than a second round trip.
+
+`sshlaunch` says the device can OPEN an SSH client on its own machine, in the session of
+whoever is signed in there. It is the first capability in this table about the machine somebody is
+SITTING AT rather than about a machine they are reaching: every other SSH word says what a device
+can do to its own machine as a target, and this one says it can put a window in front of the
+person looking at it.
+
+It exists because a browser cannot start a program. A service whose page offers "open this in
+PuTTY" can copy a command and nothing more, and the person is then looking for a terminal they
+have to find themselves. A service that knows which machine the browser is reading on (§11.1) can
+instead ask THAT machine's device to do it, and the window opens where they are looking.
+
+It is gated on the device having a launcher for its platform — starting a program as another user,
+from a service, is written per platform; our agent carries it on Windows, Linux and macOS from
+0.33.0 and on nothing else — AND on the INSTALL having a person's session at all. The second half
+is the one that is new: the same build can be a desktop agent on somebody's PC and a headless
+emitter in a container, and a device with no desktop MUST NOT advertise this capability, because a
+service would offer a button the machine could only refuse. The facts beside it need no capability
+of their own: `sshClients` rides `status_result` like every other fact, and a device that
+advertises no `sshlaunch` MUST omit it.
 
 `plug` says the device can drive smart plugs on its own segment over local HTTP — discover
 them, switch them, read them. It is one capability rather than three for `power`'s reason: a
@@ -993,6 +1014,47 @@ is no key at the path the block would name, `no_user_session`, `busy`, `unsuppor
 failing operation's own sentence. **Every one of them costs the alias and nothing else**: the
 `-i` form of the connection line needs no alias and always works, and a caller falls back to it.
 
+### `ssh_launch_result`
+
+```json
+{ "t": "ssh_launch_result", "id": "…", "ok": true, "client": "putty" }
+```
+
+```json
+{ "t": "ssh_launch_result", "id": "…", "ok": false, "client": "putty",
+  "reason": "no_session", "error": "nobody is signed in at this machine" }
+```
+
+Answers `ssh_launch` (§5), **after** the launch, on `ssh_setup_result`'s reasoning: nothing about
+opening a client destroys the process that replies, so `ok: true` means the operating system
+ACCEPTED the launch rather than that a request was received.
+
+**`ok: true` does not mean the person is connected.** The client is detached — the device starts it
+and never waits for it — so a refused host key, a wrong password or a machine that is not
+listening is between them and the client from that moment on. What the device promises is the
+window.
+
+**It does not use §6's `err` shape, and that is deliberate.** Every other result in this document
+reports a device that tried to change its machine; this one reports whether a window appeared in
+front of a person who is looking at a browser on that same machine, and the four answers that
+question has are closed and small enough to be the whole reply:
+
+- **`no_session`** — nobody is signed in at the device's machine, so there is nowhere a window
+  could open. A statement about the machine now, not about what it has installed.
+- **`not_installed`** — the client is not on the machine, or is on it with no terminal emulator to
+  open it in. The `sshClients` fact says this before anybody presses, and this is what a press
+  gets when that fact has gone stale.
+- **`refused`** — a field failed validation, and NOTHING was launched. `error` names the field.
+- **`failed`** — the launch was attempted and the operating system refused it. `error` carries the
+  operating system's own sentence.
+
+`reason` and `error` ride `ok: false` and nothing else; a service that meets a `reason` outside
+the four MUST treat it as `failed` rather than render it. `client` is echoed on BOTH branches,
+because a card with two buttons has to know which one answered.
+
+`id` is the command's `id`, echoed verbatim — this pair uses `id` rather than §2's `req_id`, and a
+device MUST NOT answer a frame that carries none, because there is nowhere for the answer to go.
+
 ### `awake_result`
 
 ```json
@@ -1171,6 +1233,23 @@ Both are omitted when there is no `sshd_config` to read, so a missing pair is "n
 we could find", never "port 22, not listening". They are `rdpListening`/`rdpPort` for the
 second daemon, and a dashboard that shows one pair beside the Remote Desktop facts shows the
 other in the same place.
+
+**`sshClients`** (agent 0.33.0) is which SSH clients the device can OPEN on its own machine, from
+the closed vocabulary `putty`, `winscp`, `ssh`, `sftp`, always in that order. It is the fact
+beside `ssh_launch` (§5), and unlike every other SSH member here it describes the machine somebody
+is SITTING AT rather than a machine they are reaching — a service reads it for the device its
+dashboard is being read on (§11.1) and offers those buttons and no others.
+
+A client is listed when it is installed AND openable, which is one question rather than two: a
+command-line client needs a window put round it, and a machine with no terminal emulator to open
+one in is a machine where pressing the button could only answer `not_installed`. `putty` and
+`winscp` are Windows programs and are never listed elsewhere.
+
+**An empty array is a FINDING and an absent member is not.** `[]` means the device looked and this
+machine has no SSH client; the member missing means it could not look — a device with no launcher,
+or one that advertises no `sshlaunch`. A service MUST NOT render the absence as an empty list: the
+two lead to different sentences, "no SSH client on this computer" against "we cannot tell from
+here", and only one of them is an instruction to install something.
 
 Three of them answer a LIVE question, and are specified here because a dashboard acts on them
 the moment they arrive:
@@ -2632,6 +2711,62 @@ What a device refuses, and why each refusal is worth more than a write:
 **A device MUST NOT run this while a mint is running on the same machine**, and answers the second
 `busy` (§6): both write into the same `~/.ssh`, and the block names the very key a mint creates.
 
+### `ssh_launch`
+
+```json
+{ "t": "ssh_launch", "id": "…", "client": "putty", "user": "phil",
+  "host": "192.168.4.41", "port": 22 }
+```
+
+Asks the device to OPEN an SSH client on ITS OWN machine, in the session of whoever is signed in
+there, against the machine the frame names. Answers `ssh_launch_result` (§4) after the launch.
+Only sent to devices advertising `sshlaunch`, and in practice only to the device a service knows
+its dashboard is being read on (§11.1) — a client opened on a machine nobody is looking at is a
+window nobody sees.
+
+Every field is REQUIRED. `client` is one of `putty`, `winscp`, `ssh`, `sftp`; `user` is the
+account on the TARGET machine; `host` is the target's address or name; `port` is its SSH port.
+
+**A device MUST validate every field before it resolves or builds anything, and MUST refuse the
+whole frame — `reason: "refused"`, nothing launched — where any of them fails.** These fields
+become the arguments of a program that runs on somebody's desktop, so the rules are narrower than
+what an SSH client would itself accept:
+
+- **`client`** is one of the four words. Anything else is refused; there is no default.
+- **`user`** matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$`. The shapes this excludes are the ones
+  that change what the command MEANS rather than who it names: an `@` that would move the host, a
+  leading `-` that a client reads as a flag, and every space, quote and shell metacharacter.
+- **`host`** is an IP literal of either family, parsed as one by the platform's own parser and
+  never by pattern, or a hostname matching
+  `^[A-Za-z0-9]([A-Za-z0-9-]{0,62}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,62}[A-Za-z0-9])?)*$`
+  of at most 253 characters. A name beginning with a hyphen is refused: it would reach the client
+  as a flag rather than as a machine.
+- **`port`** is 1–65535.
+
+A field outside its rule is refused whole and NEVER trimmed to fit: a trimmed account or a
+truncated address is a different account or a different machine, and opening a session to one of
+those is worse than opening none.
+
+**The device builds an argv, as an ARRAY, and MUST NOT pass any of this through a shell.** The
+validation above is what makes the arguments safe, and an array is what makes the validation the
+only thing that has to be right: with no shell in the chain there is no second reader to disagree
+about what a space, a quote or a semicolon means. Where a platform's process API takes a command
+LINE rather than an array, the device quotes with that platform's own rule rather than a rule of
+its own.
+
+**The device launches in the CONSOLE USER's session and never as the service it runs as.** A
+client started by a service would draw on a desktop nobody can see, would read none of the
+person's own SSH configuration, and would put a privileged process where a user's belongs. A
+machine with no session holding a user answers `no_session` and starts nothing.
+
+The started client is DETACHED: the device does not wait for it, and a window somebody keeps open
+for a week outlives the device process that started it.
+
+**One launch at a time.** A device MUST refuse a second `ssh_launch` while one is in flight, with
+`reason: "failed"` and a sentence saying so — a resent frame or a second press would otherwise
+leave two terminals in front of one person for one press. A device SHOULD answer within five
+seconds whatever happens, because the person is looking at a button they pressed.
+
 ### `hold_awake`
 
 ```json
@@ -3011,6 +3146,11 @@ Returned in `err` on `wake_result`, `power_result`, `rdp_enable_result`, `awake_
 person reading it can act on: install the device as a system service, or run it with the rights
 it needs. Folded into `internal` it would read as a defect in the software and be reported as
 one.
+
+**`ssh_launch_result` is the one result frame that carries no `err` at all**, and its own section
+in §4 says why: it answers whether a window appeared in front of a person rather than whether a
+device changed its machine, and its `reason` vocabulary is closed and separate from this table. A
+service reading results generically MUST NOT expect `err` there.
 
 Remote-session codes, on `session_result` only, from devices advertising `session`. Each is
 separate for `no_privilege`'s reason — it is the code that names the remedy:
@@ -3437,6 +3577,7 @@ protocol and is the fastest way to test a relay implementation with no hardware.
 
 | Version | Date | Change |
 |---|---|---|
+| 2 | 2026-09-11 | **The browser asks the computer it is being read on to open an SSH client.** One new capability, `sshlaunch`, the one frame pair it gates — `ssh_launch` -> `ssh_launch_result` — and one additive `connect` member, `sshClients`. A browser cannot start a program, so a dashboard's "connect with PuTTY" could only ever end by copying a command for somebody to paste into a terminal they had to find themselves. Since §11.1 a service knows WHICH machine a browser is being read on, and a device runs there: the press reaches that device and the window opens where the person is looking. `sshClients` says which of `putty`, `winscp`, `ssh` and `sftp` that machine has and can open, with an empty array as a finding and an absent member as "could not look" — the two lead to different sentences and a service must not collapse them. A client counts as openable only if a window can be put round it, so a Linux with `ssh` and no terminal emulator lists neither command-line client rather than offering a button that could only be refused. `ssh_launch` carries `client`, `user`, `host` and `port`, and every one of them is validated by pattern BEFORE anything is resolved or built, because these fields become the arguments of a program that runs on somebody's desktop: an account of letters, digits and three punctuation marks; an address parsed as an IP literal by the platform's own parser or matching the DNS label rule; a port in range. A field outside its rule refuses the whole frame and launches NOTHING, never trimmed to fit, because a trimmed account is a different account. The argv is an ARRAY and no shell is in the chain, so the validation is the only thing that has to be right. The launch runs in the CONSOLE USER's session and never as the service, and a machine with nobody signed in answers `no_session` rather than drawing on a desktop nobody can see. The reply does not use §6's `err` shape: it answers the question a person actually asked — did a window appear — with four closed reasons, `no_session`, `not_installed`, `refused` and `failed`, and `error` carries the field that failed or the operating system's own sentence. One launch at a time, because a resent frame would leave two terminals in front of one person for one press. The capability is gated on the INSTALL as well as on the build: the same binary is a desktop agent on a PC and a headless emitter in a container, and the container advertises nothing here. Additive under §10: `v` stays 2, and a service that never expected `sshlaunch` keeps copying the command. |
 | 2 | 2026-09-11 | **A machine says whether its Chrome Remote Desktop host has signed in, so a hand-off can wait for the moment it will work.** No new frame and no new capability: one additive `connect` member, `crdHost`, an object of `service`, `signedIn` and `since`. The two facts a service already had — the device is connected, and `remoteTools` names `chrome-remote-desktop` — are both true SECONDS BEFORE a hand-off to that tool's web client will work: the host signs in to Google on its own schedule after the machine comes up, some seconds behind the agent, and a press inside that window opens the page, lists the machine as offline, and stays wrong until somebody reloads. `service` is a closed three — `running`, `stopped`, `absent` — where `absent` is the positive finding that no host is installed and never the silence; `signedIn` rides beside it always, `false` included, because a running host that has not signed in yet is exactly the state the wait is for; `since` dates the reading that first saw the sign-in and stands for as long as it lasts, omitted beside `false` where there is no moment to name. The evidence is the signalling channel the host holds open to Google — a connection from the host's own process to a remote peer on port 443, over TCP or over a connected UDP socket where the network allows HTTP/3, which is what a real machine turned out to hold and nothing else in that process does — because no file, registry value or log line anywhere says "signed in". Positive-or-absent throughout: a platform with no reader and a socket table that would not read send nothing, and a service MUST NOT read that absence as "no host". The cadence is part of the contract: once before the first frame, every five seconds while a running host has yet to sign in for at most ten minutes from the start and from every resume, then once a minute for as long as the device runs — and a `report` on every change of `service` or `signedIn`, which is what lets a service wait on the fact rather than poll for it. A resume clears the held reading and opens the window again, because the channel does not survive a sleep. Windows, macOS and Linux all answer, from the agent build after 0.31.0. Additive under §10: `v` stays 2, and a service that never expected the member reads its absence exactly as it always did. |
 | 2 | 2026-09-10 | **What woke the machine, written down.** No new frame, no new capability and nothing new on the wire: `wakeSource` has ridden the `connect` block since agent 0.12.0 and is documented in §4 for the first time — an object of `kind`, `name` and `at` carrying the operating system's own answer to the question a half-worked wake leaves behind. It is the only fact in this document that can show a magic packet landed: `kind: "adapter"` says the source the ledger named is one of the machine's own network adapters, so the packet arrived and the driver acted, while `button` is the opposite finding on a machine somebody had just sent packets to — the broadcasts were ignored and a hand did the waking, which is exactly the fault an armed adapter was supposed to have ruled out. `device` (something real that is not a network adapter), `timer` (a wake the machine scheduled for itself: a Windows wake timer, an RTC alarm) and `unknown` are the rest, and `unknown` is the ledger's own "it said something this vocabulary cannot name", never the absence. `name` is the OS's words verbatim, at most 128 UTF-16 code units, omitted where it would only repeat the kind, and dropped alone when a service will not take it. `at` is unix seconds of the wake — the OS's own stamp where its ledger dates entries (macOS' power log), else the moment the resume callback fired, else the boot the uptime counter puts the machine at — and a wake nothing could date carries no `at`, so it is not sent at all: the fact is worth having only where it can be joined. It is read once per wake rather than per frame: on every resume, and once at start for the boot that raises no resume — a hibernating machine, a full power-off, a switch feeding the machine — inside a boot window, and that start read never overwrites a resume's own finding. Positive-or-absent throughout: no ledger, a ledger that would not read, and a machine that has not slept since it booted all send nothing, and absence is not `unknown`. What a service does with it is a join and nothing else: our relay pairs an `adapter` source whose clock is newer than the last one stored against the newest successful wake it sent to that machine within the previous 900 seconds, and stamps that press proven; every other kind is stored and shown and stamps nothing. It is an instrument a service shows — ours on the machine's row, on hover — never a control. Windows has answered since 0.12.0; Linux, macOS, the boot reading and the `timer` word arrived in the agent build after 0.31.0. Additive under §10: `v` stays 2, and a service that never expected the member reads its absence exactly as it always did. |
 | 2 | 2026-09-10 | **The agent tells the browser which computer it is on, and nothing on the wire changed.** No capability, no `hello` field, no frame, no error code: the new §11.1 documents a claim minted from what both sides already hold and carried over HTTP, so a relay that never implements it stays conformant and a device that never mints one is untouched. A dashboard cannot learn from its own session which of an account's machines the browser is being read on, and the way it used to ask — fetching the agent's loopback beacon on every load — puts a local-network permission prompt in front of the first visit on the browsers most people run. The agent already prints, or opens, the way to the dashboard, so it carries the answer with it: `https://app.roosterwake.com/here?c=<claim>`, where the claim is `<device_id>.<issued_at>.<proof>` and the proof is §3.2's own construction under a third domain-separation tag — the first 16 bytes of `HMAC-SHA256(token_bytes, "rw1:here" + device_id + issued_at)`, as 32 lower-case hex characters, with the issue time in the `nonce_c` position and `nonce_s` empty. The tag is what stops a claim being replayed as a handshake proof and a handshake proof being presented as a claim. The alternative was a random single-use token the relay minted, kept in a store for a week and handed back in the `hello_ack`: a second credential on the agent's disk, a store to keep, a new field on the wire, and a link that goes stale whenever the store does — `status` would print nothing while the relay was away. Signing with the token both sides already hold needs none of it, and the link can be minted offline. A claim stands seven days from issue and may be up to five minutes ahead of the verifier's clock — the error a machine can carry and still complete TLS (§1.1). Verification keeps §3.3's order: shape is `bad_frame`; the proof is checked in constant time against a throwaway key for a `device_id` the relay has never seen, so an unknown device answers `auth` exactly as a bad proof does and the oracle stays shut; only a claim whose proof verified is told `expired`; a revoked device is `auth`, because a device that no longer exists on any account is one nothing may be "on". What it buys is a UI default in the owner's own signed-in browser and nothing else — which roster row wears the same-machine framing, which computer the SSH card names as the one that makes the key. It is not authorisation: every server-side act that names a connecting machine stays bound to the session and to the machines that session's owner holds, so a claim that reached the wrong browser can at most pre-fill a choice the person can see. A leaked link carries the device id, which rides in every `hello` anyway, and sixteen bytes of MAC that reveal nothing about the token. Our relay verifies it at `POST /internal/here`, an internal-key route §12 asks of nobody, which decides only whether the signing token is the one it holds; the dashboard resolves ownership against its own session afterwards. Our agent (0.31.0) prints the link as the last line of `roosterwake-agent status`, and opens it once in the signed-in person's browser at the first accepted hello of a fresh identity — never on an emitter-only install, never in a container, not on a headless host — recording that one chance as `dashboard_opened_at` in its identity file, spent whether or not a browser opened. Additive under §10: `v` stays 2. |
